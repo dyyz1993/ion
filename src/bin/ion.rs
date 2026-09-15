@@ -5740,9 +5740,16 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                 );
                 let reg_ar = hb_registry.clone();
                 tokio::spawn(async move {
+                    // W6 Bug3: 重派配置继承原会话的 agent + 当前 model/provider
+                    //（SessionIndex；set_agent/set_model 均同步写入索引），找不到回落
+                    // 默认——不再硬编码 "build"
+                    let (inherit_agent, inherit_model, inherit_provider) =
+                        ion::worker_registry::respawn_inherit_from_index(&orig_sid);
                     let cfg = ion::worker_registry::WorkerCreateConfig {
                         host: Some(host),
-                        agent: Some("build".into()),
+                        agent: inherit_agent,
+                        model: inherit_model,
+                        provider: inherit_provider,
                         initial_prompt: Some(prompt),
                         // 默认 20 turns 会让 heartbeat 重派 worker 几分钟烧完预算（与
                         // worker_registry.rs stdout-EOF 重派路径同一问题，两处必须一致）
