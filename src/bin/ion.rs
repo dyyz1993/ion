@@ -50,20 +50,17 @@ fn pending_ui() -> &'static Mutex<HashMap<String, oneshot::Sender<String>>> {
 //   3. hello：客户端可发 {"method":"hello"} → {"protocolVersion":1}；不发完全兼容。
 //   4. ui_respond 同源绑定：只有同一连接先 subscribe(ui:true) 才允许应答。
 // 实现走现有 JSON 行协议（Unix socket），不引入新传输层。
+//
+// 信封与帧的类型/常量由 ion-protocol crate 提供（I1 抽取）；epoch 表、路由、
+// 快照数据组装等逻辑留在本文件。
 // ---------------------------------------------------------------------------
 
-/// 协议版本（hello 握手返回值）
-pub const PROTOCOL_VERSION: u64 = 1;
-
-/// hello 握手响应行（不消费连接，客户端可继续 subscribe / rpc）
-fn hello_reply(id: Option<&serde_json::Value>) -> serde_json::Value {
-    serde_json::json!({
-        "type": "response",
-        "id": id,
-        "success": true,
-        "data": {"protocolVersion": PROTOCOL_VERSION},
-    })
-}
+use ion_protocol::{
+    host_response, stale_route_event, stamp_instance_event, snapshot_event, subscribed_ack_session,
+    subscribed_ack_extension, subscribed_ack_ui, hello_reply, ui_event_frame,
+    extension_event_frame, worker_response_frame, pump_event_frame, overview_snapshot_frame,
+    stream_error_frame,
+};
 
 /// ui_respond 同源校验：ui_origin=false（本连接未先 subscribe ui:true）→ 拒绝理由
 fn ui_respond_origin_error(ui_origin: bool) -> Option<String> {
@@ -108,12 +105,18 @@ async fn respond_to_ui_request(
         let mut bus = ev_bus.lock().await;
         bus.broadcast(&resolved);
         drop(bus);
-        let resp = serde_json::json!({"type":"response","id":cmd.get("id"),"success":true,"data":{"request_id":request_id,"response":response}});
+        let resp = host_response::success(
+            cmd.get("id").cloned().unwrap_or_default(),
+            serde_json::json!({"request_id":request_id,"response":response}),
+        );
         let _ = write_half
             .write_all(format!("{resp}\n").as_bytes())
             .await;
     } else {
-        let resp = serde_json::json!({"type":"response","id":cmd.get("id"),"success":false,"error":"request not found or already expired"});
+        let resp = host_response::error(
+            cmd.get("id").cloned().unwrap_or_default(),
+            "request not found or already expired",
+        );
         let _ = write_half
             .write_all(format!("{resp}\n").as_bytes())
             .await;
@@ -202,44 +205,8 @@ fn build_snapshot_data(
     })
 }
 
-/// snapshot 事件信封：instance_event 外壳 + customType:"snapshot"（快照先于一切增量）
-fn snapshot_event(sid: &str, epoch: u64, data: serde_json::Value) -> serde_json::Value {
-    serde_json::json!({
-        "type": "instance_event",
-        "session": sid,
-        "epoch": epoch,
-        "snapshot": true,
-        "event": {
-            "type": "extension_event",
-            "extension": "host",
-            "customType": "snapshot",
-            "visibility": "ui_only",
-            "session": sid,
-            "data": data,
-        },
-    })
-}
-
-/// epoch 盖章的转发信封（与旧 instance_event 形状兼容，仅多 epoch 字段）
-fn stamp_instance_event(sid: &str, epoch: u64, msg: serde_json::Value) -> serde_json::Value {
-    serde_json::json!({
-        "type": "instance_event",
-        "session": sid,
-        "epoch": epoch,
-        "event": msg.get("event").cloned().unwrap_or(msg),
-    })
-}
-
-/// 旧 epoch 订阅者收到的一次性作废通知（收到即停止转发，连接关闭）
-fn stale_route_event(sid: &str, epoch: u64, current_epoch: u64) -> serde_json::Value {
-    serde_json::json!({
-        "type": "stale_route",
-        "customType": "stale_route",
-        "session": sid,
-        "epoch": epoch,
-        "currentEpoch": current_epoch,
-    })
-}
+// snapshot_event / stamp_instance_event / stale_route_event 帧构造在 ion-protocol
+// crate（use 见文件顶部）；snapshot 的 data 组装逻辑留在此处。
 
 /// SessionRouter 命令：目前只有 Subscribe（连接侧 → 路由任务）
 enum RouterCmd {
@@ -374,13 +341,7 @@ impl SessionRouter {
             out["replayed"] = serde_json::json!(true);
             let _ = tx.send(out);
         }
-        let ack = serde_json::json!({
-            "type": "subscribed",
-            "session": self.sid,
-            "stream": "instance",
-            "epoch": epoch,
-            "replayed": replay_events.len(),
-        });
+        let ack = subscribed_ack_session(&self.sid, epoch, replay_events.len());
         let _ = reply.send(Ok((out_rx, ack)));
     }
 
@@ -3233,11 +3194,8 @@ async fn cmd_rpc(session: Option<&str>, method: &str, params: &str) {
         serde_json::Value::Object(serde_json::Map::new())
     });
 
-    let mut req = serde_json::json!({
-        "id": "rpc-client",
-        "method": method,
-        "params": params_val,
-    });
+    // 请求信封（ion-protocol）：CLI `ion rpc` 形状 {"id","method","params","session"?}
+    let mut req = ion_protocol::Request::rpc("rpc-client", method, params_val);
     if let Some(sid) = session {
         req["session"] = serde_json::json!(sid);
     }
@@ -3280,9 +3238,10 @@ async fn cmd_rpc(session: Option<&str>, method: &str, params: &str) {
                 // 尝试解析
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
                     // 跳过事件（type:event / type:worker_created 等没有 id 字段）
-                    if v.get("id").is_some() {
-                        // 这是真正的 RPC 响应
-                        println!("{}", serde_json::to_string_pretty(&v).unwrap_or(line));
+                    if ion_protocol::Request::has_request_id(&v) {
+                        // 这是真正的 RPC 响应——信封统一紧凑输出（历史上这里
+                        // pretty-print，对 JSON 解析型消费者无感，I1 统一为紧凑）
+                        println!("{}", ion_protocol::serialize_line(&v));
                         break;
                     }
                     // 是事件，跳过（不打印，避免污染 stdout）
@@ -3326,19 +3285,12 @@ async fn cmd_subscribe(
         }
     };
 
-    let mut req = serde_json::json!({"method": "subscribe"});
-    if let Some(sid) = session {
-        req["session"] = serde_json::json!(sid);
-    }
-    if let Some(p) = extension {
-        req["extension"] = serde_json::json!(p);
-    }
-    if ui {
-        req["ui"] = serde_json::json!(true);
-    }
-    if let Some(n) = replay {
-        req["replay"] = serde_json::json!(n);
-    }
+    let req = ion_protocol::Request::subscribe(
+        session.as_deref(),
+        extension,
+        ui,
+        replay,
+    );
 
     let req_line = format!("{req}\n");
     if stream.write_all(req_line.as_bytes()).await.is_err() {
@@ -5063,15 +5015,11 @@ async fn cmd_serve_stop() {
     let sock_path = ion::paths::host_socket_path();
     match tokio::net::UnixStream::connect(&sock_path).await {
         Ok(mut stream) => {
-            use tokio::io::AsyncWriteExt;
-            let req = serde_json::json!({
-                "id": "serve-stop",
-                "method": "shutdown",
-                "params": {}
-            });
-            let _ = stream
-                .write_all(format!("{}\n", serde_json::to_string(&req).unwrap()).as_bytes())
-                .await;
+        use tokio::io::AsyncWriteExt;
+        let req = ion_protocol::Request::rpc("serve-stop", "shutdown", serde_json::json!({}));
+        let _ = stream
+            .write_all(format!("{}\n", serde_json::to_string(&req).unwrap()).as_bytes())
+            .await;
             println!("✔ Shutdown signal sent to host server");
         }
         Err(_) => {
@@ -5569,10 +5517,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                 let cmd: serde_json::Value = match serde_json::from_str(&line) {
                                     Ok(v) => v,
                                     Err(e) => {
-                                        let resp = serde_json::json!({
-                                            "type":"response","id":null,
-                                            "success":false,"error":format!("invalid JSON: {e}")
-                                        });
+                                        let resp = host_response::invalid_json(e);
                                         let _ = write_half
                                             .write_all(format!("{resp}\n").as_bytes())
                                             .await;
@@ -5650,10 +5595,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                                 }
                                             }
                                             Err(e) => {
-                                                let resp = serde_json::json!({
-                                                    "type":"error",
-                                                    "error":e
-                                                });
+                                                let resp = stream_error_frame(e);
                                                 let _ = write_half
                                                     .write_all(format!("{resp}\n").as_bytes())
                                                     .await;
@@ -5672,8 +5614,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                         let mut bus = ev_bus.lock().await;
                                         let mut rx = bus.subscribe_ui();
                                         drop(bus);
-                                        let ack =
-                                            serde_json::json!({"type":"subscribed","stream":"ui"});
+                                        let ack = subscribed_ack_ui();
                                         let _ = write_half
                                             .write_all(format!("{ack}\n").as_bytes())
                                             .await;
@@ -5708,14 +5649,13 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                                 ev = rx.recv() => {
                                                     match ev {
                                                         Some(event) => {
-                                                            let msg = serde_json::json!({
-                                                                "type": "ui_event",
-                                                                "ui_type": event.custom_type,
-                                                                "extension": event.extension,
-                                                                "session": event.session,
-                                                                "data": event.data,
-                                                                "route": event.route,
-                                                            });
+                                                            let msg = ui_event_frame(
+                                                                &event.custom_type,
+                                                                &event.extension,
+                                                                event.session.as_deref(),
+                                                                &event.data,
+                                                                &event.route,
+                                                            );
                                                             if write_half
                                                                 .write_all(format!("{msg}\n").as_bytes())
                                                                 .await
@@ -5765,12 +5705,10 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                                                         write_half.flush().await;
                                                                 }
                                                                 _ => {
-                                                                    let resp = serde_json::json!({
-                                                                        "type":"response",
-                                                                        "id":cc.get("id"),
-                                                                        "success":false,
-                                                                        "error":"method not supported on ui stream"
-                                                                    });
+                                                                    let resp = host_response::error(
+                                                                        cc.get("id").cloned().unwrap_or_default(),
+                                                                        "method not supported on ui stream",
+                                                                    );
                                                                     let _ = write_half
                                                                         .write_all(
                                                                             format!("{resp}\n")
@@ -5805,11 +5743,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                     };
                                     drop(bus);
                                     // 返回 subscribed ack
-                                    let ack = serde_json::json!({
-                                        "type":"subscribed",
-                                        "extension": extension,
-                                        "session": session,
-                                    });
+                                    let ack = subscribed_ack_extension(extension, session.as_deref());
                                     let _ =
                                         write_half.write_all(format!("{ack}\n").as_bytes()).await;
                                     let _ = write_half.flush().await;
@@ -5819,19 +5753,19 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                     loop {
                                         match rx.recv().await {
                                             Some(event) => {
-                                                let msg = serde_json::json!({
-                                                    "type": "extension_event",
-                                                    "extension": event.extension,
-                                                    "customType": event.custom_type,
-                                                    "session": event.session,
-                                                    "persisted": event.persisted,
-                                                    "visibility": match event.visibility {
-                                                        ion::event_bus::EventVisibility::LlmAndUi => "llm_and_ui",
-                                                        ion::event_bus::EventVisibility::UiOnly => "ui_only",
-                                                    },
-                                                    "correlation_id": event.correlation_id,
-                                                    "data": event.data,
-                                                });
+                                                let visibility = match event.visibility {
+                                                    ion::event_bus::EventVisibility::LlmAndUi => "llm_and_ui",
+                                                    ion::event_bus::EventVisibility::UiOnly => "ui_only",
+                                                };
+                                                let msg = extension_event_frame(
+                                                    &event.extension,
+                                                    &event.custom_type,
+                                                    event.session.as_deref(),
+                                                    event.persisted,
+                                                    visibility,
+                                                    &event.correlation_id,
+                                                    &event.data,
+                                                );
                                                 if write_half
                                                     .write_all(format!("{msg}\n").as_bytes())
                                                     .await
@@ -5852,10 +5786,10 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                 // 才允许 ui_respond；独立连接（如 ion rpc 直调）一律拒绝。
                                 if method == "ui_respond" {
                                     if let Some(err) = ui_respond_origin_error(ui_origin) {
-                                        let resp = serde_json::json!({
-                                            "type":"response","id":cmd.get("id"),
-                                            "success":false,"error":err
-                                        });
+                                        let resp = host_response::error(
+                                            cmd.get("id").cloned().unwrap_or_default(),
+                                            err,
+                                        );
                                         let _ = write_half
                                             .write_all(format!("{resp}\n").as_bytes())
                                             .await;
@@ -5875,15 +5809,13 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                         (overview, rx)
                                     };
                                     // Return initial snapshot
-                                    let ack = serde_json::json!({
-                                        "type": "response",
-                                        "id": cmd.get("id"),
-                                        "success": true,
-                                        "data": {
+                                    let ack = host_response::success(
+                                        cmd.get("id").cloned().unwrap_or_default(),
+                                        serde_json::json!({
                                             "stream": "overview",
                                             "initial": initial,
-                                        }
-                                    });
+                                        }),
+                                    );
                                     if write_half
                                         .write_all(format!("{ack}\n").as_bytes())
                                         .await
@@ -5897,10 +5829,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                     loop {
                                         match rx.recv().await {
                                             Some(snapshot) => {
-                                                let msg = serde_json::json!({
-                                                    "type": "overview_snapshot",
-                                                    "data": snapshot,
-                                                });
+                                                let msg = overview_snapshot_frame(snapshot);
                                                 if write_half
                                                     .write_all(format!("{msg}\n").as_bytes())
                                                     .await
@@ -5967,7 +5896,10 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                                     let _ = write_half.flush().await;
                                                 }
                                                 Err(e) => {
-                                                    let resp = serde_json::json!({"type":"response","id":cmd.get("id"),"success":false,"error":e});
+                                                    let resp = host_response::error(
+                                                        cmd.get("id").cloned().unwrap_or_default(),
+                                                        e,
+                                                    );
                                                     let _ = write_half
                                                         .write_all(format!("{resp}\n").as_bytes())
                                                         .await;
@@ -6087,12 +6019,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                         bus.broadcast(&event);
                     }
                     if mtype == "response" {
-                        let out = serde_json::json!({
-                            "type": "worker_response",
-                            "worker_id": wid,
-                            "session_id": session_id,
-                            "response": msg,
-                        });
+                        let out = worker_response_frame(&wid, &session_id, &msg);
                         println!("{}", out);
                     } else {
                         let inner_ev = msg.get("event").cloned().unwrap_or(msg.clone());
@@ -6121,12 +6048,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                             let mut bus = pump_event_bus.lock().await;
                             bus.broadcast(&ev_obj);
                         }
-                        let out = serde_json::json!({
-                            "type": "event",
-                            "worker_id": wid,
-                            "session_id": session_id,
-                            "event": inner_ev,
-                        });
+                        let out = pump_event_frame(&wid, &session_id, inner_ev);
                         println!("{}", out);
                     }
                 }
@@ -6347,8 +6269,13 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                     let cmd: serde_json::Value = match serde_json::from_str(&line) {
                         Ok(v) => v,
                         Err(e) => {
+                            // 走信封构造（此前手工拼字符串，error 含引号时会产出非法 JSON 行）
                             println!(
-                                r#"{{"type":"response","id":null,"success":false,"error":"{e}"}}"#
+                                "{}",
+                                ion_protocol::serialize_line(&host_response::error(
+                                    serde_json::Value::Null,
+                                    e.to_string()
+                                ))
                             );
                             continue;
                         }
@@ -6389,12 +6316,8 @@ async fn handle_manager_command(
     registry: &Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>>,
     cmd: serde_json::Value,
 ) -> serde_json::Value {
-    let id = cmd.get("id").cloned().unwrap_or(serde_json::Value::Null);
-    let method = cmd
-        .get("method")
-        .and_then(|v| v.as_str())
-        .or_else(|| cmd.get("type").and_then(|v| v.as_str()))
-        .unwrap_or("");
+    let id = cmd.get("id").cloned().unwrap_or_default();
+    let method = ion_protocol::Request::method_or_type(&cmd);
 
     // Read-only commands: acquire lock only briefly to snapshot data, then
     // release before formatting the response. This prevents a slow create_worker
@@ -6527,8 +6450,8 @@ async fn handle_manager_command(
     };
 
     let mut resp = match result {
-        Ok(data) => serde_json::json!({"type":"response","id":id,"success":true,"data":data}),
-        Err(e) => serde_json::json!({"type":"response","id":id,"success":false,"error":e}),
+        Ok(data) => host_response::success(id, data),
+        Err(e) => host_response::error(id, e),
     };
     if let Some(sid) = cmd.get("session").and_then(|v| v.as_str()) {
         resp["session"] = serde_json::json!(sid);
@@ -10048,6 +9971,7 @@ mod scene1_fs_gate_tests {
 #[cfg(test)]
 mod subscribe_protocol_tests {
     use super::*;
+    use ion_protocol::PROTOCOL_VERSION;
 
     // ── epoch 栅栏 ──
 

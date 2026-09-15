@@ -1335,6 +1335,7 @@ dependencies = [
  "clap",
  "fs2",
  "futures-util",
+ "ion-protocol",
  "ion-provider",
  "jsonschema",
  "parking_lot",
@@ -1356,6 +1357,14 @@ dependencies = [
  "wasmtime",
  "which",
  "zstd",
+]
+
+[[package]]
+name = "ion-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
