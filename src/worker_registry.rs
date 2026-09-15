@@ -195,6 +195,174 @@ fn build_remote_worker_argv(
     argv
 }
 
+/// 把资产包（agent_dir 下的 skills/agents）经 `tar czf -` 管道交给 consumer。
+///
+/// `tar_args`：tar 的额外参数（形如 `["--exclude", "skills/x.md", ..., "skills"]`），
+/// 其中 exclude 项来自**磁盘原始文件名**，可能含 `$(...)`、反引号、`;` 等 shell
+/// 元字符——W8 修复前的实现把它们拼进 `sh -c` 字符串，构成**本机 RCE**。
+///
+/// `consumer`：管道右侧 argv。生产为 `ssh_base + [dest, remote_cmd]`（全部来自
+/// 配置注入的固定值，非用户可控）；测试传本地 argv（如 `/bin/sh -c 'cat > "$1"'`
+/// 把管道产物落成文件）做到零 ssh 全本地验证。
+async fn run_asset_pipeline(
+    agent_dir: &std::path::Path,
+    tar_args: &[String],
+    consumer: &[String],
+) -> Result<(), String> {
+    // W8 安全修复（绿阶段）：argv 双进程管道——tar 与 consumer 各自 spawn，
+    // 全部参数逐个进 argv，恶意文件名（$(...)、反引号、空格、`;`）永远不会
+    // 经过 shell 解释；cd 语义用 current_dir 实现。
+    let Some((consumer_prog, consumer_args)) = consumer.split_first() else {
+        return Err("assets sync: empty consumer argv".into());
+    };
+    use tokio::io::AsyncReadExt;
+    let mut tar_proc = tokio::process::Command::new("tar")
+        .args(["czf", "-"])
+        .args(tar_args)
+        .current_dir(agent_dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("assets sync tar spawn error: {e}"))?;
+    let mut consumer_proc = tokio::process::Command::new(consumer_prog)
+        .args(consumer_args)
+        .stdin(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("assets sync consumer spawn error: {e}"))?;
+
+    let mut tar_stdout = tar_proc.stdout.take().ok_or("no tar stdout")?;
+    let mut consumer_stdin = consumer_proc.stdin.take().ok_or("no consumer stdin")?;
+    let mut tar_stderr = tar_proc.stderr.take().ok_or("no tar stderr")?;
+    let mut consumer_stderr = consumer_proc.stderr.take().ok_or("no consumer stderr")?;
+
+    // 三路并发：tar stdout → consumer stdin 抽送；两侧 stderr 同步抽干
+    // （不抽干会在 64KB 管道缓冲写满时互相死锁）。
+    let ((), tar_err, consumer_err) = tokio::join!(
+        async {
+            // consumer 提前退出（如 ssh 拒连）时 copy 得到 EPIPE——静默，
+            // 由下方两侧 exit status 统一判错
+            let _ = tokio::io::copy(&mut tar_stdout, &mut consumer_stdin).await;
+            // ⚠️ 必须 drop 而不是只 shutdown()：tokio ChildStdin 的 shutdown
+            // 不关闭底层 fd，stdin 读入型 consumer（ssh/tar x/cat >file）会永远
+            // 等 EOF → 整条管道挂死。drop 才真正关闭写端。
+            drop(consumer_stdin);
+        },
+        async {
+            let mut buf = Vec::new();
+            let _ = tar_stderr.read_to_end(&mut buf).await;
+            buf
+        },
+        async {
+            let mut buf = Vec::new();
+            let _ = consumer_stderr.read_to_end(&mut buf).await;
+            buf
+        },
+    );
+    let tar_status = tar_proc.wait().await;
+    let consumer_status = consumer_proc.wait().await;
+    let truncate = |buf: Vec<u8>| -> String {
+        String::from_utf8_lossy(&buf).chars().take(200).collect()
+    };
+    if !tar_status.map(|s| s.success()).unwrap_or(false) {
+        return Err(format!("assets sync tar failed: {}", truncate(tar_err)));
+    }
+    if !consumer_status.map(|s| s.success()).unwrap_or(false) {
+        return Err(format!(
+            "assets sync consumer failed: {}",
+            truncate(consumer_err)
+        ));
+    }
+    Ok(())
+}
+
+/// 远程回流允许落盘的 entry 类型白名单（对齐 session_jsonl.rs 的 Entry 结构）。
+/// "session" 不在其中——它是 header 专属类型，只能走 header 幂等路径。
+/// W8 Bug2：修复前任意 JSON 直接 append，未知 type 污染本地会话文件
+/// （UI 渲染 / HTML 导出 / 重派提示全部被污染）。
+const FLOWBACK_ALLOWED_ENTRY_TYPES: &[&str] = &[
+    "message",
+    "model_change",
+    "thinking_level_change",
+    "agent_change",
+    "session_info",
+    "compaction",
+    "branch_summary",
+    "deletion",
+    "segment_summary",
+    "custom",
+    "custom_message",
+    "system_event",
+    "label",
+    "active_tools_change",
+];
+
+/// M3 会话回流落盘（host 侧）：远程 worker 发来的 session header/entry
+/// 追加进本地 `<sid>.jsonl`（调用方负责之后 invalidate_cache）。
+///
+/// 返回 true 表示 payload 已（或按幂等规则本就不需要）落盘；false 表示被拒
+/// （kind 非法 / entry 类型不在白名单 / 非 object / 缺 type / header 伪装 entry）。
+fn write_remote_session_payload(
+    cwd: &str,
+    sid: &str,
+    kind: &str,
+    payload: &serde_json::Value,
+) -> bool {
+    // W8 Bug2 校验：header 必须是 type=="session" 的 object；entry 必须是
+    // object 且 type 在白名单内。其余一律拒绝（宁可丢远端一条，不污染本地）。
+    let payload_type = payload.get("type").and_then(|t| t.as_str());
+    let accepted = if kind == "header" {
+        payload_type == Some("session")
+    } else if kind == "entry" {
+        matches!(payload_type, Some(t) if FLOWBACK_ALLOWED_ENTRY_TYPES.contains(&t))
+    } else {
+        false
+    };
+    if !accepted {
+        tracing::warn!(
+            "[remote-worker] session flowback rejected: sid={sid} kind={kind} type={payload_type:?}"
+        );
+        return false;
+    }
+    let path = crate::paths::session_jsonl_path_by_id(cwd, sid);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    use std::io::Write;
+    let line = serde_json::to_string(payload).unwrap_or_default();
+    if kind == "header" {
+        // header 幂等：文件已存在且首行是 session 头则跳过（防重连重复）
+        let exists_valid = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|c| c.lines().next().map(|l| l.to_string()))
+            .and_then(|l| serde_json::from_str::<serde_json::Value>(&l).ok())
+            .and_then(|v| {
+                v.get("type")
+                    .and_then(|t| t.as_str())
+                    .map(|s| s == "session")
+            })
+            .unwrap_or(false);
+        if !exists_valid {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                let _ = f.write_all(format!("{line}\n").as_bytes());
+            }
+        }
+    } else if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let needs_nl = std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
+        let payload_line = if needs_nl { format!("\n{line}") } else { line };
+        let _ = f.write_all(payload_line.as_bytes());
+    }
+    true
+}
+
 pub struct PreparedSpawn {
     pub child: tokio::process::Child,
     pub stdin: tokio::process::ChildStdin,
@@ -854,36 +1022,20 @@ impl WorkerRegistry {
                 let remote_cmd = "rm -rf ~/.ion/agent/skills ~/.ion/agent/agents && \
                     mkdir -p ~/.ion/agent/skills ~/.ion/agent/agents && \
                     tar xzf - -C ~/.ion/agent";
-                let shell = format!(
-                    "cd {} && tar czf - {} | {} {} '{}'",
-                    agent_dir.to_string_lossy(),
-                    tar_args.join(" "),
-                    ssh_base.join(" "),
-                    dest,
-                    remote_cmd
+                // W8 安全修复：不再拼 sh -c 字符串——tar_args 来自磁盘原始文件名
+                // （可能含 `$(...)`/反引号/`;`），拼字符串即本机 RCE。改为 argv
+                // 双进程管道（见 run_asset_pipeline），cd 用 current_dir 实现。
+                let mut consumer = ssh_base;
+                consumer.push(dest);
+                consumer.push(remote_cmd.to_string());
+                tracing::info!(
+                    "[remote-worker] assets sync: tar -czf - {:?} | {:?}",
+                    tar_args,
+                    consumer
                 );
-                tracing::info!("[remote-worker] assets sync: {shell}");
-                let out = std::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(&shell)
-                    .output();
-                match out {
-                    Ok(o) if o.status.success() => {
-                        tracing::info!(
-                            "[remote-worker] assets deployed ({} bytes stderr)",
-                            o.stderr.len()
-                        );
-                    }
-                    Ok(o) => {
-                        tracing::warn!(
-                            "[remote-worker] assets deploy failed: {}",
-                            String::from_utf8_lossy(&o.stderr)
-                                .chars()
-                                .take(200)
-                                .collect::<String>()
-                        );
-                    }
-                    Err(e) => tracing::warn!("[remote-worker] assets deploy spawn error: {e}"),
+                match run_asset_pipeline(&agent_dir, &tar_args, &consumer).await {
+                    Ok(()) => tracing::info!("[remote-worker] assets deployed"),
+                    Err(e) => tracing::warn!("[remote-worker] assets deploy failed: {e}"),
                 }
             }
         }
@@ -911,6 +1063,11 @@ impl WorkerRegistry {
             for (k, v) in &child_envs {
                 c.env(k, v);
             }
+            // 孤儿防护（W8）：记录宿主 pid。worker 主循环周期校验（worker_rpc
+            // orphan_host_pid）——host 被 kill -9 后，孤儿 worker 若继续跑，stdout
+            // EPIPE 被静默吞，可能与新 host 的新 worker 交叉写同一 <sid>.jsonl。
+            // 只注入本地分支：远端 worker 的 pid 空间与本机不同，env 无意义且会误判。
+            c.env("ION_HOST_PID", std::process::id().to_string());
             c
         };
 
@@ -4047,45 +4204,10 @@ impl WorkerRegistry {
                                 .map(|p| p.to_string_lossy().to_string())
                                 .unwrap_or_default()
                         });
-                    let path = crate::paths::session_jsonl_path_by_id(&cwd, &sid);
-                    if let Some(parent) = path.parent() {
-                        let _ = std::fs::create_dir_all(parent);
+                    let ok = write_remote_session_payload(&cwd, &sid, &kind, &payload);
+                    if ok {
+                        crate::message_retrieval::invalidate_cache(&cwd);
                     }
-                    use std::io::Write;
-                    let line = serde_json::to_string(&payload).unwrap_or_default();
-                    if kind == "header" {
-                        // header 幂等：文件已存在且首行是 session 头则跳过（防重连重复）
-                        let exists_valid = std::fs::read_to_string(&path)
-                            .ok()
-                            .and_then(|c| c.lines().next().map(|l| l.to_string()))
-                            .and_then(|l| serde_json::from_str::<serde_json::Value>(&l).ok())
-                            .and_then(|v| {
-                                v.get("type")
-                                    .and_then(|t| t.as_str())
-                                    .map(|s| s == "session")
-                            })
-                            .unwrap_or(false);
-                        if !exists_valid {
-                            if let Ok(mut f) = std::fs::OpenOptions::new()
-                                .create(true)
-                                .append(true)
-                                .open(&path)
-                            {
-                                let _ = f.write_all(format!("{line}\n").as_bytes());
-                            }
-                        }
-                    } else if let Ok(mut f) = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&path)
-                    {
-                        let needs_nl = std::fs::metadata(&path)
-                            .map(|m| m.len() > 0)
-                            .unwrap_or(false);
-                        let payload_line = if needs_nl { format!("\n{line}") } else { line };
-                        let _ = f.write_all(payload_line.as_bytes());
-                    }
-                    crate::message_retrieval::invalidate_cache(&cwd);
                 }
                 "llm_cancel" => {
                     let id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -7068,6 +7190,161 @@ mod tests {
     fn test_randish_in_range() {
         let r = randish();
         let _ = r; // value is opaque; just ensure it does not panic
+    }
+
+    // ── W8：资产同步 tar 注入修复 + 会话回流校验（全本地临时目录，零 ssh）────
+
+    /// 每个测试独享的临时 agent 目录（含 skills/ 子目录）。
+    fn w8_temp_agent_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("w8_test_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("skills")).unwrap();
+        dir
+    }
+
+    /// W8 Bug1 回归：exclude 项来自磁盘原始文件名。文件名含 `$(...)` 时，
+    /// 修复前的实现把它拼进 `sh -c` 字符串 → 本机执行任意命令（RCE）。
+    /// 修复后 argv 逐参传递：无副作用、归档有效、排除生效、空格文件名完整。
+    #[tokio::test]
+    async fn test_asset_pipeline_malicious_filename_no_rce() {
+        // marker 必须是**无斜杠**的相对名：文件名里不能含 `/`（含 $() 的 evil
+        // 文件名一旦带 / 就建不出来）；修复前的 sh -c 在测试进程 cwd 执行
+        // `$(touch w8_pwned_marker_PID)`，新实现 argv 直传不解释、永不执行。
+        let marker =
+            std::path::PathBuf::from(format!("w8_pwned_marker_{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let dir = w8_temp_agent_dir("rce");
+        let skills = dir.join("skills");
+        // macOS 文件名允许 $ ( ) —— 这个文件名一旦被拼进 shell 字符串，
+        // `$(touch MARKER)` 就会在打包本机执行
+        let evil_name = format!("pwned$(touch {}).md", marker.to_string_lossy());
+        std::fs::write(skills.join(&evil_name), "evil").unwrap();
+        std::fs::write(skills.join("good.md"), "good").unwrap();
+        std::fs::write(skills.join("note space.md"), "spaced").unwrap();
+
+        let archive =
+            std::env::temp_dir().join(format!("w8_archive_{}.tar.gz", std::process::id()));
+        let _ = std::fs::remove_file(&archive);
+        let tar_args = vec![
+            "--exclude".to_string(),
+            format!("skills/{evil_name}"),
+            "skills".to_string(),
+        ];
+        // consumer 用本地 sh + cat 重定向把 stdin（tar 流）落成 archive 文件——
+        // 零 ssh 全本地；参数走 argv（$1），tar 侧的恶意文件名才是本测试主角
+        let consumer = vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "cat > \"$1\"".to_string(),
+            "sh".to_string(),
+            archive.to_string_lossy().to_string(),
+        ];
+
+        let result = run_asset_pipeline(&dir, &tar_args, &consumer).await;
+        assert!(result.is_ok(), "pipeline failed: {result:?}");
+        assert!(
+            !marker.exists(),
+            "RCE 复现：exclude 文件名中的 $() 在本机被执行了"
+        );
+
+        // 归档有效（gzip magic）且排除/保留正确——空格文件名完整保留是
+        // argv 逐参传递的直接证据（shell 拼装会把它拆成两个参数）
+        let bytes = std::fs::read(&archive).unwrap();
+        assert_eq!(&bytes[..2], b"\x1f\x8b", "archive is not gzip");
+        let list = std::process::Command::new("tar")
+            .args(["-tzf"])
+            .arg(&archive)
+            .output()
+            .unwrap();
+        assert!(list.status.success(), "cannot list archive");
+        let stdout = String::from_utf8_lossy(&list.stdout);
+        assert!(stdout.contains("skills/good.md"), "listing: {stdout}");
+        assert!(stdout.contains("skills/note space.md"), "listing: {stdout}");
+        assert!(!stdout.contains("pwned"), "evil file must be excluded: {stdout}");
+
+        let _ = std::fs::remove_file(&marker);
+        let _ = std::fs::remove_file(&archive);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 管道右侧失败（远端 ssh 报错等价场景）必须向上传播为 Err。
+    /// 不用裸 `false`：本机 PATH 曾出现 `~/.local/bin/false`（exit 0 的 shim），
+    /// 会把"失败注入"静默变成成功——用绝对路径 sh 造确定性非零退出。
+    #[tokio::test]
+    async fn test_asset_pipeline_consumer_failure_propagates() {
+        let dir = w8_temp_agent_dir("fail");
+        std::fs::write(dir.join("skills").join("a.md"), "x").unwrap();
+        let tar_args = vec!["skills".to_string()];
+        let consumer = vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "exit 3".to_string(),
+        ]; // 立即非零退出（等价 ssh 失败）
+        let result = run_asset_pipeline(&dir, &tar_args, &consumer).await;
+        assert!(result.is_err(), "consumer failure must propagate: {result:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// W8 Bug2 回归：远程回流 session_entry 的 payload 不能是任意 JSON——
+    /// 未知 type / entry 伪装 header / 非 object / 缺 type 全部拒绝；
+    /// 合法 message 照常落盘。
+    #[test]
+    fn test_session_entry_flowback_rejects_bad_payload() {
+        // 🔴 环境隔离：session_jsonl_path_by_id 底层走 sessions_dir()，不设
+        // ION_SESSION_DIR 会写进真实 ~/.ion/agent/sessions/——必须重定向到
+        // 本测试的临时目录，并拿 env 串行锁防并发测试污染进程级 env。
+        let _guard = crate::paths::env_test_lock();
+        let dir = w8_temp_agent_dir("flowback");
+        let cwd = dir.to_string_lossy().to_string();
+        unsafe {
+            std::env::set_var("ION_SESSION_DIR", dir.join("sessions"));
+        }
+        let sid = "w8flowback";
+        // 合法 header 先落盘
+        let header = serde_json::json!({
+            "type": "session", "version": 3, "id": sid,
+            "timestamp": "2026-09-15T00:00:00Z", "cwd": cwd,
+        });
+        assert!(write_remote_session_payload(&cwd, sid, "header", &header));
+        // 未知 type 拒绝（修复前：任意 JSON 直接 append，污染 UI/导出/重派提示）
+        let evil = serde_json::json!({
+            "type": "totally_fake_type", "id": "e1", "timestamp": "t",
+        });
+        assert!(!write_remote_session_payload(&cwd, sid, "entry", &evil));
+        // entry 伪装 session header → 拒绝（文件头只能走 header 幂等路径）
+        assert!(!write_remote_session_payload(&cwd, sid, "entry", &header));
+        // 非 object / 缺 type → 拒绝
+        assert!(!write_remote_session_payload(
+            &cwd,
+            sid,
+            "entry",
+            &serde_json::json!("just a string")
+        ));
+        assert!(!write_remote_session_payload(
+            &cwd,
+            sid,
+            "entry",
+            &serde_json::json!({"id": "x"})
+        ));
+        // 合法 message 通过
+        let msg = serde_json::json!({
+            "type": "message", "id": "m1", "timestamp": "t",
+            "message": {"role": "user"},
+        });
+        assert!(write_remote_session_payload(&cwd, sid, "entry", &msg));
+        // 落盘内容：header + message 两类，无 evil
+        let path = crate::paths::session_jsonl_path_by_id(&cwd, sid);
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("\"type\":\"session\""), "file: {content}");
+        assert!(content.contains("m1"), "file: {content}");
+        assert!(
+            !content.contains("totally_fake_type"),
+            "evil type leaked to disk: {content}"
+        );
+        unsafe {
+            std::env::remove_var("ION_SESSION_DIR");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

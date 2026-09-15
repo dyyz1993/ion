@@ -1332,7 +1332,33 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         })
     );
 
-    while let Some(cmd) = stdin_rx.recv().await {
+    // 孤儿防护（W8）：host 被 kill -9 后本进程成孤儿继续跑——stdout EPIPE 被
+    // output() 静默吞，host 侧却已死亡，可能与新 host 拉起的新 worker 交叉写
+    // 同一 <sid>.jsonl。主循环每 30s 校验一次 ION_HOST_PID（spawn 时 host 注入，
+    // 见 worker_registry 本地 spawn 分支），宿主消失则 break 落到循环后的
+    // save_worker_session 退出保存路径（与 stdin EOF 同一条优雅退出路径）。
+    // 未设置 ION_HOST_PID（手动直启 / 测试直 spawn）→ 永不触发，行为不变。
+    let mut orphan_tick = tokio::time::interval(std::time::Duration::from_secs(30));
+    orphan_tick.tick().await; // interval 首个 tick 立即完成，消费掉
+    loop {
+        let cmd = tokio::select! {
+            c = stdin_rx.recv() => match c {
+                Some(c) => c,
+                None => break, // stdin EOF：host 正常关闭
+            },
+            _ = orphan_tick.tick() => {
+                if let Some(host_pid) = orphan_host_pid() {
+                    tracing::warn!(
+                        "[orphan] host pid {host_pid} is gone (my ppid={}) — orphan exit: \
+                         saving session then quitting",
+                        parent_pid()
+                    );
+                    break; // 退出前保存：落到循环后的 save_worker_session
+                }
+                continue; // 宿主健在，继续等下一条命令
+            }
+        };
+
         let id = cmd
             .get("id")
             .and_then(|v| v.as_str())
@@ -6285,6 +6311,70 @@ fn output(msg: &serde_json::Value) {
     let _ = stdout.flush();
 }
 
+// ---------------------------------------------------------------------------
+// 孤儿 worker 防交叉写（W8）
+// ---------------------------------------------------------------------------
+
+/// pid 存活检查（`kill(pid, 0)` 语义）：返回 0=存活；EPERM=存活（权限外进程）；
+/// ESRCH=已死。
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    // 防御：pid 0 在 kill(2) 里表示"本进程组"，绝不能当作"宿主存活"证据；
+    // ION_HOST_PID 来自 std::process::id() 不会是 0，这里保守处理为存活。
+    if pid == 0 {
+        return true;
+    }
+    // 直接调 syscall，避免引入 libc crate（同 paths.rs::libc_kill 先例）
+    let rc = unsafe {
+        unsafe extern "C" {
+            fn kill(pid: i32, sig: i32) -> i32;
+        }
+        kill(pid as i32, 0)
+    };
+    // EPERM=1（macOS/Linux 及主流 unix 取值一致）：目标进程存在但权限外 → 存活；
+    // 其余错误（ESRCH 等）→ 视为已死
+    rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(1)
+}
+
+#[cfg(not(unix))]
+fn process_alive(_pid: u32) -> bool {
+    true // 非 unix 平台不启用孤儿退出（保守：宁可不退也不误杀）
+}
+
+#[cfg(unix)]
+fn parent_pid() -> u32 {
+    unsafe {
+        unsafe extern "C" {
+            fn getppid() -> i32;
+        }
+        getppid().max(0) as u32
+    }
+}
+
+#[cfg(not(unix))]
+fn parent_pid() -> u32 {
+    0
+}
+
+/// 孤儿判定核心（纯函数，单测覆盖全矩阵）：
+/// - 宿主 pid 已死 → 孤儿；
+/// - 自己已被 init/launchd 收养（ppid==1）→ 孤儿——即使 env 里的 pid 撞上
+///   复用的无关进程（存活）也判孤儿，防 pid 复用假阴性。
+fn orphan_decision(host_alive: bool, ppid: u32) -> bool {
+    !host_alive || ppid == 1
+}
+
+/// 读取 ION_HOST_PID 并判定当前 worker 是否孤儿。
+/// None = 未启用（env 缺失/非法值）或宿主健在；Some(host_pid) = 应保存退出。
+fn orphan_host_pid() -> Option<u32> {
+    let host_pid: u32 = std::env::var("ION_HOST_PID").ok()?.trim().parse().ok()?;
+    if orphan_decision(process_alive(host_pid), parent_pid()) {
+        Some(host_pid)
+    } else {
+        None
+    }
+}
+
 /// 构建 skill 可用性提示（扫描全局 + 项目级 skill 目录）。
 ///
 /// 返回空字符串表示没有可用 skill（不往 system prompt 加无用提示）。
@@ -8113,5 +8203,60 @@ mod tests {
             "count_live_messages should be near-linear, took {:?}",
             elapsed
         );
+    }
+    // ── W8：孤儿 worker 防交叉写 ─────────────────────────────────────────
+
+    /// 判定矩阵：宿主死 → 孤儿；被收养（ppid==1）→ 孤儿（含 pid 复用防御）；
+    /// 宿主活且父进程正常 → 不退出。
+    #[test]
+    fn test_orphan_decision_matrix() {
+        assert!(!orphan_decision(true, 12345), "host alive, normal ppid");
+        assert!(orphan_decision(false, 12345), "host dead -> orphan");
+        assert!(orphan_decision(false, 1), "host dead + reparented -> orphan");
+        assert!(
+            orphan_decision(true, 1),
+            "reparented (ppid==1) -> orphan even if env pid hit a recycled process"
+        );
+    }
+
+    /// kill(pid, 0) 语义：自己活着；已 wait 的子进程已死。
+    #[test]
+    fn test_process_alive_basic() {
+        assert!(process_alive(std::process::id()));
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let dead_pid = child.id();
+        child.wait().unwrap();
+        assert!(!process_alive(dead_pid), "reaped child pid must be dead");
+    }
+
+    /// env 门控：缺失/非法 → None；env=自己（活）→ None；env=死 pid → Some。
+    #[test]
+    fn test_orphan_host_pid_env_gating() {
+        unsafe {
+            std::env::remove_var("ION_HOST_PID");
+        }
+        assert!(orphan_host_pid().is_none(), "env unset -> disabled");
+
+        unsafe {
+            std::env::set_var("ION_HOST_PID", std::process::id().to_string());
+        }
+        assert!(orphan_host_pid().is_none(), "env=own live pid -> not orphan");
+
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let dead = child.id();
+        child.wait().unwrap();
+        unsafe {
+            std::env::set_var("ION_HOST_PID", dead.to_string());
+        }
+        assert_eq!(orphan_host_pid(), Some(dead), "env=dead pid -> orphan");
+
+        unsafe {
+            std::env::set_var("ION_HOST_PID", "not-a-pid".to_string());
+        }
+        assert!(orphan_host_pid().is_none(), "env garbage -> disabled");
+
+        unsafe {
+            std::env::remove_var("ION_HOST_PID");
+        }
     }
 }
