@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ion.rpc.worker.steer",
+  "title": "RPC steer（worker 级）",
+  "description": "向运行中的 agent 插队消息（不中断当前轮，除非 immediate=true）。两种成功 data：默认 null；带 promote 索引且无文本时回 {status:'promoted'} 并立即结束响应流。来源：src/worker_rpc.rs 分发 'steer' 臂。",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "params": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "text": { "type": "string", "description": "插队文本；空 + 无 promote 时只按 immediate 处理" },
+        "immediate": { "type": "boolean", "default": false, "description": "true=先 stop 当前轮再注入" },
+        "promote": { "type": "integer", "minimum": 0, "description": "把 follow_up 队列第 N 条提升处理" }
+      }
+    },
+    "data": {
+      "oneOf": [
+        { "type": "null", "description": "常规 steer 完成（text 注入 steering 队列）" },
+        {
+          "type": "object",
+          "description": "promote-only（text 空 && !immediate）",
+          "properties": {
+            "status": { "const": "promoted" }
+          },
+          "required": ["status"]
+        }
+      ]
+    },
+    "success": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": true },
+        "data": { "$ref": "#/$defs/data" },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "data"]
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": false },
+        "error": { "type": "string", "minLength": 1 },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "error"]
+    }
+  }
+}

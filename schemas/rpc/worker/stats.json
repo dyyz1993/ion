@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ion.rpc.worker.stats",
+  "title": "RPC stats",
+  "description": "host 级最小统计：当前 worker 数量。无 params。来源：bin/ion.rs handle_manager_command_write 'stats'。",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "params": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "无参数"
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "workers": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["workers"]
+    },
+    "success": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": true },
+        "data": { "$ref": "#/$defs/data" },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "data"]
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": false },
+        "error": { "type": "string", "minLength": 1 },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "error"]
+    }
+  }
+}

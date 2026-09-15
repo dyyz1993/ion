@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ion.rpc.worker.channel_subscribe",
+  "title": "RPC channel_subscribe",
+  "description": "把 worker 加入频道（写 WorkerRecord.channels + registry.channels）。⚠️ 形状坑：handler 从【顶层】读 channel / workerId。来源：bin/ion.rs handle_manager_command_write 'channel_subscribe'。",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "params": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "channel": { "type": "string", "description": "频道名（顶层）" },
+        "workerId": { "type": "string", "description": "目标 worker_id（顶层）" }
+      }
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "subscribed": { "const": true }
+      },
+      "required": ["subscribed"]
+    },
+    "success": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": true },
+        "data": { "$ref": "#/$defs/data" },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "data"]
+    },
+    "error": {
+      "type": "object",
+      "description": "典型错误：worker not found",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": false },
+        "error": { "type": "string", "minLength": 1 },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "error"]
+    }
+  }
+}

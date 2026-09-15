@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ion.rpc.worker.channel_msg",
+  "title": "RPC channel_msg（worker 级，内部）",
+  "description": "channel_send fanout 落到频道内 worker 的入口：把消息包成 '[channel #x from y] text' 注入 follow_up 队列（不抢当前轮）。字段兼容 params 内嵌与顶层扁平（cmd.channel/cmd.from/cmd.msg）三种位置。通常由 Manager 内部发起，外部一般不直调。成功 data = null。来源：src/worker_rpc.rs 分发 'channel_msg' 臂。",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "params": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "channel": { "type": "string", "default": "" },
+        "from": { "type": "string", "default": "", "description": "发送者 worker_id（取前 12 字符展示）" },
+        "msg": {
+          "description": "string 或 {text: string}",
+          "oneOf": [
+            { "type": "string" },
+            {
+              "type": "object",
+              "properties": {
+                "text": { "type": "string" }
+              },
+              "required": ["text"]
+            }
+          ]
+        }
+      }
+    },
+    "data": { "type": "null" },
+    "success": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": true },
+        "data": { "$ref": "#/$defs/data" },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "data"]
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": false },
+        "error": { "type": "string", "minLength": 1 },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "error"]
+    }
+  }
+}

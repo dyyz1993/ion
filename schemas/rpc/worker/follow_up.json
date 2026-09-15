@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ion.rpc.worker.follow_up",
+  "title": "RPC follow_up（worker 级）",
+  "description": "追加一条 follow_up 消息（当前轮结束后 agent 自动消化）。成功 data = null。来源：src/worker_rpc.rs 分发 'follow_up' 臂。",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "params": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "text": { "type": "string", "description": "追加的文本" }
+      }
+    },
+    "data": { "type": "null" },
+    "success": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": true },
+        "data": { "$ref": "#/$defs/data" },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "data"]
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": false },
+        "error": { "type": "string", "minLength": 1 },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "error"]
+    }
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ion.rpc.worker.get_state",
+  "title": "RPC get_state（worker 级）",
+  "description": "worker 实时状态快照（模型/会话/队列水位）。无 params。来源：src/worker_rpc.rs 分发 'get_state' 臂。",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "params": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "无参数"
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "model": { "type": "string" },
+        "provider": { "type": "string" },
+        "session_id": { "type": "string" },
+        "message_count": { "type": "integer", "minimum": 0 },
+        "is_running": { "type": "boolean" },
+        "steering_queue": { "type": "integer", "minimum": 0 },
+        "follow_up_queue": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["model", "provider", "session_id", "message_count", "is_running", "steering_queue", "follow_up_queue"]
+    },
+    "success": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": true },
+        "data": { "$ref": "#/$defs/data" },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "data"]
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": false },
+        "error": { "type": "string", "minLength": 1 },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "error"]
+    }
+  }
+}

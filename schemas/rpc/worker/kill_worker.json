@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ion.rpc.worker.kill_worker",
+  "title": "RPC kill_worker（别名 kill）",
+  "description": "终止 worker。worktree 清理策略默认删目录留分支（对齐 workspace 语义）。兼容嵌套 params（RPC client）与扁平（stdin）两种格式；target 是 workerId 的别名。来源：bin/ion.rs handle_manager_command_write 'kill' | 'kill_worker'。",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "params": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "workerId": { "type": "string", "description": "目标 worker_id（wkr_xxx）" },
+        "target": { "type": "string", "description": "workerId 别名（stdin 扁平格式）" },
+        "cleanupWorktree": { "type": "boolean", "default": true, "description": "true=删 worktree 目录" },
+        "deleteBranch": { "type": "boolean", "default": false, "description": "true=连分支一起删" }
+      }
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "killed": { "const": true },
+        "cleanupWorktree": { "type": "boolean" },
+        "deleteBranch": { "type": "boolean" }
+      },
+      "required": ["killed", "cleanupWorktree", "deleteBranch"]
+    },
+    "success": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": true },
+        "data": { "$ref": "#/$defs/data" },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "data"]
+    },
+    "error": {
+      "type": "object",
+      "description": "典型错误：worker not found / 空 workerId",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": false },
+        "error": { "type": "string", "minLength": 1 },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "error"]
+    }
+  }
+}

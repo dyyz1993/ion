@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ion.rpc.worker.promote_follow_up",
+  "title": "RPC promote_follow_up（worker 级）",
+  "description": "把 follow_up 队列第 index 条提升为 steering 并可选附加文本；成功 data = null；同时广播 QueueChanged{action:'promote'} 事件。⚠️ 形状坑：索引在 params.item.index（嵌套 item 对象），text 同在 item 内，缺省 0/''。来源：src/worker_rpc.rs 分发 'promote_follow_up' 臂。",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "params": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "item": {
+          "type": "object",
+          "properties": {
+            "index": { "type": "integer", "minimum": 0, "default": 0 },
+            "text": { "type": "string", "description": "非空时随 promote 注入一条 steering" }
+          }
+        }
+      }
+    },
+    "data": { "type": "null" },
+    "success": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": true },
+        "data": { "$ref": "#/$defs/data" },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "data"]
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": false },
+        "error": { "type": "string", "minLength": 1 },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "error"]
+    }
+  }
+}

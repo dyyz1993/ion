@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ion.rpc.worker.list_sessions",
+  "title": "RPC list_sessions",
+  "description": "列出 host 上正在运行（或已注册）的会话视图——从 WorkerRegistry 内存取，不暴露 worker_id（对外 API）。注意与 list_all_sessions（磁盘 SessionIndex 全量，归会话目录域）区分。无 params。来源：bin/ion.rs handle_manager_command（读侧）与 write 侧各一份相同实现。",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "params": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "无参数"
+    },
+    "sessionSummary": {
+      "type": "object",
+      "properties": {
+        "session_id": { "type": "string" },
+        "agent": { "type": "string" },
+        "status": { "enum": ["Idle", "Busy", "Dead", "Stale"] },
+        "model": { "type": "string" },
+        "started_at": { "type": "integer", "description": "Unix 毫秒" },
+        "latest_output": { "type": "array", "items": { "type": "string" }, "description": "最近 text_delta 片段（最多 5 条，每条截 60 字符）" },
+        "log_short": { "type": ["string", "null"] },
+        "model_size": { "type": ["string", "null"], "description": "模型上下文窗口说明" }
+      },
+      "required": ["session_id", "agent", "status", "model", "started_at", "latest_output", "log_short", "model_size"]
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "sessions": { "type": "array", "items": { "$ref": "#/$defs/sessionSummary" } }
+      },
+      "required": ["sessions"]
+    },
+    "success": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": true },
+        "data": { "$ref": "#/$defs/data" },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "data"]
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": false },
+        "error": { "type": "string", "minLength": 1 },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "error"]
+    }
+  }
+}

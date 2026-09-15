@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ion.rpc.worker.index",
+  "title": "ION RPC Schema Index — worker 编排/多智能体域",
+  "description": "S2 批次：worker 编排域 RPC 契约。覆盖 host 级（bin/ion.rs handle_manager_command / handle_manager_command_write）、worker 级（src/worker_rpc.rs 主分发 match）与 worker→Manager bridge（src/worker_registry.rs manager 命令臂）三层的 worker 生命周期/频道/队列/agent 定义命令。每个 <command>.json 的根 schema 校验【完整响应信封】{type:'response', id, success, data?|error?, command?, session?}；$defs.params 校验请求 params（或标注顶层字段的扁平命令）；$defs.data 是成功 data 的独立子 schema。边界：subscribe/hello/事件帧/rpc_response/ui_respond/verb_* 归 S3；会话消息（get_messages 系）归 S1；配置/审批/快照/扩展归 S4；磁盘会话目录（list_all_sessions/search_sessions/token_usage_summary/get_index_health/session_remove）归会话目录域；workspace 子会话（create_workspace_session/close_workspace_session/get_session_snapshot）归 session workspace 域，均不在本索引。",
+  "domain": "worker",
+  "envelope": {
+    "request": {
+      "type": "object",
+      "description": "socket RPC 请求（ion rpc / WebUI 发出的行）",
+      "properties": {
+        "id": { "type": ["string", "integer", "null"] },
+        "method": { "type": "string" },
+        "params": { "type": ["object", "null"] },
+        "session": { "type": "string", "description": "有 = 转发到该 session 的 worker（或 auto-create）；无 = host/Manager 级处理" }
+      },
+      "required": ["id", "method"]
+    },
+    "response": {
+      "type": "object",
+      "description": "host 级响应无 command 字段；worker 级响应多一个 command（回显方法名）。session 字段仅在请求带 session 时回显。",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "success": { "type": "boolean" },
+        "data": {},
+        "error": { "type": "string" },
+        "command": { "type": "string" },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success"]
+    }
+  },
+  "commands": [
+    {
+      "command": "create_worker",
+      "file": "create_worker.json",
+      "level": "host+worker-bridge",
+      "summary": "创建 Worker（WorkerCreateConfig 全量参数）；session 路由时回 pending 转执回执"
+    },
+    {
+      "command": "create_session",
+      "file": "create_session.json",
+      "level": "host",
+      "summary": "为会话创建/幂等复用 worker（do_create_session 双开守卫）"
+    },
+    {
+      "command": "list_workers",
+      "file": "list_workers.json",
+      "level": "host",
+      "summary": "列出全部 worker + byStatus 汇总；status ∈ Idle/Busy/Dead/Stale"
+    },
+    {
+      "command": "list_sessions",
+      "file": "list_sessions.json",
+      "level": "host",
+      "summary": "registry 内存视角的运行中会话列表（不暴露 worker_id）"
+    },
+    {
+      "command": "kill_worker",
+      "aliases": ["kill"],
+      "file": "kill_worker.json",
+      "level": "host",
+      "summary": "终止 worker；cleanupWorktree 默认 true，deleteBranch 默认 false"
+    },
+    {
+      "command": "reap_workers",
+      "aliases": ["gc_workers"],
+      "file": "reap_workers.json",
+      "level": "host",
+      "summary": "清 Dead + 超时 Stale（maxAgeSecs 默认 600），回 {reaped}"
+    },
+    {
+      "command": "send_to_session",
+      "aliases": ["send"],
+      "file": "send_to_session.json",
+      "level": "host",
+      "summary": "按 session 转发 RPC（缺失则 auto-create）；session/rpc_method 读顶层字段；data 透传"
+    },
+    {
+      "command": "send_to_worker",
+      "file": "send_to_worker.json",
+      "level": "host+worker-bridge",
+      "summary": "按 workerId 转发 RPC（顶层字段），回 {queued:true}"
+    },
+    {
+      "command": "channel_send",
+      "file": "channel_send.json",
+      "level": "host+worker-bridge",
+      "summary": "频道广播；channel/from/msg 读顶层字段（params 嵌套会落默认值——已知怪癖）"
+    },
+    {
+      "command": "channel_subscribe",
+      "file": "channel_subscribe.json",
+      "level": "host",
+      "summary": "把 worker 加入频道，回 {subscribed:true}"
+    },
+    {
+      "command": "channel_msg",
+      "file": "channel_msg.json",
+      "level": "worker",
+      "summary": "频道 fanout 落 worker 的注入入口（内部命令），回 null"
+    },
+    {
+      "command": "stats",
+      "file": "stats.json",
+      "level": "host",
+      "summary": "worker 总数，回 {workers:n}"
+    },
+    {
+      "command": "health",
+      "file": "health.json",
+      "level": "host+worker",
+      "summary": "Manager 级（workers/version）/ worker 级（uptime/pid）双形状 health"
+    },
+    {
+      "command": "get_overview",
+      "file": "get_overview.json",
+      "level": "host",
+      "summary": "全景：workers（含 exit_code/reason）+ projects + 汇总 + sessions"
+    },
+    {
+      "command": "get_state",
+      "file": "get_state.json",
+      "level": "worker",
+      "summary": "worker 实时态：model/provider/session/队列水位/is_running"
+    },
+    {
+      "command": "steer",
+      "file": "steer.json",
+      "level": "worker",
+      "summary": "插队消息；immediate 立即中断；promote 提升 follow_up（回 {status:'promoted'}）"
+    },
+    {
+      "command": "abort",
+      "file": "abort.json",
+      "level": "worker",
+      "summary": "中断当前 agent 循环，回 null"
+    },
+    {
+      "command": "follow_up",
+      "file": "follow_up.json",
+      "level": "worker",
+      "summary": "追加 follow_up 消息（当前轮后消化），回 null"
+    },
+    {
+      "command": "promote_follow_up",
+      "file": "promote_follow_up.json",
+      "level": "worker",
+      "summary": "提升 follow_up 第 index 条（params.item.index 嵌套坑），回 null"
+    },
+    {
+      "command": "remove_follow_up",
+      "file": "remove_follow_up.json",
+      "level": "worker",
+      "summary": "删 follow_up 第 index 条，回 {removed, follow_up_queue}"
+    },
+    {
+      "command": "remove_steering",
+      "file": "remove_steering.json",
+      "level": "worker",
+      "summary": "删 steering 第 index 条，回 {removed, steering_queue}"
+    },
+    {
+      "command": "get_agents",
+      "file": "get_agents.json",
+      "level": "worker",
+      "summary": "内置+自定义 agent 定义列表（data 是裸数组）"
+    },
+    {
+      "command": "get_current_agent",
+      "file": "get_current_agent.json",
+      "level": "worker",
+      "summary": "当前 agent 定义 {name, description, color, tier}"
+    },
+    {
+      "command": "await_worker",
+      "file": "await_worker.json",
+      "level": "bridge",
+      "summary": "等子 worker 首轮完成（300s 上限），回 {target, first_turn_output}"
+    },
+    {
+      "command": "resume_worker",
+      "file": "resume_worker.json",
+      "level": "bridge",
+      "summary": "向子 worker 续发一轮并收结果，回 {target, response_output}"
+    }
+  ],
+  "notes": [
+    "get_worker 在当前代码（master@274d909）不存在对应 handler——单 worker 详情由 list_workers / get_overview 承担，文档/memory 提及的 'get_worker 空响应' 即源于此。",
+    "同 method 双形状：create_worker / channel_send / send_to_worker / health 在 host 级与 worker-bridge 级（--session 路由落到 worker 进程）形状不同，schema 用 data oneOf 如实覆盖。",
+    "顶层字段命令（send_to_session/send_to_worker/channel_send/channel_subscribe/kill_worker 兼容双格式）是手写解析坑高发区，params schema 的 description 已逐个标注读取位置。",
+    "status 字段大小写分裂：list_workers / list_sessions 用 Display（'Idle'），get_overview 用 serde 序列化（'idle'）——动态校验实测确认，两处 schema 已分别如实标注。",
+    "响应信封对额外字段放行（host 可能追加 session 等字段）；未知 method 统一回 success:false + 'Unknown command: <m>'。"
+  ]
+}

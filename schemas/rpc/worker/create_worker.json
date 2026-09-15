@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ion.rpc.worker.create_worker",
+  "title": "RPC create_worker",
+  "description": "创建 Worker（多智能体编排入口）。两条路由两个 data 形状：(1) host 级（无 session 或 worker 不存在）→ 同步创建，data = {workerId, sessionId, worktree_path?, worktree_branch?}；(2) session 绑定转发到 worker 进程时，worker 侧只是把请求经 ManagerBridge 转给 Manager 并立即回 {status:'pending', message}（真正结果通过 manager_response 关联，调用方应改用 spawn_worker 工具）。params = WorkerCreateConfig（src/worker_registry.rs:5926），serde 忽略未知字段；'message' 字段自动回落为 initial_prompt；'cwd' 映射到 project_path；'session_id' 映射到 session。来源：bin/ion.rs handle_manager_command_write 'create_worker' + worker_rpc.rs 'create_worker' bridge 臂。",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "params": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "session": { "type": "string", "description": "保留既有 session ID（也接受 session_id 别名）" },
+        "session_id": { "type": "string" },
+        "project_path": { "type": "string", "description": "项目根目录（也接受旧名 cwd）" },
+        "cwd": { "type": "string", "description": "旧字段，映射到 project_path" },
+        "agent": { "type": "string", "description": "Agent 名（build/plan/review/… 或自定义）" },
+        "model": { "type": "string" },
+        "provider": { "type": "string" },
+        "channels": { "type": "array", "items": { "type": "string" } },
+        "parent": { "type": "string", "description": "父 worker_id（Child 模式）" },
+        "relation": { "enum": ["child", "peer", "system"], "description": "与创建者关系，默认 child；peer 忽略 parent" },
+        "creator": { "type": "string", "description": "创建者 worker_id（Peer 模式保留）" },
+        "report_channel": { "type": "string", "description": "Peer 模式汇报频道，默认 main" },
+        "report_to": { "type": "string", "description": "Peer 模式汇报对象 worker_id" },
+        "initial_prompt": { "type": "string", "description": "创建后立即注入的首条 prompt" },
+        "message": { "type": "string", "description": "initial_prompt 的向后兼容别名（会打 warn）" },
+        "input_origin": { "type": "string", "description": "INPUT_ORIGIN 标识（user/monitor/system/peer）" },
+        "wait": { "type": "boolean", "description": "true=同步等待结果；false=异步（父收 agent_end 通知）" },
+        "skip_mcp": { "type": "string", "description": "'' 不跳过 / '1' 全跳过 / 'stdio' 只跳 stdio" },
+        "host": { "type": "string", "description": "远程执行端名（remote_workers.<name>），None=本地" },
+        "require_clean": { "type": "boolean", "description": "worktree 隔离时要求源目录 git 干净" },
+        "allowed_tools": { "type": "array", "items": { "type": "string" } },
+        "disallowed_tools": { "type": "array", "items": { "type": "string" } },
+        "max_turns": { "type": "integer", "minimum": 0 },
+        "hook_depth": { "type": "integer", "minimum": 0 },
+        "system_prompt_override": { "type": "string" },
+        "worktree": {
+          "type": "object",
+          "description": "git worktree 隔离配置",
+          "properties": {
+            "branch": { "type": "string", "description": "worktree 分支名（空则 ion-{session_id}）" },
+            "base": { "type": "string", "description": "基分支，默认 HEAD" }
+          },
+          "required": ["branch"]
+        }
+      }
+    },
+    "data": {
+      "oneOf": [
+        {
+          "type": "object",
+          "description": "host 级同步创建成功",
+          "properties": {
+            "workerId": { "type": "string" },
+            "sessionId": { "type": "string" },
+            "worktree_path": { "type": "string", "description": "仅 worktree 隔离时出现" },
+            "worktree_branch": { "type": "string", "description": "仅 worktree 隔离时出现" }
+          },
+          "required": ["workerId", "sessionId"]
+        },
+        {
+          "type": "object",
+          "description": "worker 侧 bridge 转发（--session 路由时）的即时回执",
+          "properties": {
+            "status": { "const": "pending" },
+            "message": { "type": "string" }
+          },
+          "required": ["status", "message"]
+        }
+      ]
+    },
+    "success": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": true },
+        "data": { "$ref": "#/$defs/data" },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "data"]
+    },
+    "error": {
+      "type": "object",
+      "description": "典型错误：invalid create_worker params: … / spawn 失败 / project_path 不存在",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": false },
+        "error": { "type": "string", "minLength": 1 },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "error"]
+    }
+  }
+}

@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ion.rpc.worker.health",
+  "title": "RPC health（Manager 级）",
+  "description": "watchdog.sh 的 Manager 级健康检查（<10ms，无 DB/网络）：状态 + worker 数 + 版本。注意与 worker 侧同名 health（回 uptime_secs/pid）区分——按路由落点不同两个形状，这里 oneOf 覆盖两者。无 params。来源：bin/ion.rs handle_manager_command_write 'health' + worker_rpc.rs 'health'。",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "params": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "无参数"
+    },
+    "data": {
+      "oneOf": [
+        {
+          "type": "object",
+          "description": "Manager 级",
+          "properties": {
+            "status": { "const": "ok" },
+            "workers": { "type": "integer", "minimum": 0 },
+            "version": { "type": "string" }
+          },
+          "required": ["status", "workers", "version"]
+        },
+        {
+          "type": "object",
+          "description": "worker 级（--session 路由到 worker 进程时）",
+          "properties": {
+            "status": { "const": "ok" },
+            "uptime_secs": { "type": "integer", "minimum": 0 },
+            "pid": { "type": "integer" },
+            "version": { "type": "string" }
+          },
+          "required": ["status", "uptime_secs", "pid", "version"]
+        }
+      ]
+    },
+    "success": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": true },
+        "data": { "$ref": "#/$defs/data" },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "data"]
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": false },
+        "error": { "type": "string", "minLength": 1 },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "error"]
+    }
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ion.rpc.worker.await_worker",
+  "title": "RPC await_worker（worker→Manager bridge）",
+  "description": "等待异步子 worker 完成当前轮并取回首轮输出。这是 worker→Manager 的 bridge 命令（LLM 工具 await_worker 的 RPC 底座）：worker 发 {target} → Manager 订阅子 worker 事件流 drain 到 agent_end（300s 上限）→ deliver_response 回 {target, first_turn_output}。外部 ion rpc 不直达此命令（工具面见 spawn_worker）。来源：src/worker_registry.rs manager 命令 'await_worker' 臂。",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "params": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "target": { "type": "string", "description": "目标 worker_id" }
+      },
+      "required": ["target"]
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "target": { "type": "string" },
+        "first_turn_output": { "type": "string", "description": "子 worker 首轮聚合输出；订阅失败时为 '[error] subscribe failed'" }
+      },
+      "required": ["target", "first_turn_output"]
+    },
+    "success": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": true },
+        "data": { "$ref": "#/$defs/data" },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "data"]
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": false },
+        "error": { "type": "string", "minLength": 1 },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "error"]
+    }
+  }
+}
