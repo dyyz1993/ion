@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/set_steering_mode.json",
+  "title": "RPC set_steering_mode response",
+  "description": "兼容存根：恒 data=null（steering 行为由 prompt behavior 决定，本命令无实现）。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success",
+    "command"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "set_steering_mode"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "type": "null",
+          "description": "存根：恒 null"
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true
+}

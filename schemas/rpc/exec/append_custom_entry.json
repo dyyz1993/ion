@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/append_custom_entry.json",
+  "title": "RPC append_custom_entry response",
+  "description": "追加 custom 条目（旁路/审计，不进 LLM 上下文）：customType + data。向会话 JSONL 追加一条条目（对齐 AGENTS.md 存储落位原则）。成功恒 {status:'appended'}；落盘走 append_session_entry（host 侧同形）。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success",
+    "command"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "append_custom_entry"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "status": {
+              "const": "appended"
+            }
+          },
+          "required": [
+            "status"
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "description": "扩展类型名（customType）",
+          "type": "string"
+        },
+        "data": {
+          "description": "自由 JSON 载荷",
+          "type": [
+            "object",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

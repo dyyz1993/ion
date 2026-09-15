@@ -1,0 +1,206 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/get_file_diff.json",
+  "title": "RPC get_file_diff response",
+  "description": "单文件跨轮 diff（file-snapshot 快照对首尾）：params.filePath 必填，fromTurn/toTurn 按 turnId 字符串圈定时间窗。四变体：无快照 / 正常 diff / GC 降级（SNAPSHOT_OBJECT_MISSING）/ 快照未启用。错误变体均 success:true + data.error。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success",
+    "command"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "get_file_diff"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "diff": {
+                  "type": "null"
+                },
+                "hasContent": {
+                  "const": false
+                }
+              },
+              "required": [
+                "path",
+                "diff",
+                "hasContent"
+              ],
+              "description": "时间窗内无快照"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "diff": {
+                  "type": "string"
+                },
+                "diffAvailable": {
+                  "const": true
+                },
+                "beforeHash": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "afterHash": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "hasContent": {
+                  "type": "boolean"
+                },
+                "added": {
+                  "type": "integer"
+                },
+                "removed": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "diff",
+                "diffAvailable",
+                "beforeHash",
+                "afterHash",
+                "hasContent",
+                "added",
+                "removed"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "diffAvailable": {
+                  "const": false
+                },
+                "error": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "const": "SNAPSHOT_OBJECT_MISSING"
+                    }
+                  },
+                  "required": [
+                    "code"
+                  ]
+                },
+                "beforeHash": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "afterHash": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "path",
+                "diffAvailable",
+                "error",
+                "beforeHash",
+                "afterHash"
+              ],
+              "description": "GC 降级：hash 在但 object 不可读"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "error": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error"
+              ],
+              "description": "缺 filePath / file-snapshot 未启用"
+            }
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "filePath": {
+          "description": "文件路径（必填）",
+          "type": "string"
+        },
+        "fromTurn": {
+          "description": "起始 turnId（可省=不限）",
+          "type": "string"
+        },
+        "toTurn": {
+          "description": "结束 turnId（可省=不限）",
+          "type": "string"
+        }
+      }
+    }
+  },
+  "x-quirks": [
+    "turn_file_diff/review_file_diff 是 turn/审批维度的另外两个 diff 口，勿混淆"
+  ]
+}

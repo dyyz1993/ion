@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/append_label.json",
+  "title": "RPC append_label response",
+  "description": "追加 label 条目（leaf/turn 标记，形状同 session_tree::make_label）。向会话 JSONL 追加一条条目（对齐 AGENTS.md 存储落位原则）。成功恒 {status:'appended'}；落盘走 append_session_entry（host 侧同形）。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success",
+    "command"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "append_label"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "status": {
+              "const": "appended"
+            }
+          },
+          "required": [
+            "status"
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "targetId": {
+          "description": "被标记 entry/turn 的 id",
+          "type": "string"
+        },
+        "label": {
+          "description": "标签文本",
+          "type": "string"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/get_latest_agent_change.json",
+  "title": "RPC get_latest_agent_change response",
+  "description": "兼容存根：恒 data=null（agent 变更历史走会话 JSONL agent_change 条目）。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success",
+    "command"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "get_latest_agent_change"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "type": "null",
+          "description": "存根：恒 null"
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true
+}

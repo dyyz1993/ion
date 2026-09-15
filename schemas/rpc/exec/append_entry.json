@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/append_entry.json",
+  "title": "RPC append_entry response",
+  "description": "统一追加入口（对齐 pi appendCustomEntry/appendCustomMessage）：按 params.type 白名单构建条目落盘。W6 白名单收紧——仅 custom/custom_message/system_event/label 四类放行，其余（message/session/compaction/leaf_pointer/model_change…）拒绝落盘（error 信封）。injectToLlm=true 且 type=custom_message 时同时推入 live messages（LLM 可见）。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success",
+    "command"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "append_entry"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "appended"
+            },
+            "injected": {
+              "type": "boolean",
+              "description": "是否已注入 live messages（仅 custom_message+injectToLlm=true 为 true）"
+            }
+          },
+          "required": [
+            "status",
+            "injected"
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "description": "条目类型（W6 白名单：custom | custom_message | system_event | label；缺省 custom）",
+          "type": "string"
+        },
+        "customType": {
+          "description": "custom/custom_message/system_event 的扩展类型名",
+          "type": "string"
+        },
+        "data": {
+          "description": "custom 条目载荷（自由 JSON，缺省 {}）"
+        },
+        "content": {
+          "description": "custom_message 文本内容",
+          "type": "string"
+        },
+        "display": {
+          "description": "是否进 UI（custom_message/system_event，缺省 true）",
+          "type": "boolean"
+        },
+        "details": {
+          "description": "custom_message 附属明细（自由 JSON，缺省 null）"
+        },
+        "label": {
+          "description": "system_event 标签 / label 条目文本",
+          "type": "string"
+        },
+        "targetId": {
+          "description": "label 条目目标 entry id"
+        },
+        "injectToLlm": {
+          "description": "true 且 type=custom_message 时推入 live messages（缺省 false）",
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "x-quirks": [
+    "白名单拒绝走 error 信封：'append_entry: entry type … is not allowed'"
+  ]
+}

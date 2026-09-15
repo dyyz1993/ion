@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/get_system_prompt.json",
+  "title": "RPC get_system_prompt response",
+  "description": "读当前系统提示词：取内存消息里第一条 User 消息的首个 Text 块（会话头部即系统提示词），无则空串。data 是裸 JSON string。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success",
+    "command"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "get_system_prompt"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "type": "string",
+          "description": "系统提示词文本（裸字符串，非对象壳；无则 \"）"
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true,
+  "x-quirks": [
+    "pi 对齐：裸 string 载荷，不包对象"
+  ]
+}

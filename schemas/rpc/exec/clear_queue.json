@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/clear_queue.json",
+  "title": "RPC clear_queue response",
+  "description": "清空 steering + follow_up 两个队列，并广播 QueueChanged(action:clear_all) 事件。回执带清空前的各自长度。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success",
+    "command"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "clear_queue"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cleared": {
+              "const": true
+            },
+            "steeringCleared": {
+              "type": "integer",
+              "description": "清空前 steering 队列长度"
+            },
+            "followUpCleared": {
+              "type": "integer",
+              "description": "清空前 follow_up 队列长度"
+            }
+          },
+          "required": [
+            "cleared",
+            "steeringCleared",
+            "followUpCleared"
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true
+}

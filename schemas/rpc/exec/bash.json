@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/bash.json",
+  "title": "RPC bash response",
+  "description": "直接执行 bash 命令（绕过 LLM/agent loop，不经权限引擎——调试用）。stdout+stderr 拼接为 output；结果不写入会话历史。错误也以 success:true + exitCode:-1 形态返回（不经 error 信封）。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success",
+    "command"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "bash"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "output": {
+              "type": "string",
+              "description": "stdout+stderr 拼接（stderr 非空时直接追加）；执行器异常时为 'bash error: ...'"
+            },
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": "integer",
+              "description": "命令退出码；执行器异常 -1；空命令 0"
+            }
+          },
+          "required": [
+            "output",
+            "exitCode"
+          ],
+          "description": "空命令 → {output:'',exitCode:0}（无 stdout/stderr 字段）；故仅 output/exitCode 必备"
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "command": {
+          "description": "待执行命令；空串直接返回 {output:'',exitCode:0}",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "超时秒数（默认 30）",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  },
+  "x-quirks": [
+    "空命令分支不带 stdout/stderr 字段；执行器异常分支也不带（exitCode:-1）"
+  ]
+}

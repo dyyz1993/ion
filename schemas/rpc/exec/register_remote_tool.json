@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/register_remote_tool.json",
+  "title": "RPC register_remote_tool response",
+  "description": "运行时注册 HTTP 远程工具（RemoteTool：url+method+headers+parameters JSON schema），立即可被 LLM 调用。缺 name/url 走 error 信封。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success",
+    "command"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "register_remote_tool"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "status": {
+              "const": "registered"
+            }
+          },
+          "required": [
+            "name",
+            "status"
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "description": "工具名（必填）",
+          "type": "string"
+        },
+        "url": {
+          "description": "HTTP 端点（必填）",
+          "type": "string"
+        },
+        "description": {
+          "description": "工具描述（进 LLM 的工具 schema）",
+          "type": "string"
+        },
+        "method": {
+          "description": "HTTP 方法（缺省 POST）",
+          "type": "string"
+        },
+        "parameters": {
+          "description": "参数 JSON Schema（缺省 {}）",
+          "type": "object"
+        },
+        "headers": {
+          "description": "附加请求头（string→string，缺省 {}）",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

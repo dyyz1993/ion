@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/reload.json",
+  "title": "RPC reload response",
+  "description": "热重载全部已加载 WASM 扩展：逐个 reload → 反注册旧工具 → 注册新工具。无扩展时回 {message:'no extensions loaded'}。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success",
+    "command"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "reload"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "message": {
+                  "const": "no extensions loaded"
+                }
+              },
+              "required": [
+                "message"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "reloaded": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "重载成功的 .wasm 路径"
+                },
+                "errors": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "'路径: 错误' 字符串"
+                }
+              },
+              "required": [
+                "reloaded",
+                "errors"
+              ]
+            }
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true,
+  "x-quirks": [
+    "单扩展失败不中断其余扩展（errors 累积）；与 extension_reload（按路径单扩展）区分"
+  ]
+}

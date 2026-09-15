@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/sandbox_probe.json",
+  "title": "RPC sandbox_probe response (host)",
+  "description": "host 级：立即探测一台沙盒（ssh 直连跑 ion --version 比对版本）。缺 name / 未知沙盒走 error 信封。host 响应不带 command 字段。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success"
+  ],
+  "properties": {
+    "id": {
+      "description": "透传请求 id（解析失败时为 null）"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "sandbox": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "remote_workers 配置名"
+                },
+                "dest": {
+                  "type": "string",
+                  "description": "user@hostname:port 展示串"
+                },
+                "health": {
+                  "type": "string",
+                  "enum": [
+                    "unknown",
+                    "reachable",
+                    "unreachable",
+                    "version_mismatch"
+                  ],
+                  "description": "SandboxHealth snake_case 序列化"
+                },
+                "version": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "最近探测到的远端 ion --version"
+                },
+                "worker_count": {
+                  "type": "integer"
+                },
+                "last_probe": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "description": "最近探测 unix 秒"
+                }
+              },
+              "required": [
+                "name",
+                "dest",
+                "health",
+                "worker_count"
+              ]
+            }
+          },
+          "required": [
+            "sandbox"
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "description": "沙盒名（remote_workers 的 key，必填）",
+          "type": "string"
+        }
+      }
+    }
+  }
+}

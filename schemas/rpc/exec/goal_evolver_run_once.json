@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/goal_evolver_run_once.json",
+  "title": "RPC goal_evolver_run_once response",
+  "description": "分析 goal 运行日志并规划改进 Issue（GOAL_SUPERVISOR 进化系统）。dry_run=true（缺省）只出计划不提交。外层信封恒 success:true；真实成败看 data.success 字段（历史怪癖）。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success",
+    "command"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "goal_evolver_run_once"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "success": {
+              "type": "boolean",
+              "description": "内层成败（缺 data_dir / run_once 出错为 false）"
+            },
+            "error": {
+              "type": "string"
+            },
+            "dry_run": {
+              "type": "boolean"
+            },
+            "analyzed_goals": {
+              "type": "integer"
+            },
+            "total_iterations": {
+              "type": "integer"
+            },
+            "issues_planned": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  },
+                  "dimension": {
+                    "type": "string"
+                  },
+                  "severity": {
+                    "type": "string"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "would_submit": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "title",
+                  "dimension",
+                  "severity",
+                  "body",
+                  "would_submit"
+                ]
+              }
+            }
+          },
+          "required": [
+            "success"
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "data_dir": {
+          "description": "goal 运行日志目录（必填）",
+          "type": "string"
+        },
+        "dry_run": {
+          "description": "true 只出计划不提交（缺省 true）",
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "x-quirks": [
+    "缺 data_dir / run_once 失败也回 success:true 信封，data.success=false + data.error"
+  ]
+}

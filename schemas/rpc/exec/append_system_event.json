@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/append_system_event.json",
+  "title": "RPC append_system_event response",
+  "description": "追加 system_event 条目（系统事件留痕）：customType + label + display。向会话 JSONL 追加一条条目（对齐 AGENTS.md 存储落位原则）。成功恒 {status:'appended'}；落盘走 append_session_entry（host 侧同形）。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success",
+    "command"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "append_system_event"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "status": {
+              "const": "appended"
+            }
+          },
+          "required": [
+            "status"
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "description": "扩展类型名（customType）",
+          "type": "string"
+        },
+        "label": {
+          "description": "事件标签",
+          "type": "string"
+        },
+        "display": {
+          "description": "是否进 UI（缺省 true）",
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

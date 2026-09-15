@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/get_session_snapshot.json",
+  "title": "RPC get_session_snapshot response (host)",
+  "description": "host 级：刷新/重连恢复一站式快照（SESSION_WORKSPACE_CHAT §3.2）——workspace 元数据 + worker 运行态（Busy→running 合并）+ 最近 20 条 message 条目（worker 不在运行也能直读磁盘恢复）。host 响应不带 command 字段。params 兼容 params.session_id 与顶层 session_id 两种位置。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success"
+  ],
+  "properties": {
+    "id": {
+      "description": "透传请求 id（解析失败时为 null）"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "workspace": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true,
+              "description": "WorkspaceSession 元数据（status 已合并运行态：running/idle/ready/…）"
+            },
+            "worker": {
+              "oneOf": [
+                {
+                  "type": "null",
+                  "description": "会话 worker 未运行"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "workerId": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "description": "Debug 小写化：idle/busy/dead/stale"
+                    }
+                  },
+                  "required": [
+                    "workerId",
+                    "status"
+                  ]
+                }
+              ]
+            },
+            "messageCount": {
+              "type": "integer",
+              "description": "返回的 recentMessages 条数（≤20）"
+            },
+            "recentMessages": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "description": "最近 message 类 entry（磁盘直读）"
+            }
+          },
+          "required": [
+            "sessionId",
+            "workspace",
+            "worker",
+            "messageCount",
+            "recentMessages"
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "session_id": {
+          "description": "会话 id（必填；顶层 session_id 同样接受）",
+          "type": "string"
+        }
+      }
+    }
+  },
+  "x-quirks": [
+    "S2 索引注记称本命令归 workspace 域——当前无独立 workspace 域，由 exec 批次收编"
+  ]
+}

@@ -1,0 +1,206 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/prompt.json",
+  "title": "RPC prompt response",
+  "description": "执行域核心命令：给 agent 发一轮消息。空闲时同步跑完整 turn（StreamingExtension 实时推 agent_start/text_delta/agent_end 事件，本轮响应 data=null）；agent 忙时按 behavior 分派：steer→插队入 steering 队列（回执 status:queued,queue:steering）、followUp→入 follow_up 队列（回执 queue:followUp）、interrupt→打断当前轮后立即执行（响应仍 data=null）。text 以 '!' 开头时拦截为直发 bash（不入 agent loop，回执 status:bash_executed/bash_error）。origin（INPUT_ORIGIN）标记输入来源：非 user 时旁路落 custom(input_origin) 条目（不进 LLM 上下文）。请求 params 见 $defs/requestParams。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success",
+    "command"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "prompt"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "oneOf": [
+            {
+              "type": "null",
+              "description": "空闲直跑 / busy+interrupt：本轮已同步执行（或打断后执行），实际输出走事件流"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "const": "queued"
+                },
+                "queue": {
+                  "enum": [
+                    "steering",
+                    "followUp"
+                  ]
+                }
+              },
+              "required": [
+                "status",
+                "queue"
+              ],
+              "description": "busy 排队回执：消息已入队，当前轮结束后消化"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "const": "bash_executed"
+                },
+                "command": {
+                  "type": "string"
+                },
+                "exitCode": {
+                  "type": "integer"
+                },
+                "output": {
+                  "type": "string"
+                },
+                "truncated": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "status",
+                "command",
+                "exitCode",
+                "output",
+                "truncated"
+              ],
+              "description": "'!cmd' 直发 bash 成功回执（结果同时以 BashExecution 消息入历史）"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "const": "bash_error"
+                },
+                "command": {
+                  "type": "string"
+                },
+                "error": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "command",
+                "error"
+              ],
+              "description": "'!cmd' 执行失败回执"
+            }
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "text": {
+          "description": "用户消息文本（'!' 前缀拦截为直发 bash）",
+          "type": "string"
+        },
+        "images": {
+          "description": "视觉输入：base64 图片数组，拼进 user 消息（pi 对齐 prompt(input, images)）。反序列化经 serde alias，camelCase mimeType 与内部 mime_type 均接受",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "data": {
+                "description": "base64 编码图片内容",
+                "type": "string"
+              },
+              "mimeType": {
+                "description": "MIME 类型，如 image/jpeg | image/png（snake_case mime_type 同样接受）",
+                "type": "string"
+              }
+            },
+            "required": [
+              "data",
+              "mimeType"
+            ]
+          }
+        },
+        "behavior": {
+          "description": "忙时分派策略（streamingBehavior 同义别名；缺省读 ION_PROMPT_BEHAVIOR，再缺省 steer）",
+          "type": "string",
+          "enum": [
+            "interrupt",
+            "steer",
+            "followUp"
+          ]
+        },
+        "streamingBehavior": {
+          "description": "behavior 的同义别名（pi 兼容），behavior 优先",
+          "type": "string",
+          "enum": [
+            "interrupt",
+            "steer",
+            "followUp"
+          ]
+        },
+        "origin": {
+          "description": "输入来源标识（INPUT_ORIGIN）：user 缺省；monitor/system/peer 之外非法值回落 user；非 user 落 custom(input_origin) 条目",
+          "type": "string",
+          "enum": [
+            "user",
+            "monitor",
+            "system",
+            "peer"
+          ]
+        },
+        "timeout": {
+          "description": "'!cmd' 直发 bash 的超时秒数（默认 30；仅 '!' 路径消费）",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  },
+  "x-quirks": [
+    "默认 behavior 是 'steer'（对齐 pi：流式中默认插话入队不打断），不是 interrupt",
+    "busy+interrupt 路径响应也是 data=null（打断后同步重跑），不要与 queued 回执混淆",
+    "images 为空数组/缺省等价；字段解析失败时整张图被静默丢弃（filter_map）",
+    "host 转发层对 prompt/abort/steer 用 fire-and-forget，响应经 worker 信封原样回传"
+  ]
+}

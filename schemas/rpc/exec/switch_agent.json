@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/switch_agent.json",
+  "title": "RPC switch_agent response",
+  "description": "切换当前 agent：加载定义 + 应用系统提示词/工具白名单/黑名单。找不到 agent 时不走 error 信封，而是 success:true + data.error（历史怪癖）。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success",
+    "command"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "switch_agent"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "agent": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "color": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "agent",
+                "description",
+                "color"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "error": {
+                  "type": "string",
+                  "description": "agent '<name>' not found"
+                }
+              },
+              "required": [
+                "error"
+              ]
+            }
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "agentName": {
+          "description": "目标 agent 名（与内置/自定义 .md 定义匹配）",
+          "type": "string"
+        },
+        "name": {
+          "description": "agentName 的别名",
+          "type": "string"
+        }
+      }
+    }
+  },
+  "x-quirks": [
+    "not-found 变体是 success:true + data.error，success 信封层面恒 true"
+  ]
+}

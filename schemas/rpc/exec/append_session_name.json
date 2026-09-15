@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/append_session_name.json",
+  "title": "RPC append_session_name response",
+  "description": "追加 session_info 条目（name）并同步 SessionIndex.set_name。向会话 JSONL 追加一条条目（对齐 AGENTS.md 存储落位原则）。成功恒 {status:'appended'}；落盘走 append_session_entry（host 侧同形）。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success",
+    "command"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "append_session_name"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "status": {
+              "const": "appended"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "name"
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "description": "会话名",
+          "type": "string"
+        }
+      }
+    }
+  }
+}

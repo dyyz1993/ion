@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/bash_command.json",
+  "title": "RPC bash_command response",
+  "description": "用户 '!cmd' 直发（与 prompt 的 '!' 拦截同一套语义的独立入口）：执行后结果作为 Message::BashExecution 入 agent 历史（LLM 下一轮可见），但不触发新 turn。失败也入一条 BashExecution（exitCode null）。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success",
+    "command"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "bash_command"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "const": "ok"
+                },
+                "exitCode": {
+                  "type": "integer"
+                },
+                "output": {
+                  "type": "string",
+                  "description": "stdout+stderr 合并（stderr 以 [stderr] 标记段）"
+                },
+                "truncated": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "status",
+                "exitCode",
+                "output",
+                "truncated"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "const": "error"
+                },
+                "error": {
+                  "type": "string"
+                },
+                "exitCode": {
+                  "type": "null"
+                },
+                "output": {
+                  "type": "null"
+                }
+              },
+              "required": [
+                "status",
+                "error",
+                "exitCode",
+                "output"
+              ]
+            }
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "command": {
+          "description": "待执行命令（必填，空串走 error 信封）",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "超时秒数（默认 30）",
+          "type": "integer",
+          "minimum": 0
+        },
+        "excludeFromContext": {
+          "description": "true 时该 BashExecution 不进 LLM 上下文",
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}
