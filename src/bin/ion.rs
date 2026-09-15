@@ -10201,5 +10201,6 @@ mod subscribe_protocol_tests {
 
     #[test]
     fn ui_respond_allowed_after_ui_subscribe_on_same_connection() {
-        assert!(ui_respond_origin_error(true).is_none());    }
+        assert!(ui_respond_origin_error(true).is_none());
+    }
 }

@@ -7408,7 +7408,6 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
-}
 
     // ── W1 heartbeat 判死健壮化（Bug1/Bug2/功能3）TDD ─────────────────────
 
@@ -7628,9 +7627,8 @@ mod tests {
         assert!(try_auto_respawn_gated(&remote, Some(0), false).is_none());
         // 本地 + 默认关 → None（门禁直接拦，不碰文件系统）
         let local = make_minimal_record("wkr_f3h", "sess_f3h_missing");
-        assert!(try_auto_respawn_gated(&local, Some(1), false).is_none());    }
+        assert!(try_auto_respawn_gated(&local, Some(1), false).is_none());
     }
-}
 
     // --- W6 Bug2: generate_resume_prompt 只认真实用户输入 ---
     //
@@ -7843,7 +7841,8 @@ mod tests {
         // record agent 为空 → 回落 None（默认 agent）
         let (agent, _, _) = respawn_inherit_fields("", Some(("m".into(), "p".into())));
         assert!(agent.is_none(), "empty record agent must fall back to None");
-    }}
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Provider Bridge（REMOTE_WORKER M2）— Manager 侧：远程 worker LLM 请求代发

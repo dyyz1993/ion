@@ -2446,5 +2446,6 @@ mod redact_tests {
         });
         redact_json_secrets(&mut v);
         assert_eq!(v["mcp"]["servers"]["x"]["env"]["API_TOKEN"], "***");
-        assert_eq!(v["mcp"]["servers"]["x"]["command"], "npx");    }
+        assert_eq!(v["mcp"]["servers"]["x"]["command"], "npx");
+    }
 }

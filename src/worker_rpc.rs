@@ -8425,8 +8425,6 @@ mod tests {
             std::env::remove_var("ION_HOST_PID");
         }
     }
-}
-
 
     // --- W6 Bug 1: append_entry 白名单收紧 ---
     //
@@ -8519,5 +8517,6 @@ mod tests {
         // 缺省 type 沿用历史行为：当作 custom（非攻击面）
         let params = serde_json::json!({"customType": "x", "data": {}});
         let d = build_append_entry_data("custom", &params).expect("default type is custom");
-        assert_eq!(d["customType"], "x");    }
+        assert_eq!(d["customType"], "x");
+    }
 }
