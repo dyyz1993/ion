@@ -30,11 +30,11 @@ jf() { jq -r "$1" 2>/dev/null; }
 # ── 隔离三件套 ──
 TEST_DIR="$(mktemp -d /tmp/ion-s1-schema-ci-XXXXXX)"
 export HOME="$TEST_DIR/home"                 # 假 HOME：~/.ion → $TEST_DIR/home/.ion
-# 会话目录对齐假 HOME 的默认位置（HOME/.ion/agent/sessions）。
-# ⚠️ 已知代码怪癖（本任务只记录不修 src）：session_remove 清理 JSONL 时走
-# root()/agent/sessions（bin/ion.rs:7578），不吃 ION_SESSION_DIR 覆盖——
-# 所以 ION_SESSION_DIR 必须指到同一处，否则 removed_files 恒 0。
-export ION_SESSION_DIR="$HOME/.ion/agent/sessions"
+# 会话目录指向独立位置（不在假 HOME 默认位置 $HOME/.ion/agent/sessions 下）——
+# 直接断言所有会话读写/清理路径都吃 ION_SESSION_DIR 覆盖。S1 曾因
+# session_remove 硬编码 root()/agent/sessions 在此绕过（对齐默认位置），
+# G1 修复后 removed_files 必须在非默认 ION_SESSION_DIR 下依然 >=1（Group H2）。
+export ION_SESSION_DIR="$TEST_DIR/sessions"
 mkdir -p "$HOME" "$ION_SESSION_DIR"
 export ION_HOST_SOCKET="/tmp/ion_s1_schema_ci_$$.sock"  # 独立 socket
 
@@ -143,6 +143,33 @@ validate_data "$SchemasDir/list_session_turns.json" "$R"; check $? "F4 list_sess
 
 WORKERS_AFTER=$(pgrep -f "target/debug/ion.*--mode rpc" 2>/dev/null | wc -l | tr -d ' ')
 [ "$WORKERS_BEFORE" = "$WORKERS_AFTER" ]; check $? "F5 direct read spawned no worker ($WORKERS_BEFORE -> $WORKERS_AFTER)"
+
+echo ""
+echo "── Group E2: host 直读简形消息（{\"role\":\"user\"} 非 {\"User\":{...}}）──"
+
+# S1 简形 fixture（同 tests/rpc_schema_session_test.rs 的 worker 级构造）：
+# worker 慢路径一直兼容简形，host fast path（FileIndex）此前只认枚举形 →
+# list_session_turns 返回 0 turns 且不回落，与 get_session_messages 行为分裂。
+SIMPLE_FILE="$ION_SESSION_DIR/ci_s1_simple_$$.jsonl"
+cat > "$SIMPLE_FILE" <<EOF
+{"cwd":"$TEST_DIR","id":"ci_s1_simple","parentSession":null,"timestamp":"2026-09-15T10:00:00Z","type":"session","version":3}
+{"id":"m1","parentId":null,"timestamp":"2026-09-15T10:00:01Z","type":"message","message":{"role":"user","content":"简形第一问"}}
+{"id":"m2","parentId":"m1","timestamp":"2026-09-15T10:00:02Z","type":"message","message":{"role":"assistant","content":[{"Text":{"text":"简形第一答"}}]}}
+EOF
+
+R=$("$ION_BIN" rpc --method get_session_messages --params "{\"session\":\"$SIMPLE_FILE\"}")
+[ "$(echo "$R" | jf '.success')" = "true" ]; check $? "E2a simple-form get_session_messages success"
+MN=$(echo "$R" | jf '.data.messages | length')
+[ "${MN:-0}" = "2" ]; check $? "E2b simple-form returns 2 messages (got ${MN})"
+
+R=$("$ION_BIN" rpc --method list_session_turns --params "{\"session\":\"$SIMPLE_FILE\"}")
+[ "$(echo "$R" | jf '.success')" = "true" ]; check $? "E2c simple-form list_session_turns success"
+TN=$(echo "$R" | jf '.data.turns | length')
+[ "${TN:-0}" = "1" ]; check $? "E2d simple-form groups into 1 turn (got ${TN})"
+[ "$(echo "$R" | jf '.data.turns[0].turnId')" = "m1" ]; check $? "E2e turnId=m1 (user anchor)"
+UC=$(echo "$R" | jf '.data.turns[0].userContent')
+[ "$UC" = "简形第一问" ]; check $? "E2f userContent preview extracted (got ${UC})"
+validate_data "$SchemasDir/list_session_turns.json" "$R"; check $? "E2g simple-form turns @ schema"
 
 echo ""
 echo "── Group G: search_sessions ──"
