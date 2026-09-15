@@ -107,7 +107,8 @@ impl ApprovalManager {
 
     /// session start 的 baseline tree hash
     ///
-    /// 优先取**本会话**的 step snapshot（on_session_start 写入的 ts_session_start），
+    /// 优先取**本会话**的 step snapshot（on_session_start 写入的
+    /// ts_000000000000_session_start，全零前缀保证同毫秒排序稳定在最前），
     /// 保证审批 baseline 锚定在本会话启动时的工作区状态——项目级存储里混着所有
     /// 会话的快照，不过滤会把"项目史上第一个快照"当 baseline，跨会话/用户手改
     /// 的文件全涌进 pending（实测 705 文件的根因）。

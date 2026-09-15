@@ -153,25 +153,55 @@ impl Extension for FileSnapshotExtension {
         let scan = scan_dir_fast(&self.storage.cwd);
         *self.last_scan.lock().unwrap() = Some(scan);
 
-        // 建立 baseline tree（session start 时的完整文件状态）
-        let files = self.scan_to_file_contents();
-        let (tree_hash, _) = tree_store::write_tree(self.store.objects(), &files);
-        *self.baseline_tree_hash.lock().unwrap() = Some(tree_hash.clone());
+        // G2 Bug4：baseline step-snapshot 每会话只建一次（once-guard）。
+        // agent.run 每次 prompt 都会触发 on_session_start；无条件重建会把
+        // 「上一轮之后、本轮之前」的写入（call_tool RPC 直调、用户手改）吸收进
+        // 新 baseline（固定 turn_id → 同名文件覆盖旧锚点），
+        // 这些写入永远进不了审批 pending，绕过审批面。
+        //
+        // ⚠️ turn_id 用 "ts_000000000000_session_start"（全零前缀）而非旧的
+        // "ts_session_start"：load_all_step_snapshots 按 (timestamp, turn_id) 排序，
+        // hex turn id（[0-9a-f]）字典序全部小于 's' 开头的旧 id——同毫秒写入时
+        // session-start 会排到 turn step 之后，current_tree_hash() 因此取到陈旧的
+        // session-start 快照（快测里整个 prompt 周期 <1ms，实测可复现）。
+        // 全零前缀保证同毫秒时 session-start 稳定排在所有 turn step 之前。
+        let baseline_exists = self
+            .store
+            .load_all_step_snapshots()
+            .iter()
+            .any(|s| {
+                s.turn_id == "ts_000000000000_session_start"
+                    && s.session_id == self.storage.session_id
+            });
+        if baseline_exists {
+            // 本会话 baseline 已存在：只补内存锚点（worker 重启后为 None）。
+            // 接在最新已提交快照上（不重扫磁盘）——重启期间的写入要在下一轮
+            // turn_end 进 diff/pending，而不是被吸收。
+            let mut anchor = self.baseline_tree_hash.lock().unwrap();
+            if anchor.is_none() {
+                *anchor = self.store.current_tree_hash();
+            }
+        } else {
+            // 建立 baseline tree（session start 时的完整文件状态）
+            let files = self.scan_to_file_contents();
+            let (tree_hash, _) = tree_store::write_tree(self.store.objects(), &files);
+            *self.baseline_tree_hash.lock().unwrap() = Some(tree_hash.clone());
 
-        // 写 baseline step-snapshot（让 current_tree_hash 从一开始就有值）
-        let step = tree_store::StepSnapshot {
-            session_id: self.storage.session_id.clone(),
-            turn_id: "ts_session_start".to_string(),
-            baseline_tree_hash: tree_hash.clone(),
-            snapshot_tree_hash: tree_hash,
-            diff: tree_store::TreeDiff {
-                added: vec![],
-                modified: vec![],
-                deleted: vec![],
-            },
-            timestamp: crate::session_jsonl::timestamp_iso(),
-        };
-        self.store.save_step_snapshot(&step);
+            // 写 baseline step-snapshot（让 current_tree_hash 从一开始就有值）
+            let step = tree_store::StepSnapshot {
+                session_id: self.storage.session_id.clone(),
+                turn_id: "ts_000000000000_session_start".to_string(),
+                baseline_tree_hash: tree_hash.clone(),
+                snapshot_tree_hash: tree_hash,
+                diff: tree_store::TreeDiff {
+                    added: vec![],
+                    modified: vec![],
+                    deleted: vec![],
+                },
+                timestamp: crate::session_jsonl::timestamp_iso(),
+            };
+            self.store.save_step_snapshot(&step);
+        }
 
         // 异步 GC（不阻塞 agent）
         let active_hashes = self.collect_active_hashes();
@@ -416,6 +446,100 @@ mod tests {
             "turn ID should start with 'ts_', got: {}",
             id
         );
+    }
+
+    /// G2 Bug4 回归：on_session_start 的 baseline step-snapshot 每会话只建一次。
+    ///
+    /// 历史 bug：agent.run 每次 prompt 都触发 on_session_start，无条件重建 baseline
+    /// （固定 turn_id "ts_session_start" → 同名文件覆盖旧锚点），把「上一轮之后、
+    /// 本轮之前」的写入（call_tool RPC 直调 write、用户手改）吸收进新 baseline——
+    /// 这些写入永远进不了审批 pending，绕过审批面。
+    ///
+    /// 复现路径（对标 S4 报告）：session start → call_tool 直调写文件 → 再次
+    /// session start + turn_end → compute_pending 必须能看到该文件（修复前为空）。
+    #[tokio::test]
+    async fn session_start_baseline_built_once_keeps_call_tool_writes_pending() {
+        let _guard = crate::paths::env_test_lock();
+        let root = std::env::temp_dir().join(format!(
+            "ion_g2_baseline_{}_{}",
+            std::process::id(),
+            crate::session_jsonl::generate_id()
+        ));
+        let cwd = root.join("work");
+        let session_path = root.join("session.jsonl");
+        std::fs::create_dir_all(&cwd).unwrap();
+        crate::session_jsonl::set_session_file_override(Some(session_path.clone()));
+        let cwd_str = cwd.to_string_lossy().to_string();
+        crate::session_jsonl::ensure_session_header(&cwd_str, "sess_g2");
+        crate::session_jsonl::append_raw_entry(
+            &cwd_str,
+            &serde_json::json!({
+                "type":"message", "id":"msg_1", "parentId":"sess_g2",
+                "timestamp":crate::session_jsonl::timestamp_iso(),
+                "message":{"role":"assistant","content":"x"}
+            }),
+        );
+
+        let (extension, store) = FileSnapshotExtension::new_pair_with_cwd(&cwd_str);
+        // 与 new_pair_with_cwd 的 StorageContext 同 session_id（"test"），共享同一 store
+        let storage = crate::storage_context::StorageContext::new(&cwd_str, "test", &cwd_str);
+        let mgr = crate::file_snapshot::ApprovalManager::new(store.clone(), storage);
+
+        let start_ctx = SessionContext {
+            reason: "test".into(),
+            session_id: Some("sess_g2".into()),
+        };
+        let mut turn_ctx = TurnContext {
+            turn_index: 0,
+            messages: vec![],
+            has_tool_calls: false,
+            stop_reason: None,
+            session_id: Some("sess_g2".into()),
+            session_cwd: Some(cwd_str.clone()),
+        };
+
+        // prompt 1：session start（建 baseline）→ 空轮 turn_end
+        extension.on_session_start(&start_ctx).await.unwrap();
+        extension.on_turn_start(&mut turn_ctx).await.unwrap();
+        extension.on_turn_end(&turn_ctx).await.unwrap();
+
+        // prompt 间隙：call_tool 直调 write（不产生 tree step-snapshot，只落磁盘）
+        std::fs::write(cwd.join("direct.txt"), "direct write").unwrap();
+
+        // prompt 2：又一次 on_session_start + turn_end。
+        // 修复前：这里重建 baseline 吸收 direct.txt → pending 为空（红）。
+        extension.on_session_start(&start_ctx).await.unwrap();
+        turn_ctx.turn_index = 1;
+        extension.on_turn_start(&mut turn_ctx).await.unwrap();
+        extension.on_turn_end(&turn_ctx).await.unwrap();
+
+        let pending = mgr.compute_pending();
+        assert!(
+            pending.iter().any(|p| p.path == "direct.txt"),
+            "call_tool 直调写入必须进审批 pending（不能被下一轮 baseline 吸收）: {pending:?}"
+        );
+
+        // worker 重启模拟：新 extension 实例（内存锚点丢失）+ 同一 store。
+        // on_session_start 不得重建 baseline；重启期间的写入也要进 pending。
+        std::fs::write(cwd.join("after_restart.txt"), "written while worker down").unwrap();
+        let (ext2, _store2) = FileSnapshotExtension::new_pair_with_cwd(&cwd_str);
+        ext2.on_session_start(&start_ctx).await.unwrap();
+        turn_ctx.turn_index = 2;
+        ext2.on_turn_start(&mut turn_ctx).await.unwrap();
+        ext2.on_turn_end(&turn_ctx).await.unwrap();
+
+        let pending = mgr.compute_pending();
+        assert!(
+            pending.iter().any(|p| p.path == "after_restart.txt"),
+            "重启后 on_session_start 不得重建 baseline 吸收写入: {pending:?}"
+        );
+        assert!(
+            pending.iter().any(|p| p.path == "direct.txt"),
+            "早前 direct.txt 的 pending 不应因重启消失: {pending:?}"
+        );
+
+        crate::session_jsonl::set_session_file_override(None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// gen_turn_id should be 15 chars: "ts_" (3) + 12 hex chars.
