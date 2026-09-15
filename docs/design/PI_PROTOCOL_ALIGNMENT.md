@@ -244,11 +244,11 @@ pi 新版将"远程会话协议"抽成了独立包 `@earendil-works/pi-protocol`
 
 - ✅ pi protocol/chord/server/client 包深读（upstream/main@f9bcd351d），逐文件事实清单成文（2026-09-15，本文档）
 
-### 待启动
+### P0 落地进度
 
+- ✅ P0.2 错误响应脱敏 + 有界（G4 分支落地：`ion-protocol::sanitize_error` 收口**全部** error 构造点——`worker_response::error` / `host_response::error` / `invalid_json` / `stream_error_frame` / `rpc_response_event`；panic/backtrace 细节收敛固定文案 + `$HOME` 路径 `~` 化 + 500 字符 char 截断；公共错误文案原样保留，特征测试 Unknown command 断言持续绿）
+- ✅ P0.3 hello hostId 实例身份（G4 分支落地：`ion_protocol::host_id()` 进程内存态 UUIDv4（不落盘）+ `hello_reply` 携带 + schema/特征测试/`subscribe_protocol_ci.sh` G3 同步 + CLI `ION_EXPECT_HOST_ID` pin（不匹配报错断开））
 - ⏳ P0.1 socket 行长度上限（`src/bin/ion.rs`）
-- ⏳ P0.2 错误响应脱敏 + 有界（`src/bin/ion.rs`）
-- ⏳ P0.3 hello hostId 实例身份（`src/bin/ion.rs`，配套 SUBSCRIBE_PROTOCOL.md 更新 + `tests/subscribe_protocol_ci.sh` case）
 
 ### 参考
 

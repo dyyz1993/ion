@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ion.dev/schemas/rpc/subscribe/hello.json",
-  "title": "hello — 协议版本握手",
-  "description": "可选、可反复。不消费连接：回包后连接保持，客户端可继续 subscribe / ui_respond / RPC（bin/ion.rs accept 循环 hello 分支）。旧客户端不发 hello 行为完全不变。",
+  "title": "hello — 协议版本握手 + host 逻辑实例身份",
+  "description": "可选、可反复。不消费连接：回包后连接保持，客户端可继续 subscribe / ui_respond / RPC（bin/ion.rs accept 循环 hello 分支）。旧客户端不发 hello 行为完全不变。data.hostId 是 host 进程的逻辑实例身份（ion_protocol::host_id()，内存态 UUIDv4，不落盘，重启即变）——客户端可设 ION_EXPECT_HOST_ID 做 pin 校验（ion rpc 客户端内置），防连到陈旧 socket 背后的错误 host。",
   "type": "object",
   "properties": {
     "request": {
@@ -22,9 +22,14 @@
         "success": { "const": true },
         "data": {
           "type": "object",
-          "required": ["protocolVersion"],
+          "required": ["protocolVersion", "hostId"],
           "properties": {
-            "protocolVersion": { "const": 1, "description": "PROTOCOL_VERSION = 1（src/bin/ion.rs）" }
+            "protocolVersion": { "const": 1, "description": "PROTOCOL_VERSION = 1（ion-protocol crate）" },
+            "hostId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "description": "规范小写 UUIDv4（对标 pi ServerHello.serverId）；同一 host 进程内稳定，重启后变化"
+            }
           }
         }
       }
