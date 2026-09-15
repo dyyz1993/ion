@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/_response_envelope.json",
+  "title": "host 级响应外壳",
+  "description": "host（bin/ion.rs handle_manager_command / hello / ui_respond）直接生成的响应外壳。worker 转发响应（session 命中活 worker 时）可能带额外字段（command 等），因此 additionalProperties 保持开放。cmd 带 session 字段时响应会附加 session 字符串。",
+  "type": "object",
+  "required": ["type", "id", "success"],
+  "properties": {
+    "type": { "const": "response" },
+    "id": {
+      "description": "回显请求 id；请求缺 id 时为 null（如 invalid JSON 路径）",
+      "type": ["string", "integer", "null"]
+    },
+    "success": { "type": "boolean" },
+    "data": {
+      "description": "success=true 时的载荷，形状由各命令 schema 定义"
+    },
+    "error": {
+      "description": "success=false 时的错误信息（人读字符串）",
+      "type": "string"
+    },
+    "session": {
+      "description": "请求行带 session 字段时回显",
+      "type": "string"
+    }
+  }
+}

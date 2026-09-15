@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/child_crashed.json",
+  "title": "child_crashed — 子 worker 崩溃通知（host 注入实例流）",
+  "description": "子 worker 进程死亡时由 host（src/worker_registry.rs crash 路径）通过 push_session_event 注入父会话实例流——不经 worker stdout，直接进 event_subscribers + event_history（可 replay）。字段用 snake_case（session_id 而非 sessionId），与 worker 侧事件命名不同。",
+  "type": "object",
+  "required": ["type", "session_id", "exit_reason"],
+  "properties": {
+    "type": { "const": "child_crashed" },
+    "session_id": { "type": "string", "description": "崩溃子 worker 的会话 id（snake_case）" },
+    "exit_reason": { "type": "string" }
+  }
+}

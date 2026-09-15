@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/hello.json",
+  "title": "hello — 协议版本握手",
+  "description": "可选、可反复。不消费连接：回包后连接保持，客户端可继续 subscribe / ui_respond / RPC（bin/ion.rs accept 循环 hello 分支）。旧客户端不发 hello 行为完全不变。",
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "object",
+      "required": ["method"],
+      "properties": {
+        "id": { "type": ["string", "integer"], "description": "可选；缺失时响应 id=null" },
+        "method": { "const": "hello" }
+      }
+    },
+    "response": {
+      "type": "object",
+      "required": ["type", "id", "success", "data"],
+      "properties": {
+        "type": { "const": "response" },
+        "id": { "type": ["string", "integer", "null"] },
+        "success": { "const": true },
+        "data": {
+          "type": "object",
+          "required": ["protocolVersion"],
+          "properties": {
+            "protocolVersion": { "const": 1, "description": "PROTOCOL_VERSION = 1（src/bin/ion.rs）" }
+          }
+        }
+      }
+    }
+  }
+}

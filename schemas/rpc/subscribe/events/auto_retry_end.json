@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/auto_retry_end.json",
+  "title": "auto_retry_end — 自动重试结束",
+  "description": "StreamingExtension::on_auto_retry_end；success=false 表示所有重试用完仍失败。",
+  "type": "object",
+  "required": ["type", "success", "attempt"],
+  "properties": {
+    "type": { "const": "auto_retry_end" },
+    "sessionId": { "type": "string" },
+    "success": { "type": "boolean" },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "timestamp": { "type": "integer" }
+  }
+}

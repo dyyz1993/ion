@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/worker_ready.json",
+  "title": "worker_ready — worker 初始化完成信号",
+  "description": "worker 初始化完成后发出（src/worker_rpc.rs）。host stdout-reader 收到后把创建时预设的 Busy 解除为 Idle——若缺失，无 run 的 worker 永远卡 Busy（2026-08-27 gateway bootstrap busy-empty 根因）。该事件无附加字段。",
+  "type": "object",
+  "required": ["type"],
+  "additionalProperties": false,
+  "properties": {
+    "type": { "const": "worker_ready" }
+  }
+}

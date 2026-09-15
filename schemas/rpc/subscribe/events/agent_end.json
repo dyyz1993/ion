@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/agent_end.json",
+  "title": "agent_end — agent 轮次结束（对齐 pi，含消息数）",
+  "description": "StreamingExtension::on_agent_end + faux 快速路径。willRetry=false 表示本轮不再重试（自动重试事件另发 auto_retry_start/end）。messages 为当前消息条数。",
+  "type": "object",
+  "required": ["type"],
+  "properties": {
+    "type": { "const": "agent_end" },
+    "sessionId": { "type": "string" },
+    "willRetry": { "type": "boolean" },
+    "messages": { "type": "integer", "minimum": 0 },
+    "timestamp": { "type": "integer" }
+  }
+}

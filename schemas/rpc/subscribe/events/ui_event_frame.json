@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/ui_event_frame.json",
+  "title": "ui_event 帧 — UI 订阅流的下行帧",
+  "description": "subscribe {ui:true} 后由 ExtensionEventBus ui 路由推送（bin/ion.rs accept 循环 ui 分支）。ui_type 是开放集合：审批类（ApprovalRequest/ApprovalResolved/ApprovalReset）与 Ask/AskResolved/AskTimedOut/Confirm/Prompt/Alert/Notif 由泵路由到 ui（bin/ion.rs ui_custom_types 白名单），另有 session_created/session_closed/workspace_session_created/workspace_session_closed（worker_registry broadcast_ui_event）等。route 恒为 \"ui\"。",
+  "type": "object",
+  "required": ["type", "ui_type", "extension", "session", "data", "route"],
+  "properties": {
+    "type": { "const": "ui_event" },
+    "ui_type": {
+      "type": "string",
+      "description": "customType（开放集合）。已知审批类：ApprovalRequest/ApprovalResolved/ApprovalReset/Ask/AskResolved/AskTimedOut/Confirm/Prompt/Alert/Notif；会话生命周期：session_created/session_closed/workspace_session_created/workspace_session_closed"
+    },
+    "extension": { "type": "string", "description": "来源扩展名（session 生命周期事件为 \"session\"，AskResolved 为 \"ui\"）" },
+    "session": { "type": ["string", "null"], "description": "session 作用域；无则 null" },
+    "data": { "description": "事件载荷（自由 JSON，随 ui_type 而定）" },
+    "route": { "const": "ui" }
+  }
+}

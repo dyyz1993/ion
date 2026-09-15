@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/_index.json",
+  "title": "ION host 协议 — 订阅/事件流/host 级命令 schema 索引",
+  "description": "S3 域（订阅/事件流/host 协议）的 schema 索引与契约清单。协议版本 PROTOCOL_VERSION=1（src/bin/ion.rs）。本目录所有 schema 均为 draft 2020-12，且刻意自包含（不使用跨文件 $ref），保证每个文件可独立编译。\n\n事件类型全集来源（穷举自源码产生点，非猜测）：\n- StreamingExtension（src/worker_rpc.rs）: text_delta/agent_start/agent_end/message_start/message_end/tool_call_delta/tool_execution_start/tool_execution_update/tool_execution_end/auto_retry_start/auto_retry_end\n- abort 路径（src/worker_rpc.rs）: agent_stopped；run 错误路径: error；初始化信号: worker_ready\n- ExtensionApi::emit（src/worker_api.rs）: custom\n- 各扩展发射（仿 BashExtension 模式）: extension_event（bash/permission/hooks/file-approval/workspace/session_probe/host-snapshot 等，customType 开放）\n- host registry（src/worker_registry.rs）: child_crashed（push_session_event 注入实例流）\n- worker RPC 摘要广播: rpc_response（emit_rpc_response_event）\n- tool_call 为遗留类型：在 Manager 泵转发白名单中（bin/ion.rs / worker_registry.rs），当前无产生点，保留枚举供旧流回放兼容",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "domain": {
+      "const": "subscribe",
+      "description": "S3 域：订阅/事件流/host 级协议。S1（会话消息）/S2（worker 编排）/S4（配置/审批/快照/扩展）不在此目录"
+    },
+    "commands": {
+      "description": "命令 schema 文件（请求+响应同文件，用 properties 划分）",
+      "type": "array",
+      "items": {
+        "enum": [
+          "hello.json",
+          "subscribe.json",
+          "subscribe_overview.json",
+          "ui_respond.json",
+          "verb_pending.json",
+          "verb_review.json",
+          "list_sessions.json",
+          "get_overview.json"
+        ]
+      }
+    },
+    "frames": {
+      "description": "events/ 目录全部 schema：订阅 ack / epoch 盖章帧 / 快照帧 / stale_route / ui 与 extension 流帧 / overview 推送 / rpc_response 事件 + 19 种内层事件的逐类型 schema（worker_event.json 为通用壳）",
+      "type": "array",
+      "items": {
+        "enum": [
+          "subscribed_ack.json",
+          "instance_event.json",
+          "snapshot_frame.json",
+          "stale_route.json",
+          "rpc_response_event.json",
+          "ui_event_frame.json",
+          "extension_event_frame.json",
+          "overview.json",
+          "overview_snapshot.json",
+          "worker_event.json",
+          "text_delta.json",
+          "agent_start.json",
+          "agent_end.json",
+          "agent_stopped.json",
+          "message_start.json",
+          "message_end.json",
+          "tool_call_delta.json",
+          "tool_call.json",
+          "tool_execution_start.json",
+          "tool_execution_update.json",
+          "tool_execution_end.json",
+          "auto_retry_start.json",
+          "auto_retry_end.json",
+          "error.json",
+          "worker_ready.json",
+          "extension_event.json",
+          "custom.json",
+          "child_crashed.json"
+        ]
+      }
+    },
+    "innerEvents": {
+      "description": "instance 流内层 event.type 枚举全集（19 种，含 1 个遗留类型 tool_call）",
+      "type": "array",
+      "items": {
+        "enum": [
+          "text_delta",
+          "agent_start",
+          "agent_end",
+          "agent_stopped",
+          "message_start",
+          "message_end",
+          "tool_call_delta",
+          "tool_call",
+          "tool_execution_start",
+          "tool_execution_update",
+          "tool_execution_end",
+          "auto_retry_start",
+          "auto_retry_end",
+          "error",
+          "worker_ready",
+          "extension_event",
+          "custom",
+          "child_crashed",
+          "rpc_response"
+        ]
+      }
+    }
+  },
+  "examples": [
+    {
+      "protocolVersion": 1,
+      "domain": "subscribe",
+      "commands": [
+        "hello.json",
+        "subscribe.json",
+        "subscribe_overview.json",
+        "ui_respond.json",
+        "verb_pending.json",
+        "verb_review.json",
+        "list_sessions.json",
+        "get_overview.json"
+      ],
+      "frames": [
+        "subscribed_ack.json",
+        "instance_event.json",
+        "snapshot_frame.json",
+        "stale_route.json",
+        "rpc_response_event.json",
+        "ui_event_frame.json",
+        "extension_event_frame.json",
+        "overview.json",
+        "overview_snapshot.json",
+        "worker_event.json",
+        "text_delta.json",
+        "agent_start.json",
+        "agent_end.json",
+        "agent_stopped.json",
+        "message_start.json",
+        "message_end.json",
+        "tool_call_delta.json",
+        "tool_call.json",
+        "tool_execution_start.json",
+        "tool_execution_update.json",
+        "tool_execution_end.json",
+        "auto_retry_start.json",
+        "auto_retry_end.json",
+        "error.json",
+        "worker_ready.json",
+        "extension_event.json",
+        "custom.json",
+        "child_crashed.json"
+      ],
+      "innerEvents": [
+        "text_delta",
+        "agent_start",
+        "agent_end",
+        "agent_stopped",
+        "message_start",
+        "message_end",
+        "tool_call_delta",
+        "tool_call",
+        "tool_execution_start",
+        "tool_execution_update",
+        "tool_execution_end",
+        "auto_retry_start",
+        "auto_retry_end",
+        "error",
+        "worker_ready",
+        "extension_event",
+        "custom",
+        "child_crashed",
+        "rpc_response"
+      ]
+    }
+  ]
+}

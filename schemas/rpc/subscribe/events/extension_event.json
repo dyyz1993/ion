@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/extension_event.json",
+  "title": "extension_event — 内层扩展事件（instance 流内）",
+  "description": "各扩展仿 BashExtension 模式发出：必须包 {type:\"event\"} 外壳，内层 event.type=\"extension_event\"（src/agent/bash.rs emit_extension_event 及 permission/hooks/file-approval/workspace/session_probe 同型）。到达订阅端时外层再包 instance_event 信封。customType 是开放集合（扩展自定义）；已知示例：session_switch_seen / permission_changed / hook_handler_executed / snapshot（host 快照）/ workspace_session_created|closed。快照帧的完整形状见 events/snapshot_frame.json。",
+  "type": "object",
+  "required": ["type", "extension", "customType"],
+  "properties": {
+    "type": { "const": "extension_event" },
+    "extension": { "type": "string" },
+    "customType": { "type": "string" },
+    "visibility": { "enum": ["llm_and_ui", "ui_only"], "description": "多数产生点写死 llm_and_ui；host 快照为 ui_only" },
+    "session": { "type": "string", "description": "部分产生点携带（如 workspace 事件带父会话 id）" },
+    "timestamp": { "type": "integer", "description": "部分产生点携带" },
+    "data": { "description": "事件载荷（自由 JSON）" }
+  }
+}

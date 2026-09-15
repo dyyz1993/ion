@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/ui_respond.json",
+  "title": "ui_respond — 应答 Ask/Confirm 等 UI 请求（同源绑定）",
+  "description": "2026-09-15 安全修复：只有同一连接先 subscribe {ui:true} 之后，该连接的 ui_respond 才放行（bin/ion.rs ui_respond_origin_error）。未同源 → 拒绝 \"ui_respond rejected: requires a prior subscribe {ui:true} on the same connection\"；同源但 request 不存在/已过期 → \"request not found or already expired\"。同源放行且命中时成功回执 data={request_id, response} 并广播 AskResolved UI 事件。",
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "object",
+      "required": ["id", "method", "params"],
+      "properties": {
+        "id": { "type": ["string", "integer"] },
+        "method": { "const": "ui_respond" },
+        "params": {
+          "type": "object",
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "待应答的 UI 请求 id（pending_ui 表键）；缺省为空串（必然 not found）"
+            },
+            "response": {
+              "type": "string",
+              "description": "用户的应答文本（allow/deny/自由文本）；缺省 deny"
+            }
+          }
+        }
+      }
+    },
+    "responseSuccess": {
+      "type": "object",
+      "required": ["type", "id", "success", "data"],
+      "properties": {
+        "type": { "const": "response" },
+        "id": { "type": ["string", "integer", "null"] },
+        "success": { "const": true },
+        "data": {
+          "type": "object",
+          "required": ["request_id", "response"],
+          "properties": {
+            "request_id": { "type": "string" },
+            "response": { "type": "string" }
+          }
+        }
+      }
+    },
+    "responseRejected": {
+      "description": "同源校验失败（本连接未先 subscribe ui:true）——连接随即关闭",
+      "type": "object",
+      "required": ["type", "id", "success", "error"],
+      "properties": {
+        "type": { "const": "response" },
+        "id": { "type": ["string", "integer", "null"] },
+        "success": { "const": false },
+        "error": { "type": "string", "pattern": "^ui_respond rejected: " }
+      }
+    },
+    "responseNotFound": {
+      "description": "同源已放行但 request 不存在/已过期",
+      "type": "object",
+      "required": ["type", "id", "success", "error"],
+      "properties": {
+        "type": { "const": "response" },
+        "id": { "type": ["string", "integer", "null"] },
+        "success": { "const": false },
+        "error": { "const": "request not found or already expired" }
+      }
+    }
+  }
+}

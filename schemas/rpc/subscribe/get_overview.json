@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/get_overview.json",
+  "title": "get_overview — 拉取全局概览（host 级）",
+  "description": "subscribe_overview 流的 Pull 侧（bin/ion.rs handle_manager_command_write \"get_overview\" 分支 → WorkerRegistry::get_overview）。形状坑：worker.status 走 serde 序列化（snake_case idle/busy/dead/stale），与 list_sessions 的 Display 大写不同。exit_code/exit_reason 可为 null（活 worker 未退出时）。",
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "object",
+      "required": ["id", "method"],
+      "properties": {
+        "id": { "type": ["string", "integer"] },
+        "method": { "const": "get_overview" },
+        "session": { "type": "string" }
+      }
+    },
+    "response": {
+      "type": "object",
+      "required": ["type", "id", "success", "data"],
+      "properties": {
+        "type": { "const": "response" },
+        "id": { "type": ["string", "integer", "null"] },
+        "success": { "const": true },
+        "session": { "type": "string" },
+        "data": {
+          "type": "object",
+          "required": ["workers", "projects", "total_workers", "total_projects", "total_stale", "total_dead", "sessions"],
+          "properties": {
+            "workers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["worker_id", "session_id", "project", "status", "exit_code", "exit_reason", "model", "agent", "channels", "parent", "children", "latest_output", "log_short", "model_size", "started_at"],
+                "properties": {
+                  "worker_id": { "type": "string" },
+                  "session_id": { "type": "string" },
+                  "project": { "type": "string" },
+                  "status": { "enum": ["idle", "busy", "dead", "stale"], "description": "serde snake_case——与 list_sessions 的大写 Display 不同" },
+                  "exit_code": { "type": ["integer", "null"] },
+                  "exit_reason": { "type": ["string", "null"] },
+                  "model": { "type": "string" },
+                  "agent": { "type": "string" },
+                  "channels": { "type": "array", "items": { "type": "string" } },
+                  "parent": { "type": ["string", "null"] },
+                  "children": { "type": "array", "items": { "type": "string" } },
+                  "latest_output": { "type": "array", "items": { "type": "string" } },
+                  "log_short": { "type": ["string", "null"] },
+                  "model_size": { "type": ["integer", "null"] },
+                  "started_at": { "type": "integer" }
+                }
+              }
+            },
+            "projects": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["name", "path", "worker_count"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "path": { "type": "string" },
+                  "worker_count": { "type": "integer" }
+                }
+              }
+            },
+            "total_workers": { "type": "integer", "description": "不含 Dead" },
+            "total_projects": { "type": "integer" },
+            "total_stale": { "type": "integer" },
+            "total_dead": { "type": "integer" },
+            "sessions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["session_id", "worker_id", "project", "created_by"],
+                "properties": {
+                  "session_id": { "type": "string" },
+                  "worker_id": { "type": "string" },
+                  "project": { "type": "string" },
+                  "created_by": { "type": ["string", "null"], "description": "父 worker id（parent）" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

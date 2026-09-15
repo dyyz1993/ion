@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/tool_call_delta.json",
+  "title": "tool_call_delta — 工具调用参数流式增量",
+  "description": "StreamingExtension::on_tool_call_delta（delta 非空才发）。ION_STREAM_DEBUG=1 时 host 侧有转发 debug 日志。",
+  "type": "object",
+  "required": ["type", "delta", "toolName"],
+  "properties": {
+    "type": { "const": "tool_call_delta" },
+    "sessionId": { "type": "string" },
+    "delta": { "type": "string", "minLength": 1 },
+    "toolName": { "type": "string" },
+    "timestamp": { "type": "integer" }
+  }
+}

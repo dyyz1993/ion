@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/verb_review.json",
+  "title": "verb_review — 审批（放行/拒绝）一条待审 verb 请求",
+  "description": "fail-closed：approve 缺省 false（verb_review_approve_param），放行必须显式 approve:true。命中时从 pending 表移除并唤醒等待的 worker（oneshot 回传）。成功 data={requestId, approved}；id 不存在 → error \"verb approval not found: <id>\"；缺 requestId → error \"missing params.requestId\"。",
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "object",
+      "required": ["id", "method", "params"],
+      "properties": {
+        "id": { "type": ["string", "integer"] },
+        "method": { "const": "verb_review" },
+        "params": {
+          "type": "object",
+          "required": ["requestId"],
+          "properties": {
+            "requestId": { "type": "string" },
+            "approve": {
+              "type": "boolean",
+              "default": false,
+              "description": "缺省 false：不允许「没说就是同意」"
+            }
+          }
+        }
+      }
+    },
+    "responseSuccess": {
+      "type": "object",
+      "required": ["type", "id", "success", "data"],
+      "properties": {
+        "type": { "const": "response" },
+        "id": { "type": ["string", "integer", "null"] },
+        "success": { "const": true },
+        "session": { "type": "string" },
+        "data": {
+          "type": "object",
+          "required": ["requestId", "approved"],
+          "properties": {
+            "requestId": { "type": "string" },
+            "approved": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "responseNotFound": {
+      "type": "object",
+      "required": ["type", "id", "success", "error"],
+      "properties": {
+        "type": { "const": "response" },
+        "id": { "type": ["string", "integer", "null"] },
+        "success": { "const": false },
+        "error": { "type": "string", "pattern": "^verb approval not found: " }
+      }
+    },
+    "responseMissingParam": {
+      "type": "object",
+      "required": ["type", "id", "success", "error"],
+      "properties": {
+        "type": { "const": "response" },
+        "id": { "type": ["string", "integer", "null"] },
+        "success": { "const": false },
+        "error": { "const": "missing params.requestId" }
+      }
+    }
+  }
+}

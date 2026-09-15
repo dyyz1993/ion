@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/subscribed_ack.json",
+  "title": "subscribed ack — 三种订阅模式的确认帧（oneOf）",
+  "description": "method=subscribe 的 ack 帧（bin/ion.rs accept 循环）。instance 变体带 epoch（SessionRouter handle_subscribe 生成，epoch 为 per-session 当前值，首次=1）；ui 变体带 stream=ui；extension 变体回显 extension/session（subscribe_all 时 extension 为空串）。旧解析器把 epoch 当未知字段忽略即可（增量字段，向后兼容）。",
+  "oneOf": [
+    {
+      "type": "object",
+      "title": "instance ack",
+      "required": ["type", "session", "stream", "epoch", "replayed"],
+      "properties": {
+        "type": { "const": "subscribed" },
+        "session": { "type": "string" },
+        "stream": { "const": "instance" },
+        "epoch": { "type": "integer", "minimum": 1, "description": "per-session epoch，worker 重派/重绑 +1" },
+        "replayed": { "type": "integer", "minimum": 0, "description": "将回放的历史事件条数（router 已挂接后的后续订阅者为 0）" }
+      }
+    },
+    {
+      "type": "object",
+      "title": "ui ack",
+      "required": ["type", "stream"],
+      "properties": {
+        "type": { "const": "subscribed" },
+        "stream": { "const": "ui" }
+      }
+    },
+    {
+      "type": "object",
+      "title": "extension / all ack",
+      "required": ["type", "extension"],
+      "properties": {
+        "type": { "const": "subscribed" },
+        "extension": { "type": "string", "description": "扩展名；subscribe_all 时为空串" },
+        "session": { "type": ["string", "null"], "description": "带 session 过滤时为该 id，否则 null" }
+      }
+    }
+  ]
+}

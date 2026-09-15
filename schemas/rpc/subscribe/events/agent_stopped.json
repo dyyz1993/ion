@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/agent_stopped.json",
+  "title": "agent_stopped — 用户中止",
+  "description": "abort 路径发出（src/worker_rpc.rs 主循环 was_stopped 分支）；正常结束只发 agent_end（曾双发已修）。reason 当前恒为 \"user_abort\"。",
+  "type": "object",
+  "required": ["type", "sessionId", "reason"],
+  "properties": {
+    "type": { "const": "agent_stopped" },
+    "sessionId": { "type": "string" },
+    "timestamp": { "type": "integer" },
+    "reason": { "type": "string", "description": "当前产生点恒为 user_abort" }
+  }
+}

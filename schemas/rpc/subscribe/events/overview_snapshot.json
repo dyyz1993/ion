@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/overview_snapshot.json",
+  "title": "overview_snapshot 帧 — overview 流推送帧",
+  "description": "subscribe_overview ack 之后，每次 worker 状态变化推一条（bin/ion.rs accept 循环 subscribe_overview 分支；首条 initial 已在 ack.data.initial 里）。",
+  "type": "object",
+  "required": ["type", "data"],
+  "properties": {
+    "type": { "const": "overview_snapshot" },
+    "data": {
+      "description": "overview 载荷，形状同 events/overview.json（自包含，不跨文件 $ref）",
+      "type": "object",
+      "required": ["workers", "projects", "total_workers", "total_projects", "total_stale", "total_dead", "sessions"]
+    }
+  }
+}

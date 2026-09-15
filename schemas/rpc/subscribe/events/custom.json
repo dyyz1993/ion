@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/custom.json",
+  "title": "custom — ExtensionApi::emit 的自定义事件",
+  "description": "扩展通过 worker_api.rs ExtensionApi::emit(event_type, data) 发出（例如 WASM 扩展），形状固定为 {type:\"custom\", customType, data}。注意 wasm_extension.rs host_send_message 走 eprintln（stderr），不经 stdout 泵转发，不会出现在订阅流。",
+  "type": "object",
+  "required": ["type", "customType"],
+  "properties": {
+    "type": { "const": "custom" },
+    "customType": { "type": "string" },
+    "data": { "description": "事件载荷（自由 JSON）" }
+  }
+}

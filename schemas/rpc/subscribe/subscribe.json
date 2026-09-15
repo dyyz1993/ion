@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/subscribe.json",
+  "title": "subscribe — 订阅事件流（instance / ui / extension 三模式）",
+  "description": "method=subscribe 按 host 分派序（bin/ion.rs accept 循环）分派，oneOf 精确建模：\n1) instance：extension 为空（或缺省）且有 session → SessionRouter（epoch 栅栏 + 快照先行）；ui 标志此时被忽略。\n2) ui：ui=true 且不满足 instance 条件 → UI 事件流；同连接之后可发 ui_respond / hello。\n3) extension：其余情况（extension 可带 session 过滤；全空 = subscribe_all）。\nsubscribe 不是一个请求-响应命令：ack 之后连接转为下行流，帧 schema 见 events/。",
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "object",
+      "required": ["method"],
+      "oneOf": [
+        {
+          "title": "instance 订阅：session 的 worker 原始事件流（带 epoch 栅栏）",
+          "required": ["method", "session"],
+          "properties": {
+            "id": { "type": ["string", "integer"] },
+            "method": { "const": "subscribe" },
+            "session": { "type": "string" },
+            "extension": { "enum": [""], "description": "host 分派：extension 非空则不走 instance" },
+            "replay": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "回放最近 N 条历史事件；仅 router 首次挂接生效（后续订阅者 replayed=0）"
+            }
+          }
+        },
+        {
+          "title": "ui 订阅：UI 事件流 + 同源绑定（此连接之后 ui_respond 才放行）",
+          "required": ["method", "ui"],
+          "properties": {
+            "id": { "type": ["string", "integer"] },
+            "method": { "const": "subscribe" },
+            "ui": { "const": true }
+          },
+          "not": {
+            "description": "分派序：extension 为空且有 session 时永远走 instance（ui 标志被忽略）",
+            "required": ["session"],
+            "properties": {
+              "session": { "type": "string" },
+              "extension": { "enum": [""] }
+            }
+          }
+        },
+        {
+          "title": "extension 订阅：按扩展过滤（可叠加 session），或全空 = subscribe_all",
+          "required": ["method"],
+          "properties": {
+            "id": { "type": ["string", "integer"] },
+            "method": { "const": "subscribe" },
+            "extension": { "type": "string" },
+            "session": { "type": "string" },
+            "ui": { "const": false }
+          },
+          "not": {
+            "description": "分派序：extension 为空且有 session 时永远走 instance",
+            "required": ["session"],
+            "properties": {
+              "session": { "type": "string" },
+              "extension": { "enum": [""] }
+            }
+          }
+        }
+      ]
+    },
+    "ack": {
+      "description": "三模式 ack 共用 type=subscribed，字段随模式不同——精确 schema 见 events/subscribed_ack.json（oneOf）。ack 不是 response 信封：没有 success 字段。",
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "subscribed" }
+      }
+    },
+    "errors": {
+      "description": "instance 订阅失败帧（如 60s 内无 worker）：{\"type\":\"error\",\"error\":\"no worker for session within 60s\"}；router 已消失：\"session router is gone\"",
+      "type": "object",
+      "required": ["type", "error"],
+      "properties": {
+        "type": { "const": "error" },
+        "error": { "type": "string" }
+      }
+    }
+  }
+}
