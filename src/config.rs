@@ -454,6 +454,11 @@ pub struct RuntimeConfig {
     /// 全局 `~/.ion/hooks.json` 不受影响。显式信任的项目目录见 trusted_projects。
     #[serde(default)]
     pub hooks_trust: HooksTrustConfig,
+    /// 本地 worker 异常死亡（非零 exit / 信号死亡）后是否自动重派（W1 功能3）。
+    /// 默认 false——不改变既有行为（既有 auto-recovery 只覆盖远程 worker）。
+    /// 开启后本地 crash 走与远程同一套会话解析 + 接力提示词 + 配额（≤3 次）。
+    #[serde(default)]
+    pub auto_respawn_local: bool,
 }
 
 fn default_runtime_mode() -> String {
@@ -472,6 +477,7 @@ impl Default for RuntimeConfig {
             command_guard: CommandGuardConfig::default(),
             protected_paths_extra: Vec::new(),
             hooks_trust: HooksTrustConfig::default(),
+            auto_respawn_local: false,
         }
     }
 }

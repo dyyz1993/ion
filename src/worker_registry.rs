@@ -1673,7 +1673,16 @@ impl WorkerRegistry {
                                     }
                                 }
                                 // 更新 latest_output / status
+                                // W1 Bug1 修复：任何 stdout 事件都是活性信号——统一刷新
+                                // last_heartbeat（修复前只有 text_delta 刷，跑长 build 的
+                                // 工具期无文本产出 → 心跳停格 → tick 静默 600s 误判 Dead）。
+                                // agent_end/agent_stopped/error 的 Idle 转换与 broadcast 需求
+                                // 也由该 helper 统一返回。
                                 let mut need_overview_broadcast = false;
+                                if let Some(record) = reg.workers.get_mut(&sub_wid) {
+                                    need_overview_broadcast =
+                                        update_record_on_pump_event(Some(record), ev_type, now_ms());
+                                }
                                 if ev_type == "text_delta" {
                                     if let Some(delta) = msg
                                         .get("event")
@@ -1687,14 +1696,11 @@ impl WorkerRegistry {
                                                 record.latest_output.pop_front();
                                             }
                                             record.log_short = Some(truncated);
-                                            // worker 正在产出文本，刷新心跳避免被误判 Stale
-                                            record.last_heartbeat = now_ms();
+                                            // 心跳刷新已由 update_record_on_pump_event 统一处理
                                         }
                                     }
                                 } else if ev_type == "agent_end" || ev_type == "agent_stopped" {
-                                    if let Some(record) = reg.workers.get_mut(&sub_wid) {
-                                        record.set_status(WorkerStatus::Idle);
-                                    }
+                                    // Idle 转换已由 update_record_on_pump_event 统一处理
                                     // 异步委派完成通知：仅 agent_end（abort 不通知），
                                     // 且该子 worker 标记 notify_parent（wait=false 有父）
                                     if ev_type == "agent_end" {
@@ -1705,7 +1711,7 @@ impl WorkerRegistry {
                                             .and_then(|r| r.parent.clone())
                                             .map(|p| (p, sub_wid.clone()));
                                     }
-                                    need_overview_broadcast = true;
+                                    // need_overview_broadcast 已由 helper 返回 true
                                 } else if ev_type == "error" {
                                     // agent.run() 返回 Err 时 worker 发 error 事件（而非 agent_end）。
                                     // 不转 Idle 会让 worker 永久卡 Busy。这里兜底转 Idle，
@@ -1720,10 +1726,8 @@ impl WorkerRegistry {
                                         sub_wid,
                                         err_msg
                                     );
-                                    if let Some(record) = reg.workers.get_mut(&sub_wid) {
-                                        record.set_status(WorkerStatus::Idle);
-                                    }
-                                    need_overview_broadcast = true;
+                                    // Idle 转换 + overview broadcast 已由
+                                    // update_record_on_pump_event 统一处理
                                 } else if ev_type == "extension_event" {
                                     // SettingsChanged → 同步 record，让 /api/workers 的
                                     // model 字段显示活值（曾只写 JSONL/索引，列表一直显示出生模型）
@@ -1883,21 +1887,30 @@ impl WorkerRegistry {
             // 在 block 结束时必然 drop，不会跨下面的 singleton callback await。
             {
                 let mut reg = sub_registry.lock();
-                // 先读 exit code
-                let exit_code = reg
+                // W1 Bug2 修复：同时收割 code() 与 signal()。信号死亡（kill -9 /
+                // OOM killer）时 code()==None 而 signal()==Some(sig)——旧代码把
+                // None 一律当"正常退出"静默移除（无 Dead 标记、无 child_crashed）。
+                let exit_status = reg
                     .workers
                     .get_mut(&sub_wid)
                     .and_then(|r| r.child_process.as_mut())
                     .and_then(|c| c.try_wait().ok().flatten())
-                    .and_then(|s| s.code());
+                    .map(|s| exit_status_parts(&s));
+                let (exit_code, exit_signal) = exit_status.unwrap_or((None, None));
+                let exit_kind = classify_worker_exit(exit_code, exit_signal);
+                let death_desc = match exit_kind {
+                    WorkerExitKind::Signaled(sig) => format!("signal={sig}"),
+                    WorkerExitKind::Crashed(c) => format!("exit={c}"),
+                    _ => format!("exit={}", exit_code.unwrap_or(-1)),
+                };
                 if let Some(record) = reg.workers.get_mut(&sub_wid) {
                     record.exit_code = exit_code;
                 }
 
                 // ── AUTO-RECOVERY：远程 worker 异常死亡 → 收集重派信息 ──
-                // exit_code == 0/None → 正常退出，清理（同现状）
-                // exit_code != 0 → 崩溃，标 Dead + 保留 + 通知父
-                if exit_code == Some(0) || exit_code.is_none() {
+                // 正常退出（exit 0）/ 状态未收割的竞态兜底（Unknown）→ 清理（同旧行为）
+                // 崩溃（非零 exit 或信号死亡）→ 标 Dead + 保留 + 通知父
+                if !exit_kind_is_abnormal(exit_kind) {
                     // 正常退出或未知 → 清理
                     if let Some(mut record) = reg.workers.remove(&sub_wid) {
                         if let Some(ref mut child) = record.child_process {
@@ -1915,7 +1928,7 @@ impl WorkerRegistry {
                         }
                     }
                 } else {
-                    // 非零退出 → 崩溃！标 Dead，保留 record
+                    // 崩溃（非零 exit 或信号死亡）→ 标 Dead，保留 record
                     let (crash_parent, crash_session, crash_reason, crash_channels) = {
                         if let Some(record) = reg.workers.get_mut(&sub_wid) {
                             record.set_status(WorkerStatus::Dead);
@@ -1927,22 +1940,16 @@ impl WorkerRegistry {
                                     let tail: Vec<&str> = tail.into_iter().rev().collect();
                                     let snippet = tail.join("\n");
                                     if !snippet.is_empty() {
-                                        record.exit_reason = Some(format!(
-                                            "exit={}: {}",
-                                            exit_code.unwrap_or(-1),
-                                            snippet
-                                        ));
-                                    } else {
                                         record.exit_reason =
-                                            Some(format!("exit={}", exit_code.unwrap_or(-1)));
+                                            Some(format!("{}: {}", death_desc, snippet));
+                                    } else {
+                                        record.exit_reason = Some(death_desc.clone());
                                     }
                                 } else {
-                                    record.exit_reason =
-                                        Some(format!("exit={}", exit_code.unwrap_or(-1)));
+                                    record.exit_reason = Some(death_desc.clone());
                                 }
                             } else {
-                                record.exit_reason =
-                                    Some(format!("exit={}", exit_code.unwrap_or(-1)));
+                                record.exit_reason = Some(death_desc.clone());
                             }
                             (
                                 record.parent.clone(),
@@ -1961,8 +1968,18 @@ impl WorkerRegistry {
                         "worker_id": sub_wid,
                         "session_id": crash_session,
                         "exit_code": exit_code,
+                        "signal": exit_signal,
                         "exit_reason": crash_reason,
                     });
+                    // 功能3：本地 worker crash 也发到 EventBus（全局可观察，
+                    // subscribe_all / Web UI 不挂 session 也能看到崩溃）
+                    if !crash_session.is_empty() {
+                        reg.broadcast_ui_event(
+                            "child_crashed",
+                            crash_event.clone(),
+                            Some(&crash_session),
+                        );
+                    }
                     // 推给 event_subscribers（需要重新 get 记录）
                     if let Some(record) = reg.workers.get(&sub_wid) {
                         for sub in &record.event_subscribers {
@@ -2417,6 +2434,13 @@ impl WorkerRegistry {
                                     }
                                 }
                                 let mut need_overview_broadcast = false;
+                                // W1 Bug1 修复（泵2 同泵1）：任何 stdout 事件都是活性信号，
+                                // 统一刷新 last_heartbeat；agent_end/agent_stopped/error 的
+                                // Idle 转换与 broadcast 需求由 helper 统一返回。
+                                if let Some(record) = reg.workers.get_mut(&sub_wid) {
+                                    need_overview_broadcast =
+                                        update_record_on_pump_event(Some(record), ev_type, now_ms());
+                                }
                                 if ev_type == "text_delta"
                                     && let Some(delta) = msg
                                         .get("event")
@@ -2431,13 +2455,10 @@ impl WorkerRegistry {
                                     for chunk in buf.split('\n').next_back().unwrap_or("").lines() {
                                         record.latest_output.push_back(chunk.to_string());
                                     }
-                                    // worker 在产出，刷新心跳
-                                    record.last_heartbeat = now_ms();
+                                    // 心跳刷新已由 update_record_on_pump_event 统一处理
                                 }
-                                if (ev_type == "agent_end" || ev_type == "agent_stopped")
-                                    && let Some(record) = reg.workers.get_mut(&sub_wid)
-                                {
-                                    record.set_status(WorkerStatus::Idle);
+                                if ev_type == "agent_end" || ev_type == "agent_stopped" {
+                                    // Idle 转换已由 update_record_on_pump_event 统一处理
                                     if ev_type == "agent_end" {
                                         // 末条输出预览取 latest_output 环形缓冲：
                                         // spawn 子 worker 的会话不持久化对话（get_last RPC 读不到），
@@ -2466,18 +2487,15 @@ impl WorkerRegistry {
                                             .and_then(|r| r.parent.clone())
                                             .map(|p| (p, sub_wid.clone(), preview));
                                     }
-                                    need_overview_broadcast = true;
+                                    // need_overview_broadcast 已由 helper 返回 true
                                 }
                                 // agent.run() 返回 Err 时的兜底：error 事件也转 Idle，避免永久卡 Busy
-                                if ev_type == "error"
-                                    && let Some(record) = reg.workers.get_mut(&sub_wid)
-                                {
+                                // （Idle 转换已由 update_record_on_pump_event 统一处理）
+                                if ev_type == "error" {
                                     tracing::warn!(
                                         "[{}] worker error event, marking Idle (agent.run failed?)",
                                         sub_wid
                                     );
-                                    record.set_status(WorkerStatus::Idle);
-                                    need_overview_broadcast = true;
                                 }
                                 if ev_type == "agent_start"
                                     && let Some(record) = reg.workers.get_mut(&sub_wid)
@@ -2619,22 +2637,34 @@ impl WorkerRegistry {
             let auto_respawn;
             let pending_parent_notify: Option<(String, serde_json::Value)> = {
                 let mut reg = sub_registry.lock();
-                let exit_code = reg
+                // W1 Bug2 修复（同泵1）：同时收割 code() 与 signal()，信号死亡
+                // （kill -9 / OOM）不再被当"正常退出"静默移除。
+                let exit_status = reg
                     .workers
                     .get_mut(&sub_wid)
                     .and_then(|r| r.child_process.as_mut())
                     .and_then(|c| c.try_wait().ok().flatten())
-                    .and_then(|s| s.code());
+                    .map(|s| exit_status_parts(&s));
+                let (exit_code, exit_signal) = exit_status.unwrap_or((None, None));
+                let exit_kind = classify_worker_exit(exit_code, exit_signal);
+                let death_desc = match exit_kind {
+                    WorkerExitKind::Signaled(sig) => format!("signal={sig}"),
+                    WorkerExitKind::Crashed(c) => format!("exit={c}"),
+                    _ => format!("exit={}", exit_code.unwrap_or(-1)),
+                };
                 if let Some(record) = reg.workers.get_mut(&sub_wid) {
                     record.exit_code = exit_code;
                 }
-                // ── AUTO-RECOVERY：远程 worker 异常死亡 → 收集重派信息 ──
+                // ── AUTO-RECOVERY：远程 worker 异常死亡 → 收集重派信息（既有语义）；
+                // 本地 worker 由 config runtime.auto_respawn_local 门控（功能3，默认关）
+                let allow_local = crate::config::IonConfig::load().runtime.auto_respawn_local;
                 auto_respawn = reg
                     .workers
                     .get(&sub_wid)
-                    .and_then(|r| try_auto_respawn(r, exit_code));
+                    .and_then(|r| try_auto_respawn_gated(r, exit_code, allow_local));
                 let mut notify = None;
-                if exit_code == Some(0) || exit_code.is_none() {
+                // 正常退出（exit 0）/ 状态未收割的竞态兜底（Unknown）→ 清理（同旧行为）
+                if !exit_kind_is_abnormal(exit_kind) {
                     if let Some(mut record) = reg.workers.remove(&sub_wid) {
                         if let Some(ref mut child) = record.child_process {
                             let _ = child.start_kill();
@@ -2651,6 +2681,7 @@ impl WorkerRegistry {
                         }
                     }
                 } else {
+                    // 崩溃（非零 exit 或信号死亡）→ 标 Dead + 保留 + 通知父
                     if let Some(record) = reg.workers.get_mut(&sub_wid) {
                         record.set_status(WorkerStatus::Dead);
                         if let Some(ref stderr_path) = record.stderr_path {
@@ -2660,14 +2691,15 @@ impl WorkerRegistry {
                                 let tail: Vec<&str> = tail.into_iter().rev().collect();
                                 let snippet = tail.join("\n");
                                 record.exit_reason = if !snippet.is_empty() {
-                                    Some(format!("exit={}: {}", exit_code.unwrap_or(-1), snippet))
+                                    Some(format!("{}: {}", death_desc, snippet))
                                 } else {
-                                    Some(format!("exit={}", exit_code.unwrap_or(-1)))
+                                    Some(death_desc.clone())
                                 };
                             } else {
-                                record.exit_reason =
-                                    Some(format!("exit={}", exit_code.unwrap_or(-1)));
+                                record.exit_reason = Some(death_desc.clone());
                             }
+                        } else {
+                            record.exit_reason = Some(death_desc.clone());
                         }
                     }
                     if let Some(record) = reg.workers.get(&sub_wid) {
@@ -2675,6 +2707,22 @@ impl WorkerRegistry {
                         let crash_session = record.session_id.clone();
                         let crash_reason = record.exit_reason.clone().unwrap_or_default();
                         let crash_channels = record.channels.clone();
+                        // 功能3：本地 worker crash 也发到 EventBus（全局可观察，
+                        // subscribe_all / Web UI 不挂 session 也能看到崩溃）
+                        if !crash_session.is_empty() {
+                            reg.broadcast_ui_event(
+                                "child_crashed",
+                                serde_json::json!({
+                                    "type": "child_crashed",
+                                    "worker_id": sub_wid,
+                                    "session_id": crash_session,
+                                    "exit_code": exit_code,
+                                    "signal": exit_signal,
+                                    "exit_reason": crash_reason,
+                                }),
+                                Some(&crash_session),
+                            );
+                        }
                         // 不在这里 await send（持 reg 锁）——收集 parent_id + payload，
                         // drop lock 后再 send。
                         if let Some(ref parent_id) = crash_parent {
@@ -7348,6 +7396,227 @@ mod tests {
     }
 }
 
+    // ── W1 heartbeat 判死健壮化（Bug1/Bug2/功能3）TDD ─────────────────────
+
+    fn make_busy_record(wid: &str, sid: &str) -> WorkerRecord {
+        WorkerRecord {
+            status: WorkerStatus::Busy,
+            last_heartbeat: 1_000_000,
+            ..make_minimal_record(wid, sid)
+        }
+    }
+
+    /// Bug1 复现（主任务）：worker 跑 10 分钟 build，期间只有
+    /// tool_execution_start/end 事件、**没有任何 text_delta**。
+    /// 修复前：stdout 泵只在 text_delta 刷 last_heartbeat → 心跳停格 →
+    /// heartbeat tick 静默 600s 判 Dead 误杀健康 worker（远程还会触发
+    /// AUTO-RECOVERY 重派 → 两个 worker 同写一份 JSONL）。
+    /// 修复标准：任何 stdout 事件都刷心跳，650s 的纯工具事件流全程不判死。
+    #[test]
+    fn test_bug1_tool_only_events_keep_busy_worker_alive() {
+        let mut rec = make_busy_record("wkr_bug1", "sess_bug1");
+        let t0 = rec.last_heartbeat;
+        // 每 130s 一个工具事件（无 text_delta），5 个共 650s > 600s 判死阈值
+        for i in 1..=5u32 {
+            let now = t0 + 130_000 * i as i64;
+            update_record_on_pump_event(Some(&mut rec), "tool_execution_start", now);
+            assert_eq!(
+                rec.last_heartbeat, now,
+                "工具事件必须刷新 last_heartbeat（修复前只有 text_delta 刷，i={i}）"
+            );
+            assert_eq!(rec.status, WorkerStatus::Busy, "工具期不得转 Idle (i={i})");
+            assert_eq!(
+                heartbeat_decision(&rec.status, rec.last_heartbeat, now + 90_000),
+                None,
+                "事件持续到达的健康 worker 不得判死 (i={i})"
+            );
+        }
+    }
+
+    /// Bug1：任何事件类型都是活性信号（真挂死的流是彻底静默）。
+    #[test]
+    fn test_bug1_all_event_kinds_are_liveness_signals() {
+        let events = [
+            "text_delta",
+            "tool_call",
+            "tool_call_delta",
+            "tool_execution_start",
+            "tool_execution_end",
+            "message_end",
+            "agent_start",
+            "extension_event",
+            "worker_ready",
+        ];
+        for ev in events {
+            let mut rec = make_busy_record("wkr_bug1b", "sess_bug1b");
+            let t0 = rec.last_heartbeat;
+            update_record_on_pump_event(Some(&mut rec), ev, t0 + 5_000);
+            assert_eq!(
+                rec.last_heartbeat,
+                t0 + 5_000,
+                "事件 {ev} 必须刷新 last_heartbeat"
+            );
+            assert_eq!(rec.status, WorkerStatus::Busy, "事件 {ev} 不得改变 Busy");
+        }
+    }
+
+    /// Bug1：终结事件（agent_end/agent_stopped/error）→ Idle + overview broadcast；
+    /// record 已不存在（None）时不得 panic。
+    #[test]
+    fn test_bug1_terminal_events_idle_and_broadcast() {
+        for ev in ["agent_end", "agent_stopped", "error"] {
+            let mut rec = make_busy_record("wkr_bug1c", "sess_bug1c");
+            assert!(
+                update_record_on_pump_event(Some(&mut rec), ev, 1_500_000),
+                "{ev} 需要 overview broadcast"
+            );
+            assert_eq!(rec.status, WorkerStatus::Idle, "{ev} 必须转 Idle");
+            assert_eq!(rec.last_heartbeat, 1_500_000, "{ev} 也刷心跳");
+        }
+        assert!(!update_record_on_pump_event(None, "agent_end", 1));
+    }
+
+    /// Bug1 修复不回退：text_delta 仍刷心跳且不触发 broadcast（buffer 更新仍在泵内）。
+    #[test]
+    fn test_bug1_text_delta_refreshes_without_broadcast() {
+        let mut rec = make_busy_record("wkr_bug1d", "sess_bug1d");
+        let t0 = rec.last_heartbeat;
+        assert!(!update_record_on_pump_event(Some(&mut rec), "text_delta", t0 + 1_000));
+        assert_eq!(rec.last_heartbeat, t0 + 1_000);
+        assert_eq!(rec.status, WorkerStatus::Busy);
+    }
+
+    /// heartbeat tick 判死决策（纯函数，bin/ion.rs tick 调用）：
+    /// Idle 静默 >180s → Stale；Busy 静默 >600s → Dead；终态不动。
+    /// 阈值边界用 `>`（180_000 整不判，180_001 判——与旧 tick 行为一致）。
+    #[test]
+    fn test_heartbeat_decision_thresholds() {
+        use WorkerStatus::{Busy, Dead, Idle, Stale};
+        assert_eq!(heartbeat_decision(&Idle, 0, 180_000), None);
+        assert_eq!(heartbeat_decision(&Idle, 0, 180_001), Some(Stale));
+        assert_eq!(heartbeat_decision(&Busy, 0, 600_000), None);
+        assert_eq!(heartbeat_decision(&Busy, 0, 600_001), Some(Dead));
+        assert_eq!(heartbeat_decision(&Dead, 0, i64::MAX), None);
+        assert_eq!(heartbeat_decision(&Stale, 0, i64::MAX), None);
+        // Bug1 主张：Busy worker 只要事件在刷心跳就永远不判死
+        assert_eq!(heartbeat_decision(&Busy, 500_000, 500_000 + 600_001 - 1), None);
+    }
+
+    /// Bug2 复现（真实子进程）：worker 被 SIGKILL（kill -9 / OOM killer）时
+    /// ExitStatus::code() 是 None 而 signal() 是 Some(9)。
+    /// 修复前：exit_code.is_none() 被当"正常退出"静默移除——无 Dead 标记、
+    /// 无 crash 通知，与干净退出不可区分。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_bug2_sigkill_child_is_signal_death_not_clean() {
+        use std::os::unix::process::ExitStatusExt;
+        let mut child = tokio::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        child
+            .start_kill()
+            .expect("start_kill (测试自己的子进程，SIGKILL)");
+        let status = child.wait().await.expect("wait");
+        assert_eq!(
+            status.code(),
+            None,
+            "复现前提：SIGKILL 死亡 code()==None（正是旧代码误判'正常退出'的形状）"
+        );
+        assert_eq!(status.signal(), Some(9));
+        let kind = classify_worker_exit(status.code(), status.signal());
+        assert_eq!(kind, WorkerExitKind::Signaled(9));
+        assert!(
+            exit_kind_is_abnormal(kind),
+            "Bug2：信号死亡必须当异常死亡（Dead 标记 + child_crashed 通知），不得当干净退出静默移除"
+        );
+    }
+
+    /// Bug2：退出分类矩阵。
+    /// - Some(0) → Clean；Some(n≠0) → Crashed(n)（既有语义）
+    /// - None + signal → Signaled（Bug2 修复点：kill -9/OOM）
+    /// - None + None（状态未收割的竞态兜底）→ Unknown（按旧行为走清理，不误报 crash）
+    #[test]
+    fn test_bug2_exit_classification_matrix() {
+        assert_eq!(
+            classify_worker_exit(Some(0), None),
+            WorkerExitKind::Clean
+        );
+        assert_eq!(
+            classify_worker_exit(Some(1), None),
+            WorkerExitKind::Crashed(1)
+        );
+        assert_eq!(
+            classify_worker_exit(Some(137), None),
+            WorkerExitKind::Crashed(137)
+        );
+        assert_eq!(
+            classify_worker_exit(None, Some(9)),
+            WorkerExitKind::Signaled(9)
+        );
+        assert_eq!(
+            classify_worker_exit(None, Some(11)),
+            WorkerExitKind::Signaled(11)
+        );
+        assert_eq!(
+            classify_worker_exit(None, None),
+            WorkerExitKind::Unknown
+        );
+        // 异常判定：只有 Crashed/Signaled 走 Dead + child_crashed
+        assert!(!exit_kind_is_abnormal(WorkerExitKind::Clean));
+        assert!(!exit_kind_is_abnormal(WorkerExitKind::Unknown));
+        assert!(exit_kind_is_abnormal(WorkerExitKind::Crashed(1)));
+        assert!(exit_kind_is_abnormal(WorkerExitKind::Signaled(9)));
+    }
+
+    /// 功能3：本地 worker auto-respawn 由 config 开关门控（默认 false，
+    /// 不改变现有行为）；远程 worker 不受本地开关影响。
+    #[test]
+    fn test_f3_auto_respawn_gate_local_remote() {
+        let local = make_minimal_record("wkr_f3l", "sess_f3l");
+        // 默认关：本地死亡不重派（现有行为）
+        assert!(!auto_respawn_gate(&local, Some(1), false));
+        // 开关打开：本地异常死亡允许重派（是否真重派还取决于会话文件与配额）
+        assert!(auto_respawn_gate(&local, Some(1), true));
+        // 远程：不受本地开关影响
+        let mut remote = make_minimal_record("wkr_f3r", "sess_f3r");
+        remote.host = Some("win38".into());
+        assert!(auto_respawn_gate(&remote, Some(1), false));
+        assert!(auto_respawn_gate(&remote, Some(1), true));
+        // 干净退出 / 空 session：一律不重派
+        assert!(!auto_respawn_gate(&remote, Some(0), true));
+        assert!(!auto_respawn_gate(&local, Some(0), true));
+        let no_sid = make_minimal_record("wkr_f3n", "");
+        assert!(!auto_respawn_gate(&no_sid, Some(1), true));
+    }
+
+    /// 功能3：开关默认值——RuntimeConfig 反序列化缺省必须 false。
+    #[test]
+    fn test_f3_config_auto_respawn_local_defaults_false() {
+        let cfg: crate::config::RuntimeConfig = serde_json::from_str("{}").unwrap();
+        assert!(
+            !cfg.auto_respawn_local,
+            "runtime.auto_respawn_local 默认必须 false（不改变现有行为）"
+        );
+        let cfg_on: crate::config::RuntimeConfig =
+            serde_json::from_str(r#"{"auto_respawn_local": true}"#).unwrap();
+        assert!(cfg_on.auto_respawn_local);
+    }
+
+    /// 既有语义保持：gated 版本与旧 try_auto_respawn 的远程路径判定一致。
+    #[test]
+    fn test_f3_try_auto_respawn_gated_remote_semantics_unchanged() {
+        let mut remote = make_minimal_record("wkr_f3g", "sess_f3g_missing");
+        remote.host = Some("win38".into());
+        // 门禁放行但会话文件不存在（make_minimal 的 s 不在磁盘）→ None（解析失败），
+        // 与旧行为一致；干净退出依旧 None。
+        assert!(try_auto_respawn_gated(&remote, Some(1), false).is_none());
+        assert!(try_auto_respawn_gated(&remote, Some(0), false).is_none());
+        // 本地 + 默认关 → None（门禁直接拦，不碰文件系统）
+        let local = make_minimal_record("wkr_f3h", "sess_f3h_missing");
+        assert!(try_auto_respawn_gated(&local, Some(1), false).is_none());    }
+}
+
 // ---------------------------------------------------------------------------
 // Provider Bridge（REMOTE_WORKER M2）— Manager 侧：远程 worker LLM 请求代发
 // ---------------------------------------------------------------------------
@@ -7717,7 +7986,158 @@ async fn bridge_http_fetch(args: &serde_json::Value) -> Result<serde_json::Value
 // AUTO-RECOVERY — 远程 worker 异常死亡自动重派（断点续作）
 // ---------------------------------------------------------------------------
 
+// ── W1：heartbeat 活性信号 / 判死决策 / 退出分类（TDD 驱动）────────────────
+
+/// heartbeat tick 判死阈值：Idle 静默超此值 → Stale。
+pub const HEARTBEAT_IDLE_STALE_MS: i64 = 180_000;
+/// heartbeat tick 判死阈值：Busy 静默超此值 → Dead（agent_end 丢失 / 流挂死）。
+pub const HEARTBEAT_BUSY_DEAD_MS: i64 = 600_000;
+
+/// heartbeat tick 判死决策（纯函数，bin/ion.rs tick 调用）。
+/// 返回 Some(new_status) 表示应把 worker 转入该状态；None 表示不动。
+pub fn heartbeat_decision(
+    status: &WorkerStatus,
+    last_heartbeat: i64,
+    now: i64,
+) -> Option<WorkerStatus> {
+    heartbeat_decision_with(
+        status,
+        last_heartbeat,
+        now,
+        HEARTBEAT_IDLE_STALE_MS,
+        HEARTBEAT_BUSY_DEAD_MS,
+    )
+}
+
+/// 带可注入阈值的判死决策（CI 用 ION_HEARTBEAT_IDLE_MS / ION_HEARTBEAT_BUSY_MS
+/// 调小阈值做命令行验证；生产用默认常量）。
+pub fn heartbeat_decision_with(
+    status: &WorkerStatus,
+    last_heartbeat: i64,
+    now: i64,
+    idle_stale_ms: i64,
+    busy_dead_ms: i64,
+) -> Option<WorkerStatus> {
+    let silent_for = now - last_heartbeat;
+    match status {
+        WorkerStatus::Dead | WorkerStatus::Stale => None,
+        WorkerStatus::Idle if silent_for > idle_stale_ms => Some(WorkerStatus::Stale),
+        WorkerStatus::Busy if silent_for > busy_dead_ms => Some(WorkerStatus::Dead),
+        _ => None,
+    }
+}
+
+/// stdout 泵事件 → record 状态更新（两处泵共用的核心，Bug1 修复点）。
+/// - 任何 stdout 事件都刷新 last_heartbeat（活性信号——真挂死的流是彻底静默，
+///   工具期/思考期无 text_delta 的健康 worker 不得被误判死）
+/// - agent_end / agent_stopped / error → Idle（与旧泵行为一致，幂等）
+/// 返回是否需要 overview broadcast。
+pub fn update_record_on_pump_event(
+    record: Option<&mut WorkerRecord>,
+    ev_type: &str,
+    now: i64,
+) -> bool {
+    let Some(record) = record else {
+        return false;
+    };
+    // Bug1 核心：任何 stdout 事件都是活性信号（不止 text_delta——
+    // tool_execution_start/end、message_end、agent_start、extension_event 等同权）
+    record.last_heartbeat = now;
+    match ev_type {
+        "agent_end" | "agent_stopped" | "error" => {
+            record.set_status(WorkerStatus::Idle);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Worker 退出分类（Bug2）。
+/// `exit_code` 来自 `ExitStatus::code()`，`signal` 来自 `ExitStatus::signal()`
+///（Unix 信号死亡时 code()==None 且 signal()==Some(sig)——kill -9 / OOM killer）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerExitKind {
+    /// exit code == 0
+    Clean,
+    /// exit code != 0
+    Crashed(i32),
+    /// 信号死亡（SIGKILL/SIGSEGV 等），携带信号编号
+    Signaled(i32),
+    /// 退出状态尚未收割到（stdout EOF 与 reap 的竞态兜底）
+    Unknown,
+}
+
+/// 收割退出状态的 (code, signal)。signal 仅 Unix 有意义
+///（SIGKILL/OOM 死亡时 code()==None 且 signal()==Some(sig)）；非 Unix 一律 None。
+#[cfg(unix)]
+fn exit_status_parts(s: &std::process::ExitStatus) -> (Option<i32>, Option<i32>) {
+    use std::os::unix::process::ExitStatusExt;
+    (s.code(), s.signal())
+}
+
+#[cfg(not(unix))]
+fn exit_status_parts(s: &std::process::ExitStatus) -> (Option<i32>, Option<i32>) {
+    (s.code(), None)
+}
+
+/// (code, signal) → WorkerExitKind。
+pub fn classify_worker_exit(exit_code: Option<i32>, signal: Option<i32>) -> WorkerExitKind {
+    match exit_code {
+        Some(0) => WorkerExitKind::Clean,
+        Some(c) => WorkerExitKind::Crashed(c),
+        // Bug2 修复：code()==None 时区分信号死亡（kill -9 / OOM killer →
+        // signal()==Some(sig)）与状态未收割的竞态兜底（两者都 None）。
+        // 旧行为把 None 一律当"正常退出"——信号死亡被静默移除。
+        None => match signal {
+            Some(sig) => WorkerExitKind::Signaled(sig),
+            None => WorkerExitKind::Unknown,
+        },
+    }
+}
+
+/// 该退出类别是否属于异常死亡（需要 Dead 标记 + child_crashed 通知）。
+pub fn exit_kind_is_abnormal(kind: WorkerExitKind) -> bool {
+    matches!(kind, WorkerExitKind::Crashed(_) | WorkerExitKind::Signaled(_))
+}
+
+/// auto-respawn 门禁（纯函数）：是否放行进入会话解析/配额检查。
+/// - 远程 worker：异常死亡即放行（既有语义）
+/// - 本地 worker：由 config `runtime.auto_respawn_local` 门控（功能3，默认 false）
+/// - 干净退出（exit 0）/ 空会话：一律不放行
+pub fn auto_respawn_gate(record: &WorkerRecord, exit_code: Option<i32>, allow_local: bool) -> bool {
+    let is_remote = record.host.is_some();
+    let died_unexpectedly = exit_code != Some(0);
+    (is_remote || allow_local) && died_unexpectedly && !record.session_id.is_empty()
+}
+
+/// `try_auto_respawn` 的可注入开关版本：门禁通过后走与旧函数同一套
+/// 会话解析/接力提示词/配额逻辑；本地 worker 仅在 allow_local=true 时放行。
+pub fn try_auto_respawn_gated(
+    record: &WorkerRecord,
+    exit_code: Option<i32>,
+    allow_local: bool,
+) -> Option<(String, String)> {
+    if !auto_respawn_gate(record, exit_code, allow_local) {
+        return None;
+    }
+    try_auto_respawn_impl(record, exit_code)
+}
+
+/// 既有语义（不变）：仅远程 worker 异常死亡自动重派。
+/// 本地 worker 的 auto-respawn 必须走 `try_auto_respawn_gated` +
+/// config `runtime.auto_respawn_local` 开关（默认 false，不改变现有行为）。
 pub fn try_auto_respawn(record: &WorkerRecord, exit_code: Option<i32>) -> Option<(String, String)> {
+    if record.host.is_none() {
+        return None;
+    }
+    try_auto_respawn_impl(record, exit_code)
+}
+
+/// auto-respawn 主体（门禁通过后的会话解析 + 接力提示词 + 配额），本地/远程共用。
+fn try_auto_respawn_impl(
+    record: &WorkerRecord,
+    exit_code: Option<i32>,
+) -> Option<(String, String)> {
     let is_remote = record.host.is_some();
     let died_unexpectedly = exit_code != Some(0);
     tracing::info!(
@@ -7734,7 +8154,7 @@ pub fn try_auto_respawn(record: &WorkerRecord, exit_code: Option<i32>) -> Option
         .get(&record.session_id)
         .copied()
         .unwrap_or(0);
-    if !is_remote || !died_unexpectedly || respawns >= 3 || record.session_id.is_empty() {
+    if !died_unexpectedly || respawns >= 3 || record.session_id.is_empty() {
         return None;
     }
     // 客户端模式：record.project_path 是远端路径，回流副本在 Manager 侧——两处都找

@@ -165,8 +165,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             max_outer_iterations: 3,
             max_retries: 2,
             retry_base_delay_ms: 1000,
-            // 2e296cd 只补了 bin/ion，这里漏了同类 E0063（W4 接力补齐，
-            // 否则 cargo test 构建 bins 时 agent-demo 编译失败）
+            // 2e296cd 只补了 bin/ion，这里漏了同类 E0063（W4/W1 都补了，取 env 可调版）
             retry_budget_ms: std::env::var("ION_LLM_RETRY_BUDGET_MS")
                 .ok()
                 .and_then(|s| s.parse().ok())
