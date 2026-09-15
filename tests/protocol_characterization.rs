@@ -146,13 +146,16 @@ fn shutdown(mut child: Child) {
 /// 起一个隔离环境的 host（`ion serve`），返回（child, socket 路径）。
 /// 隔离三件套：私有 HOME / ION_HOST_SOCKET / ION_SESSION_DIR，绝不触碰真实 ~/.ion。
 fn spawn_host() -> (Child, std::path::PathBuf, std::path::PathBuf) {
+    // 🔴 macOS SUN_LEN=104：temp_dir() 是 /var/folders/.../T/ 长前缀，
+    // 目录名必须极短（曾用 ion-proto-char-host-{pid}-{19位纳秒} 压线越界，
+    // PID 位数变化即随机 bind 失败"path must be shorter than SUN_LEN"）
     let tmp = std::env::temp_dir().join(format!(
-        "ion-proto-char-host-{}-{}",
+        "ipc-h-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_millis()
     ));
     let home = tmp.join("home");
     let sessions = tmp.join("sessions");
@@ -167,7 +170,9 @@ fn spawn_host() -> (Child, std::path::PathBuf, std::path::PathBuf) {
         .env("ION_HOST_SOCKET", &sock)
         .current_dir(&tmp)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(std::process::Stdio::from(
+            std::fs::File::create(tmp.join("host_stderr.log")).unwrap(),
+        ))
         .spawn()
         .expect("spawn ion serve");
 
@@ -177,7 +182,10 @@ fn spawn_host() -> (Child, std::path::PathBuf, std::path::PathBuf) {
         if std::os::unix::net::UnixStream::connect(&sock).is_ok() {
             break;
         }
-        assert!(std::time::Instant::now() < deadline, "host socket 30s 未就绪");
+        if std::time::Instant::now() >= deadline {
+            let dbg = std::fs::read_to_string(tmp.join("host_stderr.log")).unwrap_or_default();
+            panic!("host socket 30s 未就绪 | tmp={tmp:?} | host_stderr:\n{dbg}");  
+        }
         std::thread::sleep(Duration::from_millis(200));
     }
     (child, sock, tmp)
