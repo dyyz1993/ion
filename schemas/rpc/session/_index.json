@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ion:schemas:rpc:session:_index",
+  "title": "ION RPC session/message domain — command index",
+  "description": "JSON Schema contracts (draft 2020-12) for the session/message domain RPC commands. Each schema validates the SUCCESS response `data` payload; request params live under $defs/requestParams. Shared error envelope: {\"success\":false,\"error\":string} (host: bin/ion.rs handle_manager_command; worker: worker_rpc.rs output_error_response). Envelopes also carry id/type(/command/session) fields not contracted here.",
+  "domain": "session/message",
+  "baseRevision": "274d909",
+  "commands": [
+    {
+      "command": "checkout_branch",
+      "schema": "./checkout_branch.json",
+      "title": "checkout_branch — switch current branch (append new leaf_pointer)"
+    },
+    {
+      "command": "compact",
+      "schema": "./compact.json",
+      "title": "compact — compaction run (LLM summarizer; emergency fallback possible)"
+    },
+    {
+      "command": "create_session",
+      "schema": "./create_session.json",
+      "title": "create_session — spawn a session worker (two accepted call forms, NOT unified)"
+    },
+    {
+      "command": "delete_entries",
+      "schema": "./delete_entries.json",
+      "title": "delete_entries — soft delete messages (DeletionEntry)"
+    },
+    {
+      "command": "fork",
+      "schema": "./fork.json",
+      "title": "fork — branch from a turn (leaf_pointer + label entries)"
+    },
+    {
+      "command": "get_active_tools",
+      "schema": "./get_active_tools.json",
+      "title": "get_active_tools — active tool names"
+    },
+    {
+      "command": "get_branches",
+      "schema": "./get_branches.json",
+      "title": "get_branches — named branches + synthesized main trunk"
+    },
+    {
+      "command": "get_children",
+      "schema": "./get_children.json",
+      "title": "get_children — child sessions from SessionIndex"
+    },
+    {
+      "command": "get_context_usage",
+      "schema": "./get_context_usage.json",
+      "title": "get_context_usage — context window water level"
+    },
+    {
+      "command": "get_fork_messages",
+      "schema": "./get_fork_messages.json",
+      "title": "get_fork_messages — user inputs for fork-point selection"
+    },
+    {
+      "command": "get_full_messages",
+      "schema": "./get_full_messages.json",
+      "title": "get_full_messages — raw in-memory Message list (thinking blocks included)"
+    },
+    {
+      "command": "get_inflight_messages",
+      "schema": "./get_inflight_messages.json",
+      "title": "get_inflight_messages — in-memory (not yet reloaded) messages"
+    },
+    {
+      "command": "get_last_assistant_text",
+      "schema": "./get_last_assistant_text.json",
+      "title": "get_last_assistant_text — bare JSON string payload"
+    },
+    {
+      "command": "get_messages",
+      "schema": "./get_messages.json",
+      "title": "get_messages — paginated message retrieval (worker surface; get_session_messages is an alias here)"
+    },
+    {
+      "command": "get_queue",
+      "schema": "./get_queue.json",
+      "title": "get_queue — steering / follow-up queues"
+    },
+    {
+      "command": "get_session_info",
+      "schema": "./get_session_info.json",
+      "title": "get_session_info — unified session status (state + stats + tokens)"
+    },
+    {
+      "command": "get_session_messages",
+      "schema": "./get_session_messages.json",
+      "title": "get_session_messages — HOST-level direct disk read (no worker spawn)"
+    },
+    {
+      "command": "get_session_stats",
+      "schema": "./get_session_stats.json",
+      "title": "get_session_stats — message counts + token + lineage"
+    },
+    {
+      "command": "get_state",
+      "schema": "./get_state.json",
+      "title": "get_state — worker runtime state snapshot"
+    },
+    {
+      "command": "get_tree",
+      "schema": "./get_tree.json",
+      "title": "get_tree — session tree (three response variants by mode/emptiness)"
+    },
+    {
+      "command": "get_tree_with_leaf",
+      "schema": "./get_tree_with_leaf.json",
+      "title": "get_tree_with_leaf — full tree + root→leaf path"
+    },
+    {
+      "command": "get_turn_detail",
+      "schema": "./get_turn_detail.json",
+      "title": "get_turn_detail — full entry list + overview of one turn"
+    },
+    {
+      "command": "list_all_sessions",
+      "schema": "./list_all_sessions.json",
+      "title": "list_all_sessions — disk SessionIndex catalog with lineage (lazily heals messageCount)"
+    },
+    {
+      "command": "list_inputs",
+      "schema": "./list_inputs.json",
+      "title": "list_inputs — user input list (turn anchors)"
+    },
+    {
+      "command": "list_session_turns",
+      "schema": "./list_session_turns.json",
+      "title": "list_session_turns — HOST-level direct disk read of turn overviews"
+    },
+    {
+      "command": "list_sessions",
+      "schema": "./list_sessions.json",
+      "title": "list_sessions — LIVE workers keyed by session (no worker_id exposed)"
+    },
+    {
+      "command": "list_turns",
+      "schema": "./list_turns.json",
+      "title": "list_turns — per-turn overview (worker surface; list_session_turns is an alias here)"
+    },
+    {
+      "command": "navigate_tree",
+      "schema": "./navigate_tree.json",
+      "title": "navigate_tree — linearized navigable tree"
+    },
+    {
+      "command": "new_session",
+      "schema": "./new_session.json",
+      "title": "new_session — STUB: echoes the current session id"
+    },
+    {
+      "command": "restore_entries",
+      "schema": "./restore_entries.json",
+      "title": "restore_entries — undo soft delete / fold (RestorationEntry + reload)"
+    },
+    {
+      "command": "search_sessions",
+      "schema": "./search_sessions.json",
+      "title": "search_sessions — search sessions by title/project (+ optional content scan)"
+    },
+    {
+      "command": "session_remove",
+      "schema": "./session_remove.json",
+      "title": "session_remove — kill workers + index tombstone + delete JSONL files"
+    },
+    {
+      "command": "summarize_entries",
+      "schema": "./summarize_entries.json",
+      "title": "summarize_entries — soft-fold messages into a summary (SegmentSummaryEntry)"
+    },
+    {
+      "command": "token_usage_summary",
+      "schema": "./token_usage_summary.json",
+      "title": "token_usage_summary — cross-session token usage aggregated from SessionIndex"
+    }
+  ],
+  "outOfScope": {
+    "get_last": "无 RPC 面：`~/.ion/agent/last_session` 是 CLI 侧文件（src/paths.rs last_session_path），没有同名 RPC 命令。",
+    "generate_resume_prompt": "无 RPC 面：src/worker_registry.rs:8535 的内部函数（respawn/resume 时生成提示词），不经 RPC 暴露。",
+    "export_html": "worker 侧为存根（src/worker_rpc.rs:3554 恒返回 {\"path\":\"\"}），真实导出走 CLI/其他链路，暂不立契约。",
+    "prompt/steer/abort/continue/follow_up": "执行域命令，不在会话/消息域清单内（本批次未分配，见汇报风险点）。"
+  }
+}

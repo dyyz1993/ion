@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ion:schemas:rpc:session:checkout_branch",
+  "title": "checkout_branch — switch current branch (append new leaf_pointer)",
+  "description": "Domain: session/message. Source: src/worker_rpc.rs:3684. name=\"main\" is the synthesized trunk (leaf → newest message chain tail). Errors (missing name / unknown branch) come back as envelope {success:false,error}. Wire envelope (validated separately, not by this schema): worker replies {\"id\",\"type\":\"response\",\"command\",\"success\":true,\"data\":<this payload>} (src/worker_rpc.rs output_response); host replies {\"type\":\"response\",\"id\",\"success\":true,\"data\":<this payload>,\"session\"?}. Errors use {\"success\":false,\"error\":string} with no data.",
+  "type": "object",
+  "properties": {
+    "sessionId": {
+      "type": "string"
+    },
+    "branch": {
+      "type": "string"
+    },
+    "appended": {
+      "type": "integer"
+    },
+    "previousLeaf": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "sessionId",
+    "branch",
+    "appended",
+    "previousLeaf"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Branch label or \"main\"."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": true
+    }
+  }
+}

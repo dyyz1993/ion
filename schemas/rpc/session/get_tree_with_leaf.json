@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ion:schemas:rpc:session:get_tree_with_leaf",
+  "title": "get_tree_with_leaf — full tree + root→leaf path",
+  "description": "Domain: session/message. Source: src/worker_rpc.rs:4401. tree items are serialized session_tree::TreeNode (recursive; kept loose here). No params. Wire envelope (validated separately, not by this schema): worker replies {\"id\",\"type\":\"response\",\"command\",\"success\":true,\"data\":<this payload>} (src/worker_rpc.rs output_response); host replies {\"type\":\"response\",\"id\",\"success\":true,\"data\":<this payload>,\"session\"?}. Errors use {\"success\":false,\"error\":string} with no data.",
+  "type": "object",
+  "properties": {
+    "tree": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "Arbitrary JSON object (entry/Message payload, not contracted here)"
+      }
+    },
+    "currentLeaf": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "pathToLeaf": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "branches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "target"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "tree",
+    "currentLeaf",
+    "pathToLeaf",
+    "branches"
+  ],
+  "additionalProperties": false
+}

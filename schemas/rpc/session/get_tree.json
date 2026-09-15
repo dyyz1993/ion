@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ion:schemas:rpc:session:get_tree",
+  "title": "get_tree — session tree (three response variants by mode/emptiness)",
+  "description": "Domain: session/message. Source: src/worker_rpc.rs:2956. Shape varies: (A) empty session → {nodes:[],currentLeaf,branches,compactionPoints} without mode; (B) mode=full → entry skeletons; (C) mode=structure (default) → special entries (compaction/leaf_pointer/step-snapshot) as RAW entry objects. Wire envelope (validated separately, not by this schema): worker replies {\"id\",\"type\":\"response\",\"command\",\"success\":true,\"data\":<this payload>} (src/worker_rpc.rs output_response); host replies {\"type\":\"response\",\"id\",\"success\":true,\"data\":<this payload>,\"session\"?}. Errors use {\"success\":false,\"error\":string} with no data.",
+  "anyOf": [
+    {
+      "type": "object",
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "currentLeaf": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "branches": {
+          "type": "array"
+        },
+        "compactionPoints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "nodes",
+        "currentLeaf",
+        "branches",
+        "compactionPoints"
+      ],
+      "additionalProperties": false,
+      "description": "Variant A: entries empty."
+    },
+    {
+      "type": "object",
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "parentId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "type": "string"
+              },
+              "customType": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "type"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "mode": {
+          "type": "string",
+          "const": "full"
+        }
+      },
+      "required": [
+        "nodes",
+        "mode"
+      ],
+      "additionalProperties": false,
+      "description": "Variant B: mode=full."
+    },
+    {
+      "type": "object",
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "description": "Arbitrary JSON object (entry/Message payload, not contracted here)"
+          },
+          "description": "Raw JSONL entries of type compaction/leaf_pointer/custom(step-snapshot)."
+        },
+        "currentLeaf": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "compactionPoints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mode": {
+          "type": "string",
+          "const": "structure"
+        }
+      },
+      "required": [
+        "nodes",
+        "currentLeaf",
+        "compactionPoints",
+        "mode"
+      ],
+      "additionalProperties": false,
+      "description": "Variant C: mode=structure with non-empty entries."
+    }
+  ],
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "structure",
+            "full"
+          ],
+          "default": "structure"
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

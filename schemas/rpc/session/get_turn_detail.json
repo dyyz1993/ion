@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ion:schemas:rpc:session:get_turn_detail",
+  "title": "get_turn_detail — full entry list + overview of one turn",
+  "description": "Domain: session/message. Sources: worker src/worker_rpc.rs:1736; host intercept src/bin/ion.rs:7918 (same shapes, including the not-found {error,turnId} variant which is a SUCCESS-envelope payload, not an RPC error). Wire envelope (validated separately, not by this schema): worker replies {\"id\",\"type\":\"response\",\"command\",\"success\":true,\"data\":<this payload>} (src/worker_rpc.rs output_response); host replies {\"type\":\"response\",\"id\",\"success\":true,\"data\":<this payload>,\"session\"?}. Errors use {\"success\":false,\"error\":string} with no data.",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "turnId": {
+          "type": "string"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "description": "Arbitrary JSON object (entry/Message payload, not contracted here)"
+          }
+        },
+        "overview": {
+          "type": "object",
+          "properties": {
+            "userContent": {
+              "type": "string"
+            },
+            "assistantContent": {
+              "type": "string"
+            },
+            "keySteps": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "toolCallCount": {
+              "type": "integer"
+            },
+            "tokens": {
+              "type": "object",
+              "properties": {
+                "input": {
+                  "type": "integer"
+                },
+                "output": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "input",
+                "output"
+              ],
+              "additionalProperties": false
+            },
+            "status": {
+              "type": "string"
+            },
+            "durationMs": {
+              "type": "integer"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "userContent",
+            "assistantContent",
+            "keySteps",
+            "toolCallCount",
+            "tokens",
+            "status",
+            "durationMs",
+            "source"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "turnId",
+        "entries",
+        "overview"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "string",
+          "const": "turn not found"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "error",
+        "turnId"
+      ],
+      "additionalProperties": false
+    }
+  ],
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "properties": {
+        "turnId": {
+          "type": "string",
+          "description": "Turn anchor entry id as returned by list_turns/list_inputs (string!)."
+        },
+        "session": {
+          "type": "string",
+          "description": "Host intercept surface only."
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ion:schemas:rpc:session:list_all_sessions",
+  "title": "list_all_sessions — disk SessionIndex catalog with lineage (lazily heals messageCount)",
+  "description": "Domain: session/message (host). Source: src/bin/ion.rs:7318. No params. Wire envelope (validated separately, not by this schema): worker replies {\"id\",\"type\":\"response\",\"command\",\"success\":true,\"data\":<this payload>} (src/worker_rpc.rs output_response); host replies {\"type\":\"response\",\"id\",\"success\":true,\"data\":<this payload>,\"session\"?}. Errors use {\"success\":false,\"error\":string} with no data.",
+  "type": "object",
+  "properties": {
+    "sessions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "firstMessage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "messageCount": {
+            "type": "integer"
+          },
+          "turnCount": {
+            "type": "integer"
+          },
+          "updatedAt": {
+            "type": "integer"
+          },
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastEntryId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parentSession": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parentType": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hasChildren": {
+            "type": "boolean"
+          },
+          "childCount": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "firstMessage",
+          "model",
+          "messageCount",
+          "turnCount",
+          "updatedAt",
+          "project",
+          "lastEntryId",
+          "parentSession",
+          "parentType",
+          "hasChildren",
+          "childCount"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "totalCount": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "sessions",
+    "totalCount"
+  ],
+  "additionalProperties": false
+}

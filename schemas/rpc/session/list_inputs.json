@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ion:schemas:rpc:session:list_inputs",
+  "title": "list_inputs — user input list (turn anchors)",
+  "description": "Domain: session/message. Sources: worker src/worker_rpc.rs:1713; host intercept src/bin/ion.rs:7912 (same data shape). Worker surface takes no params; host surface requires params.session. Wire envelope (validated separately, not by this schema): worker replies {\"id\",\"type\":\"response\",\"command\",\"success\":true,\"data\":<this payload>} (src/worker_rpc.rs output_response); host replies {\"type\":\"response\",\"id\",\"success\":true,\"data\":<this payload>,\"session\"?}. Errors use {\"success\":false,\"error\":string} with no data.",
+  "type": "object",
+  "properties": {
+    "inputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "turnId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Anchor entry id of the turn (NOT the numeric turn number; see fork for the numeric form)."
+          },
+          "entryId": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "turnId",
+          "entryId",
+          "text"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "hasMore": {
+      "type": "boolean"
+    },
+    "totalCount": {
+      "type": "integer"
+    },
+    "nextCursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "inputs",
+    "hasMore",
+    "totalCount",
+    "nextCursor"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "Host intercept surface only (bin/ion.rs:7912)."
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

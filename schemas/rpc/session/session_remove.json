@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ion:schemas:rpc:session:session_remove",
+  "title": "session_remove — kill workers + index tombstone + delete JSONL files",
+  "description": "Domain: session/message (host). Source: src/bin/ion.rs:7545. Missing session id → envelope error \"missing session_id\". Wire envelope (validated separately, not by this schema): worker replies {\"id\",\"type\":\"response\",\"command\",\"success\":true,\"data\":<this payload>} (src/worker_rpc.rs output_response); host replies {\"type\":\"response\",\"id\",\"success\":true,\"data\":<this payload>,\"session\"?}. Errors use {\"success\":false,\"error\":string} with no data.",
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "killed_workers": {
+      "type": "integer"
+    },
+    "removed_files": {
+      "type": "integer"
+    },
+    "status": {
+      "type": "string",
+      "const": "removed"
+    }
+  },
+  "required": [
+    "session",
+    "killed_workers",
+    "removed_files",
+    "status"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string"
+        },
+        "session": {
+          "type": "string",
+          "description": "Alternative key (either one, at least one required)."
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

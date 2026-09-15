@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ion:schemas:rpc:session:list_sessions",
+  "title": "list_sessions — LIVE workers keyed by session (no worker_id exposed)",
+  "description": "Domain: session/message (host). Sources: src/bin/ion.rs:6448 (fast path) and 7303 (write path); identical shapes. This is the running-worker view; for the disk index see list_all_sessions. No params. Wire envelope (validated separately, not by this schema): worker replies {\"id\",\"type\":\"response\",\"command\",\"success\":true,\"data\":<this payload>} (src/worker_rpc.rs output_response); host replies {\"type\":\"response\",\"id\",\"success\":true,\"data\":<this payload>,\"session\"?}. Errors use {\"success\":false,\"error\":string} with no data.",
+  "type": "object",
+  "properties": {
+    "sessions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "integer"
+          },
+          "latest_output": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "log_short": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model_size": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "session_id",
+          "agent",
+          "status",
+          "model",
+          "started_at",
+          "latest_output",
+          "log_short",
+          "model_size"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "sessions"
+  ],
+  "additionalProperties": false
+}

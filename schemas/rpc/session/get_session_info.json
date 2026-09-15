@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ion:schemas:rpc:session:get_session_info",
+  "title": "get_session_info — unified session status (state + stats + tokens)",
+  "description": "Domain: session/message. Sources: worker src/worker_rpc.rs:1432; host idle synthesis src/bin/ion.rs:7036 (same field shape, from SessionIndex). No params. Wire envelope (validated separately, not by this schema): worker replies {\"id\",\"type\":\"response\",\"command\",\"success\":true,\"data\":<this payload>} (src/worker_rpc.rs output_response); host replies {\"type\":\"response\",\"id\",\"success\":true,\"data\":<this payload>,\"session\"?}. Errors use {\"success\":false,\"error\":string} with no data.",
+  "type": "object",
+  "properties": {
+    "session_id": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "provider": {
+      "type": "string"
+    },
+    "agent": {
+      "type": "string"
+    },
+    "is_running": {
+      "type": "boolean"
+    },
+    "is_stopped": {
+      "type": "boolean"
+    },
+    "message_count": {
+      "type": "integer"
+    },
+    "user_messages": {
+      "type": "integer"
+    },
+    "assistant_messages": {
+      "type": "integer"
+    },
+    "tool_results": {
+      "type": "integer"
+    },
+    "tokens": {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "integer"
+        },
+        "output": {
+          "type": "integer"
+        },
+        "total": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input",
+        "output",
+        "total"
+      ],
+      "additionalProperties": false
+    },
+    "steering_queue": {
+      "type": "integer"
+    },
+    "follow_up_queue": {
+      "type": "integer"
+    },
+    "context_window": {
+      "type": "integer"
+    },
+    "max_tokens": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "session_id",
+    "model",
+    "provider",
+    "agent",
+    "is_running",
+    "is_stopped",
+    "message_count",
+    "user_messages",
+    "assistant_messages",
+    "tool_results",
+    "tokens",
+    "steering_queue",
+    "follow_up_queue",
+    "context_window",
+    "max_tokens"
+  ],
+  "additionalProperties": false
+}
