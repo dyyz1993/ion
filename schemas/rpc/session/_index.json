@@ -181,6 +181,7 @@
     "get_last": "无 RPC 面：`~/.ion/agent/last_session` 是 CLI 侧文件（src/paths.rs last_session_path），没有同名 RPC 命令。",
     "generate_resume_prompt": "无 RPC 面：src/worker_registry.rs:8535 的内部函数（respawn/resume 时生成提示词），不经 RPC 暴露。",
     "export_html": "worker 侧为存根（src/worker_rpc.rs:3554 恒返回 {\"path\":\"\"}），真实导出走 CLI/其他链路，暂不立契约。",
-    "prompt/steer/abort/continue/follow_up": "执行域命令，不在会话/消息域清单内（本批次未分配，见汇报风险点）。"
+    "prompt/steer/abort/continue/follow_up": "执行域命令，不在会话/消息域清单内——均已分配：steer/abort/follow_up 见 worker 域（schemas/rpc/worker/_index.json），prompt/continue 见 exec 域（schemas/rpc/exec/_index.json，G5 批次）。原注记'本批次未分配'已过期（G5 crossDomainErrata）。",
+    "get_index_health": "跨域引用（G5 勘误）：索引体检在语义上归会话目录域，但实际 schema 登记在 exec 域 schemas/rpc/exec/get_index_health.json——本域不重复立契，引用之。"
   }
 }
