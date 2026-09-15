@@ -821,6 +821,9 @@ impl WorkerRegistry {
                 // GLM-5.2 等推理模型复杂任务首 token 可超 120s（worker 默认空闲
                 // 超时会误杀桥接流）——桥接 worker 放宽到 10 分钟
                 child_envs.push(("ION_LLM_IDLE_TIMEOUT_MS".into(), "600000".into()));
+                // 同因：provider_bridge 首块等待超时默认 120s，远程重推理场景
+                // 首 token 同样可超——与 IDLE 同值注入（fix4/h1 遗留项）
+                child_envs.push(("ION_BRIDGE_LLM_TIMEOUT_MS".into(), "600000".into()));
             }
         }
         if remote_host.is_none() {
