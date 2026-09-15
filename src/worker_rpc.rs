@@ -1203,12 +1203,12 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<serde_json::Value>();
     let bridge_for_reader = Arc::clone(&manager_bridge);
     tokio::spawn(async move {
-        let reader = tokio::io::BufReader::new(tokio::io::stdin());
-        use tokio::io::AsyncBufReadExt;
-        let mut lines = reader.lines();
+        let mut reader = tokio::io::BufReader::new(tokio::io::stdin());
         loop {
-            match lines.next_line().await {
-                Ok(Some(line)) => {
+            // 有界读行（P0.1 行长上限）：超限 → 错误帧 + 退出（EOF 同款优雅路径），
+            // 不把超大行缓冲进内存。绝不解析超限行。
+            match read_line_capped(&mut reader, ion_protocol::MAX_LINE_BYTES).await {
+                Ok(LineRead::Line(line)) => {
                     if line.trim().is_empty() {
                         continue;
                     }
@@ -1235,7 +1235,15 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         }
                     }
                 }
-                Ok(None) => break, // EOF
+                Ok(LineRead::Eof) => break, // EOF
+                Ok(LineRead::TooLarge { actual }) => {
+                    // 行长超限：错误帧 + 退出，防超大行打爆读端内存
+                    output(&ion_protocol::line_too_large_frame(
+                        ion_protocol::MAX_LINE_BYTES,
+                        actual,
+                    ));
+                    break;
+                }
                 Err(_) => break,
             }
         }
@@ -7144,6 +7152,70 @@ fn emit_rpc_response_event(id: &str, command: &str, success: bool, error: Option
 }
 
 // ---------------------------------------------------------------------------
+// JSONL 行长上限（P0.1 对标 pi protocol framing）— 读端防打爆
+// ---------------------------------------------------------------------------
+
+/// [`read_line_capped`] 的结果。
+#[derive(Debug, PartialEq)]
+pub enum LineRead {
+    /// 一整行（不含换行符）。UTF-8 无效字节按 lossy 替换——后续 JSON 解析自会拒绝，
+    /// 与旧 read_line 的错误语义差异可忽略（都是"这一行进不了命令分派"）。
+    Line(String),
+    /// EOF（无残余字节）。
+    Eof,
+    /// 行累计字节超过上限（actual = 拒绝时已累计的行字节数）。读端应发
+    /// [`ion_protocol::line_too_large_frame`] 后断开/退出，绝不继续缓冲。
+    TooLarge { actual: usize },
+}
+
+/// 有界读一行（tokio AsyncBufRead）：行内容（不含 '\n'）超过 `max_bytes` 即返回
+/// `TooLarge`，不再继续缓冲——恶意/异常对端发超大行打不爆读端内存。
+///
+/// 语义与 `AsyncBufReadExt::lines()` 对齐：EOF 时残余字节（无换行结尾）按最后一行
+/// 返回；空行返回 `Line("")`。换行前累计恰好等于 `max_bytes` 放行（上限含语义：
+/// 超过才拒）。多字节 UTF-8 字符被缓冲边界切开也安全（按字节累计、行尾统一转换）。
+pub async fn read_line_capped<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    max_bytes: usize,
+) -> std::io::Result<LineRead> {
+    use tokio::io::AsyncBufReadExt;
+    let mut acc: Vec<u8> = Vec::new();
+    loop {
+        let chunk = reader.fill_buf().await?;
+        if chunk.is_empty() {
+            // EOF：有残余 → 最后一行（与 lines() 一致）；否则 EOF
+            return Ok(if acc.is_empty() {
+                LineRead::Eof
+            } else {
+                LineRead::Line(String::from_utf8_lossy(&acc).into_owned())
+            });
+        }
+        match chunk.iter().position(|&b| b == b'\n') {
+            Some(pos) => {
+                if acc.len() + pos > max_bytes {
+                    return Ok(LineRead::TooLarge {
+                        actual: acc.len() + pos,
+                    });
+                }
+                acc.extend_from_slice(&chunk[..pos]);
+                reader.consume(pos + 1); // 含换行一起消费
+                return Ok(LineRead::Line(String::from_utf8_lossy(&acc).into_owned()));
+            }
+            None => {
+                if acc.len() + chunk.len() > max_bytes {
+                    return Ok(LineRead::TooLarge {
+                        actual: acc.len() + chunk.len(),
+                    });
+                }
+                acc.extend_from_slice(chunk);
+                let n = chunk.len();
+                reader.consume(n);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ManagerBridge — Worker → Manager 命令通道 + correlation
 // ---------------------------------------------------------------------------
 //
@@ -7162,6 +7234,76 @@ pub struct ManagerBridge {
     pub self_id: String,
     pub stdout: Arc<Mutex<io::Stdout>>,
     pub pending: Arc<Mutex<HashMap<String, oneshot::Sender<serde_json::Value>>>>,
+    /// 测试注入：覆盖等待超时（Bug 5 TDD 用）；生产恒 None → 走超时矩阵。
+    #[cfg(test)]
+    wait_timeout_override: Option<std::time::Duration>,
+}
+
+// ---------------------------------------------------------------------------
+// Bridge 等待超时（Bug 5 防挂死）
+//
+// 现状问题（S4 实测）：manager_command 写 stdout 后等 manager_response，若 manager
+// 不应答（直 spawn 无 host / manager 卡死），等待会挂到上限才放开——测试初版 653s
+// 的根因之一。等待必须有界且错误可诊断。
+//
+// 超时矩阵（为什么不是一刀切 30s）：worker 侧上限必须 ≥ 各命令在 Manager 侧的
+// 真实预算 + 余量，否则 manager 正常干活时 worker 先超时误报：
+// - 快命令（mcp_list_tools/mcp_get_servers/mcp_reload/channel_send/kill_worker...）
+//   默认 30s：manager 毫秒级应答（list_tools 5s 上限），30s 已是数倍余量；
+// - 中档命令（mcp_call_tool/host_call）默认 70s：manager 侧 MCP 工具执行上限 60s
+//  （src/mcp/mod.rs call_tool timeout）、host_call http.fetch 上限 30s
+//  （worker_registry.rs bridge_http_fetch reqwest timeout），70s 覆盖预算+余量
+//   而又不退回 320s 级别的挂死体验；
+// - 长轮询命令默认 320s：manager 侧会**同步等子 worker 执行**——
+//   create_worker/await_worker/resume_worker 等子 worker 首轮/agent_end、
+//   send_to_worker 链到目标 worker 的 prompt RPC（idle 目标要跑完整轮，
+//   registry.send_command 侧 timeout(300)），上限都是 300s
+//  （worker_registry.rs drain_until_agent_end(300) / timeout(300)），worker 侧必须
+//   ≥ 300s+余量，否则同步 spawn/点对点通信被误杀；
+// - env ION_BRIDGE_TIMEOUT_MS（毫秒）覆盖一切命令——显式设置时由设置者自负其责
+//  （调到 <320s 等于主动放弃同步 spawn 的长等待）。
+// ---------------------------------------------------------------------------
+
+/// 长轮询命令集合：manager 侧会同步等子 worker 执行（上限 300s + 余量）。
+const BRIDGE_LONG_POLL_COMMANDS: [&str; 4] = [
+    "create_worker",
+    "await_worker",
+    "resume_worker",
+    "send_to_worker",
+];
+
+/// 中档命令集合：manager 侧有 30-60s 执行预算（MCP 工具 / host verb）。
+const BRIDGE_MEDIUM_COMMANDS: [&str; 2] = ["mcp_call_tool", "host_call"];
+
+/// 快命令默认等待：30s。
+pub const BRIDGE_DEFAULT_TIMEOUT_MS: u64 = 30_000;
+
+/// 中档命令默认等待：70s（manager 侧 60s MCP 预算 + 余量）。
+pub const BRIDGE_MEDIUM_TIMEOUT_MS: u64 = 70_000;
+
+/// 长轮询命令默认等待：320s（对齐 manager 端 300s 上限 + 余量）。
+pub const BRIDGE_LONG_POLL_TIMEOUT_MS: u64 = 320_000;
+
+/// 纯函数版超时矩阵（env 解析外的全部逻辑，单测覆盖）。
+pub fn bridge_wait_timeout(command: &str, env_ms: Option<u64>) -> std::time::Duration {
+    if let Some(ms) = env_ms {
+        return std::time::Duration::from_millis(ms);
+    }
+    if BRIDGE_LONG_POLL_COMMANDS.contains(&command) {
+        std::time::Duration::from_millis(BRIDGE_LONG_POLL_TIMEOUT_MS)
+    } else if BRIDGE_MEDIUM_COMMANDS.contains(&command) {
+        std::time::Duration::from_millis(BRIDGE_MEDIUM_TIMEOUT_MS)
+    } else {
+        std::time::Duration::from_millis(BRIDGE_DEFAULT_TIMEOUT_MS)
+    }
+}
+
+/// 从 env 读 ION_BRIDGE_TIMEOUT_MS（缺失/非法 → None → 走默认矩阵）。
+pub fn bridge_wait_timeout_from_env(command: &str) -> std::time::Duration {
+    let env_ms = std::env::var("ION_BRIDGE_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok());
+    bridge_wait_timeout(command, env_ms)
 }
 
 #[async_trait::async_trait]
@@ -7192,10 +7334,19 @@ impl ManagerBridge {
             self_id,
             stdout,
             pending: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(test)]
+            wait_timeout_override: None,
         }
     }
 
-    /// 发送 manager_command 并 await 响应（120s 超时）。
+    /// 测试注入：覆盖等待超时（Bug 5 TDD 用），生产代码不调用。
+    #[cfg(test)]
+    fn with_wait_timeout_override(mut self, d: std::time::Duration) -> Self {
+        self.wait_timeout_override = Some(d);
+        self
+    }
+
+    /// 发送 manager_command 并 await 响应（有界超时，见 bridge_wait_timeout）。
     /// 在 Tool 内调用，让 LLM 能同步拿到 worker_id / first_turn_output。
     pub async fn send_command(
         &self,
@@ -7235,8 +7386,20 @@ impl ManagerBridge {
             let _ = out.flush();
         }
 
-        // 等 manager_response（320s 超时，对齐 Manager 端 child 首轮等待上限 300s + 余量）
-        match tokio::time::timeout(std::time::Duration::from_secs(320), rx).await {
+        // 等 manager_response（有界超时：快命令 30s / 长轮询 320s / env 覆盖，
+        // 见 bridge_wait_timeout——Bug 5 防挂死）
+        let wait = {
+            #[cfg(test)]
+            {
+                self.wait_timeout_override
+                    .unwrap_or_else(|| bridge_wait_timeout_from_env(command))
+            }
+            #[cfg(not(test))]
+            {
+                bridge_wait_timeout_from_env(command)
+            }
+        };
+        match tokio::time::timeout(wait, rx).await {
             Ok(Ok(resp)) => Ok(resp),
             Ok(Err(_)) => {
                 self.pending.lock().await.remove(&reply_to);
@@ -7244,7 +7407,11 @@ impl ManagerBridge {
             }
             Err(_) => {
                 self.pending.lock().await.remove(&reply_to);
-                Err(format!("manager_command '{command}' timeout (320s)"))
+                Err(format!(
+                    "manager bridge timeout: manager_command '{command}' \
+                     no response within {:?} (tune ION_BRIDGE_TIMEOUT_MS)",
+                    wait
+                ))
             }
         }
     }
@@ -8491,5 +8658,198 @@ mod tests {
         let params = serde_json::json!({"customType": "x", "data": {}});
         let d = build_append_entry_data("custom", &params).expect("default type is custom");
         assert_eq!(d["customType"], "x");
+    }
+
+    // --- Bug 5（防挂死）：bridge manager_response 等待必须有界 ---
+
+    #[tokio::test]
+    async fn manager_bridge_send_command_times_out_when_manager_never_answers() {
+        // 场景（S4 实测）：worker 直 spawn（无 host）时，manager_command 写 stdout
+        // 后永远等不到 manager_response——等待必须有界并返回明确错误，不挂死。
+        // 这里扮演 manager 但永不应答；外层 5s tokio timeout 是防卡死保险：
+        // 修复前（320s 硬编码）由它先触发 → 红；修复后 bridge 自身超时先行 → 绿。
+        // 超时调小到 100ms（生产默认走超时矩阵：快命令 30s / 长轮询 320s）。
+        let bridge = ManagerBridge::new(
+            "g3-bridge-test".into(),
+            Arc::new(Mutex::new(io::stdout())),
+        )
+        .with_wait_timeout_override(std::time::Duration::from_millis(100));
+        let started = std::time::Instant::now();
+        let res = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            bridge.send_command("mcp_call_tool", serde_json::json!({})),
+        )
+        .await;
+        assert!(
+            res.is_ok(),
+            "外层保险超时先触发——bridge 等待无有界上限（挂死复现）"
+        );
+        let err = res
+            .unwrap()
+            .expect_err("manager 永不应答时 send_command 必须返回错误");
+        assert!(
+            err.contains("manager bridge timeout"),
+            "超时错误要明确可诊断: {err}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "必须在有界时间内快速失败，而非挂到外层保险: {:?}",
+            started.elapsed()
+        );
+        assert!(
+            bridge.pending.lock().await.is_empty(),
+            "超时后 pending 表必须清理"
+        );
+    }
+
+    #[test]
+    fn bridge_wait_timeout_matrix_defaults_and_env_override() {
+        use std::time::Duration;
+        // 快命令默认 30s（mcp_list_tools / mcp_get_servers / mcp_reload /
+        // channel_send / kill_worker / create_session ...）
+        assert_eq!(
+            bridge_wait_timeout("mcp_list_tools", None),
+            Duration::from_millis(BRIDGE_DEFAULT_TIMEOUT_MS)
+        );
+        assert_eq!(
+            bridge_wait_timeout("channel_send", None),
+            Duration::from_millis(BRIDGE_DEFAULT_TIMEOUT_MS)
+        );
+        assert_eq!(
+            bridge_wait_timeout("kill_worker", None),
+            Duration::from_millis(BRIDGE_DEFAULT_TIMEOUT_MS)
+        );
+        // 中档命令默认 70s：manager 侧有执行预算（mcp_call_tool 60s / http.fetch 30s）
+        for cmd in BRIDGE_MEDIUM_COMMANDS {
+            assert_eq!(
+                bridge_wait_timeout(cmd, None),
+                Duration::from_millis(BRIDGE_MEDIUM_TIMEOUT_MS),
+                "中档命令 {cmd} 必须走 70s 上限"
+            );
+        }
+        // 长轮询命令默认 320s：manager 侧同步等子 worker 上限 300s + 余量，
+        // worker 侧若也 30s 会误杀同步 spawn（create/await/resume）与
+        // 点对点 send_to_worker（idle 目标要跑完整 prompt 轮）
+        for cmd in BRIDGE_LONG_POLL_COMMANDS {
+            assert_eq!(
+                bridge_wait_timeout(cmd, None),
+                Duration::from_millis(BRIDGE_LONG_POLL_TIMEOUT_MS),
+                "长轮询命令 {cmd} 必须走 320s 上限"
+            );
+        }
+        // env 显式覆盖一切命令（设置者自负其责）
+        assert_eq!(
+            bridge_wait_timeout("mcp_list_tools", Some(1_500)),
+            Duration::from_millis(1_500)
+        );
+        assert_eq!(
+            bridge_wait_timeout("create_worker", Some(1_500)),
+            Duration::from_millis(1_500)
+        );
+    }
+
+    // --- P0.1 行长上限：read_line_capped（有界读行） ---
+
+    /// 把 input 灌进 duplex 写端后结束写任务（EOF），从读端连续 read_line_capped 到 EOF。
+    /// 写端必须 spawn：duplex 缓冲有限，同任务顺序 write_all→read 会互锁。
+    async fn capped_lines(input: Vec<u8>, max: usize) -> Vec<LineRead> {
+        use tokio::io::AsyncWriteExt;
+        let (mut client, server) = tokio::io::duplex(64);
+        let writer = tokio::spawn(async move {
+            let _ = client.write_all(&input).await;
+            // client 在任务结束 drop → 读端见 EOF
+        });
+        let mut server = tokio::io::BufReader::new(server);
+        let mut out = Vec::new();
+        loop {
+            match read_line_capped(&mut server, max).await.expect("read") {
+                LineRead::Eof => break,
+                other => out.push(other),
+            }
+        }
+        writer.await.expect("writer task");
+        out
+    }
+
+    #[tokio::test]
+    async fn read_line_capped_normal_lines_and_empty_line() {
+        let lines = capped_lines(b"hello\nworld\n\nlast\n".to_vec(), 1024).await;
+        assert_eq!(
+            lines,
+            vec![
+                LineRead::Line("hello".into()),
+                LineRead::Line("world".into()),
+                LineRead::Line("".into()), // 空行保留（与旧行为一致：调用方 skip）
+                LineRead::Line("last".into()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn read_line_capped_eof_partial_line_without_newline() {
+        // EOF 无残余 → 无输出
+        assert!(capped_lines(b"".to_vec(), 1024).await.is_empty());
+        // EOF 残余无换行 → 按最后一行返回（与 AsyncBufReadExt::lines 一致）
+        assert_eq!(
+            capped_lines(b"tail".to_vec(), 1024).await,
+            vec![LineRead::Line("tail".into())]
+        );
+    }
+
+    #[tokio::test]
+    async fn read_line_capped_rejects_oversized_line() {
+        // 单行 100 字节 > max 16 → TooLarge，报告超限时累计的实际字节。
+        // 读端拒绝后不再消费，写端会阻塞在 write_all——abort 收尾，不 await。
+        use tokio::io::AsyncWriteExt;
+        let (mut client, server) = tokio::io::duplex(64);
+        let writer = tokio::spawn(async move {
+            let _ = client.write_all(&vec![b'a'; 100]).await;
+        });
+        let mut server = tokio::io::BufReader::new(server);
+        match read_line_capped(&mut server, 16).await.expect("read") {
+            // actual = 读端**已见**的字节（64 = duplex 缓冲交付量；写端剩余部分
+            // 因无人消费而阻塞——读端在超限瞬间拒绝，这正是防打爆语义）
+            LineRead::TooLarge { actual } => assert_eq!(actual, 64),
+            other => panic!("期望 TooLarge，实际 {other:?}"),
+        }
+        writer.abort();
+    }
+
+    #[tokio::test]
+    async fn read_line_capped_boundary_exactly_max_passes() {
+        // 行字节 == max → 放行（超过才拒）
+        let lines = capped_lines(vec![b'a'; 16], 16).await;
+        assert_eq!(lines, vec![LineRead::Line("a".repeat(16))]);
+    }
+
+    #[tokio::test]
+    async fn read_line_capped_continues_until_limit_hit() {
+        let mut input = b"short\n".to_vec();
+        input.extend_from_slice(&vec![b'a'; 20]); // 超限行
+        input.extend_from_slice(b"\n");
+        input.extend_from_slice(b"never reached by consumer disconnect semantics\n");
+        use tokio::io::AsyncWriteExt;
+        let (mut client, server) = tokio::io::duplex(64);
+        let writer = tokio::spawn(async move {
+            let _ = client.write_all(&input).await;
+        });
+        let mut server = tokio::io::BufReader::new(server);
+        let first = read_line_capped(&mut server, 16).await.expect("read 1");
+        assert_eq!(first, LineRead::Line("short".into()));
+        let second = read_line_capped(&mut server, 16).await.expect("read 2");
+        assert_eq!(second, LineRead::TooLarge { actual: 20 });
+        writer.abort();
+    }
+
+    #[tokio::test]
+    async fn read_line_capped_invalid_utf8_is_lossy() {
+        let lines = capped_lines(b"\xff\xfe ok\n".to_vec(), 1024).await;
+        assert_eq!(lines.len(), 1);
+        match &lines[0] {
+            LineRead::Line(s) => {
+                assert!(s.contains('\u{FFFD}'), "无效 UTF-8 应 lossy 替换: {s:?}");
+            }
+            other => panic!("期望 Line，实际 {other:?}"),
+        }
     }
 }

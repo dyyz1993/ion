@@ -57,9 +57,9 @@ fn pending_ui() -> &'static Mutex<HashMap<String, oneshot::Sender<String>>> {
 
 use ion_protocol::{
     host_response, stale_route_event, stamp_instance_event, snapshot_event, subscribed_ack_session,
-    subscribed_ack_extension, subscribed_ack_ui, hello_reply, ui_event_frame,
+    subscribed_ack_extension, subscribed_ack_ui, hello_reply, line_too_large_frame, ui_event_frame,
     extension_event_frame, worker_response_frame, pump_event_frame, overview_snapshot_frame,
-    stream_error_frame,
+    stream_error_frame, MAX_LINE_BYTES,
 };
 
 /// ui_respond 同源校验：ui_origin=false（本连接未先 subscribe ui:true）→ 拒绝理由
@@ -5475,7 +5475,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
     let sock_registry = Arc::clone(&registry);
     let sock_event_bus = Arc::clone(&event_bus);
     tokio::spawn(async move {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::io::{AsyncWriteExt, BufReader};
 
         let _reader_timeout = std::time::Duration::from_secs(600);
         loop {
@@ -5502,16 +5502,30 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                         // 连接级命令循环：hello 握手后连接保持，可继续 subscribe/rpc；
                         // subscribe / ui_respond / subscribe_overview / rpc 各路径自行 return。
                         loop {
-                            let mut line = String::new();
-                            let n = match reader.read_line(&mut line).await {
-                                Ok(n) => n,
+                            // 有界读行（P0.1 行长上限，对齐 pi framing）：超限 → 错误帧
+                            // + 断开。恶意/异常客户端发超大行不允许被 host 无限缓冲（OOM）。
+                            let line = match ion::worker_rpc::read_line_capped(
+                                &mut reader,
+                                MAX_LINE_BYTES,
+                            )
+                            .await
+                            {
+                                Ok(ion::worker_rpc::LineRead::Line(l)) => l,
+                                Ok(ion::worker_rpc::LineRead::Eof) => return, // EOF：客户端关闭
+                                Ok(ion::worker_rpc::LineRead::TooLarge { actual }) => {
+                                    let resp = line_too_large_frame(MAX_LINE_BYTES, actual);
+                                    let _ = write_half
+                                        .write_all(format!("{resp}\n").as_bytes())
+                                        .await;
+                                    let _ = write_half.flush().await;
+                                    eprintln!(
+                                        "⚠️ [security] host socket: oversized line ({actual} bytes > {MAX_LINE_BYTES}) — connection dropped"
+                                    );
+                                    return; // 断开连接
+                                }
                                 Err(_) => return,
                             };
-                            if n == 0 {
-                                return; // EOF：客户端关闭
-                            }
-                            let line = line.trim().to_string();
-                            if line.is_empty() {
+                            if line.trim().is_empty() {
                                 continue;
                             }
                                 let cmd: serde_json::Value = match serde_json::from_str(&line) {
@@ -5625,22 +5639,32 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                             tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
                                         let reader_task = tokio::spawn(async move {
                                             let mut r = reader;
-                                            let mut l = String::new();
+                                            // 有界读行（P0.1 行长上限）：超限视为致命读错
+                                            // → break（处理循环收尾时连接随之断开）。
+                                            // 错误帧发不了：write_half 在下方 select 循环手里。
                                             loop {
-                                                l.clear();
-                                                match r.read_line(&mut l).await {
-                                                    Ok(0) | Err(_) => break,
-                                                    Ok(_) => {
-                                                        if let Ok(v) =
-                                                            serde_json::from_str::<serde_json::Value>(
-                                                                l.trim(),
-                                                            )
-                                                        {
+                                                match ion::worker_rpc::read_line_capped(
+                                                    &mut r,
+                                                    MAX_LINE_BYTES,
+                                                )
+                                                .await
+                                                {
+                                                    Ok(ion::worker_rpc::LineRead::Line(l)) => {
+                                                        if let Ok(v) = serde_json::from_str::<
+                                                            serde_json::Value,
+                                                        >(
+                                                            l.trim()
+                                                        ) {
                                                             if cmd_tx.send(v).is_err() {
                                                                 break;
                                                             }
                                                         }
                                                     }
+                                                    Ok(ion::worker_rpc::LineRead::Eof)
+                                                    | Ok(ion::worker_rpc::LineRead::TooLarge {
+                                                        ..
+                                                    })
+                                                    | Err(_) => break,
                                                 }
                                             }
                                         });

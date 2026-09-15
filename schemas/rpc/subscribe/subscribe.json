@@ -71,12 +71,22 @@
       }
     },
     "errors": {
-      "description": "instance 订阅失败帧（如 60s 内无 worker）：{\"type\":\"error\",\"error\":\"no worker for session within 60s\"}；router 已消失：\"session router is gone\"",
+      "description": "连接级 error 帧（无 id，非 RPC 响应），两类来源：\n1) instance 订阅失败帧（如 60s 内无 worker）：{\"type\":\"error\",\"error\":\"no worker for session within 60s\"}；router 已消失：\"session router is gone\"\n2) 行长超限拒绝帧（P0.1 对标 pi framing，ion-protocol::line_too_large_frame）：单行字节 > MAX_LINE_BYTES(16MiB) 时 host 发本帧后**断开连接**，如 {\"type\":\"error\",\"error\":\"line too large: 16785408 bytes exceeds limit 16777216\",\"limitBytes\":16777216,\"actualBytes\":16785408}；limitBytes/actualBytes 仅行长超限帧携带",
       "type": "object",
       "required": ["type", "error"],
       "properties": {
         "type": { "const": "error" },
-        "error": { "type": "string" }
+        "error": { "type": "string" },
+        "limitBytes": {
+          "type": "integer",
+          "const": 16777216,
+          "description": "仅行长超限帧：MAX_LINE_BYTES（16MiB）"
+        },
+        "actualBytes": {
+          "type": "integer",
+          "minimum": 16777217,
+          "description": "仅行长超限帧：拒绝时读端已累计的行字节数"
+        }
       }
     }
   }
