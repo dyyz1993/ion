@@ -32,7 +32,11 @@ TEST_DIR="$(mktemp -d /tmp/ion-host-read-ci-XXXXXX)"
 trap 'cleanup_host; rm -rf "$TEST_DIR"' EXIT
 
 # ── fixture：合成会话 JSONL（2 轮 user/assistant，结构与真实会话一致）──
-SESS_FILE="$TEST_DIR/ci_session.jsonl"
+# 路径收紧（2026-09-15 W3）：host 侧 session 文件路径必须落在会话目录内
+# （canonicalize 校验），fixture 放进本脚本私有的 ION_SESSION_DIR。
+export ION_SESSION_DIR="$TEST_DIR/sessions"
+mkdir -p "$ION_SESSION_DIR"
+SESS_FILE="$ION_SESSION_DIR/ci_session.jsonl"
 cat > "$SESS_FILE" <<'EOF'
 {"cwd":"/tmp/ion-host-read-ci","id":"ci_hostread_sess","parentSession":null,"timestamp":"2026-08-24T00:00:00.000Z","type":"session","version":3}
 {"id":"u1","message":{"User":{"content":[{"Text":{"text":"first question"}}],"role":"user","source":"prompt","timestamp":1786249005773}},"parentId":"ci_hostread_sess","timestamp":"2026-08-24T00:00:01.000Z","type":"message"}
