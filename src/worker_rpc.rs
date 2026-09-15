@@ -876,6 +876,41 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         agent = agent.with_messages(msgs);
     }
 
+    // ── queued_input 回放（steer/followUp 排队消息 crash 持久化）──
+    // worker 重建（同 sid 重启 / 崩溃恢复）时，从会话 JSONL 回放「排队后未消费」的
+    // queued_input 条目重新入队。append-only：消费时追加 queued_input_consumed 标记，
+    // 回放只认「无标记 + 未被会话消息吸收 + 仍在 live path」的条目（幂等，不双投递）。
+    {
+        let replayed = session_jsonl::replay_queued_inputs(&worker_cwd);
+        if !replayed.is_empty() {
+            let mut count = 0usize;
+            for (entry_id, data) in &replayed {
+                let kind = data
+                    .get("kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("followUp");
+                if let Some(msg_val) = data.get("message")
+                    && let Ok(msg) = serde_json::from_value::<Message>(msg_val.clone())
+                {
+                    tracing::info!("[queued_input] replay entry {entry_id} kind={kind}");
+                    agent.queue_replayed(kind, msg);
+                    count += 1;
+                }
+            }
+            if count > 0 {
+                output(&serde_json::json!({
+                    "type": "event",
+                    "event": {
+                        "type": "queued_input_replayed",
+                        "sessionId": sid,
+                        "count": count,
+                        "timestamp": now_ms(),
+                    }
+                }));
+            }
+        }
+    }
+
     // ── 注册内置 Extension（Memory / Bash / Streaming），可通过 config.json 关闭 ──
     // 先创建 follow_up 通道（Bash Extension 后台进程完成时用来注入消息）
     // 活跃后台 watcher 计数（bash 后台进程）：bash 扩展与 agent_loop 共享，
@@ -2050,12 +2085,15 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         text_signature: None,
                     })];
                     content.extend(images.iter().cloned().map(ContentBlock::Image));
-                    agent.steer(Message::User(UserMessage {
+                    let queued_msg = Message::User(UserMessage {
                         role: "user".into(),
                         content,
                         timestamp: now_ms(),
                         source: ion_provider::types::MessageSource::Steer,
-                    }));
+                    });
+                    // 入队即落盘：steer 排队消息持久化（crash 后由 queued_input 回放恢复）
+                    let _ = session_jsonl::append_queued_input(&worker_cwd, "steer", &queued_msg);
+                    agent.steer(queued_msg);
                     output_response(
                         &id,
                         "prompt",
@@ -2068,12 +2106,16 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         text_signature: None,
                     })];
                     content.extend(images.iter().cloned().map(ContentBlock::Image));
-                    agent.follow_up(Message::User(UserMessage {
+                    let queued_msg = Message::User(UserMessage {
                         role: "user".into(),
                         content,
                         timestamp: now_ms(),
                         source: ion_provider::types::MessageSource::FollowUp,
-                    }));
+                    });
+                    // 入队即落盘：followUp 排队消息持久化（crash 后由 queued_input 回放恢复）
+                    let _ =
+                        session_jsonl::append_queued_input(&worker_cwd, "followUp", &queued_msg);
+                    agent.follow_up(queued_msg);
                     output_response(
                         &id,
                         "prompt",
@@ -2311,14 +2353,17 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                                                                     "steer" => {
                                                                         let steer_text = bg_params.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
                                                                         if !steer_text.is_empty() {
+                                                                            let steer_msg = Message::User(UserMessage {
+                                                                                role: "user".into(),
+                                                                                content: vec![ContentBlock::Text(TextContent { text: steer_text, text_signature: None })],
+                                                                                timestamp: now_ms(),
+                                                                                source: ion_provider::types::MessageSource::Steer,
+                                                                            });
+                                                                            // 入队即落盘：steer 排队消息持久化
+                                                                            let _ = session_jsonl::append_queued_input(&worker_cwd, "steer", &steer_msg);
                                                                             pending_steer_queue.lock().await.push_back((
                                                                                 ion_provider::types::MessageSource::Steer,
-                                                                                Message::User(UserMessage {
-                                                                                    role: "user".into(),
-                                                                                    content: vec![ContentBlock::Text(TextContent { text: steer_text, text_signature: None })],
-                                                                                    timestamp: now_ms(),
-                                                                                    source: ion_provider::types::MessageSource::Steer,
-                                                                                }),
+                                                                                steer_msg,
                                                                             ));
                                                                         }
                                                                         output_response(&bg_id, "steer", &serde_json::json!({"status":"queued","queue":"steering"}));
@@ -2326,14 +2371,17 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                                                                     "follow_up" => {
                                                                         let fu_text = bg_params.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
                                                                         if !fu_text.is_empty() {
+                                                                            let fu_msg = Message::User(UserMessage {
+                                                                                role: "user".into(),
+                                                                                content: vec![ContentBlock::Text(TextContent { text: fu_text, text_signature: None })],
+                                                                                timestamp: now_ms(),
+                                                                                source: ion_provider::types::MessageSource::FollowUp,
+                                                                            });
+                                                                            // 入队即落盘：followUp 排队消息持久化
+                                                                            let _ = session_jsonl::append_queued_input(&worker_cwd, "followUp", &fu_msg);
                                                                             pending_steer_queue.lock().await.push_back((
                                                                                 ion_provider::types::MessageSource::FollowUp,
-                                                                                Message::User(UserMessage {
-                                                                                    role: "user".into(),
-                                                                                    content: vec![ContentBlock::Text(TextContent { text: fu_text, text_signature: None })],
-                                                                                    timestamp: now_ms(),
-                                                                                    source: ion_provider::types::MessageSource::FollowUp,
-                                                                                }),
+                                                                                fu_msg,
                                                                             ));
                                                                         }
                                                                         output_response(&bg_id, "follow_up", &serde_json::json!({"status":"queued","queue":"followUp"}));
@@ -2369,17 +2417,24 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                                                                                         text_signature: None,
                                                                                     })];
                                                                                     content.extend(images.iter().cloned().map(ContentBlock::Image));
+                                                                                    let queued_msg = Message::User(UserMessage {
+                                                                                        role: "user".into(),
+                                                                                        content,
+                                                                                        timestamp: now_ms(),
+                                                                                        source: if is_fu {
+                                                                                            ion_provider::types::MessageSource::FollowUp
+                                                                                        } else {
+                                                                                            ion_provider::types::MessageSource::Steer
+                                                                                        },
+                                                                                    });
+                                                                                    // 入队即落盘：排队消息持久化（crash 后由 queued_input 回放恢复）
+                                                                                    let _ = session_jsonl::append_queued_input(
+                                                                                        &worker_cwd,
+                                                                                        if is_fu { "followUp" } else { "steer" },
+                                                                                        &queued_msg,
+                                                                                    );
                                                                                     let _ = follow_up_tx.send((
-                                                                                        Message::User(UserMessage {
-                                                                                            role: "user".into(),
-                                                                                            content,
-                                                                                            timestamp: now_ms(),
-                                                                                            source: if is_fu {
-                                                                                                ion_provider::types::MessageSource::FollowUp
-                                                                                            } else {
-                                                                                                ion_provider::types::MessageSource::Steer
-                                                                                            },
-                                                                                        }),
+                                                                                        queued_msg,
                                                                                         if is_fu { DeliverAs::FollowUp } else { DeliverAs::Steer },
                                                                                     ));
                                                                                 }
@@ -2414,6 +2469,13 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                                 .filter_map(|m| serde_json::to_value(m).ok())
                                 .collect();
                             save_worker_session(&sid, &worker_cwd, &msgs_json);
+                            // 消费即标记：本 run 已把排队消息写进对话并落盘 → 追加
+                            // queued_input_consumed 标记（防重建后回放双投递）
+                            let _ = session_jsonl::mark_queued_inputs_consumed(
+                                &worker_cwd,
+                                &msgs_json,
+                                "consumed",
+                            );
                             // 正常完成的 agent_end 由 StreamingExtension 发（曾双发）；
                             // 中止（agent_stopped）扩展版不发，仅此处发
                             let was_stopped =
@@ -2495,6 +2557,16 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         agent.push_message(msg.clone());
                     }
                     if !drained_msgs.is_empty() {
+                        // 消费即标记：graceful drain 收到的消息已写盘 → 落 consumed 标记
+                        let drained_json: Vec<serde_json::Value> = drained_msgs
+                            .iter()
+                            .filter_map(|m| serde_json::to_value(m).ok())
+                            .collect();
+                        let _ = session_jsonl::mark_queued_inputs_consumed(
+                            &worker_cwd,
+                            &drained_json,
+                            "consumed",
+                        );
                         tracing::info!(
                             "[graceful-drain] captured {} follow_up messages after agent.run()",
                             drained_msgs.len()
@@ -2525,7 +2597,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     agent.stop();
                 }
                 if !text.is_empty() {
-                    agent.steer(Message::User(UserMessage {
+                    let queued_msg = Message::User(UserMessage {
                         role: "user".into(),
                         content: vec![ContentBlock::Text(TextContent {
                             text: text.clone(),
@@ -2533,7 +2605,10 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         })],
                         timestamp: now_ms(),
                         source: ion_provider::types::MessageSource::Steer,
-                    }));
+                    });
+                    // 入队即落盘：steer 排队消息持久化（crash 后由 queued_input 回放恢复）
+                    let _ = session_jsonl::append_queued_input(&worker_cwd, "steer", &queued_msg);
+                    agent.steer(queued_msg);
                 }
                 output_response(&id, "steer", &serde_json::Value::Null);
             }
@@ -2555,7 +2630,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     .to_string();
                 agent.promote_follow_up(index);
                 if !text.is_empty() {
-                    agent.steer(Message::User(UserMessage {
+                    let queued_msg = Message::User(UserMessage {
                         role: "user".into(),
                         content: vec![ContentBlock::Text(TextContent {
                             text: text.clone(),
@@ -2563,7 +2638,10 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         })],
                         timestamp: now_ms(),
                         source: ion_provider::types::MessageSource::Steer,
-                    }));
+                    });
+                    // 入队即落盘：新 steer 消息持久化
+                    let _ = session_jsonl::append_queued_input(&worker_cwd, "steer", &queued_msg);
+                    agent.steer(queued_msg);
                 }
                 // QueueChanged 事件
                 crate::file_snapshot::approval::emit_public_event(
@@ -2575,6 +2653,12 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             "remove_follow_up" => {
                 let index = params.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                 let removed = agent.remove_follow_up(index);
+                // 消费即标记（reason=removed）：用户删掉的排队消息作废，重建后不回放复活
+                if let Some(ref m) = removed
+                    && let Ok(mj) = serde_json::to_value(m)
+                {
+                    let _ = session_jsonl::mark_queued_inputs_consumed(&worker_cwd, &[mj], "removed");
+                }
                 crate::file_snapshot::approval::emit_public_event(
                     "QueueChanged",
                     &serde_json::json!({"action":"remove","index":index,"removed":removed.is_some()}),
@@ -2591,6 +2675,12 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             "remove_steering" => {
                 let index = params.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                 let removed = agent.remove_steering(index);
+                // 消费即标记（reason=removed）：用户删掉的排队消息作废，重建后不回放复活
+                if let Some(ref m) = removed
+                    && let Ok(mj) = serde_json::to_value(m)
+                {
+                    let _ = session_jsonl::mark_queued_inputs_consumed(&worker_cwd, &[mj], "removed");
+                }
                 output_response(
                     &id,
                     "remove_steering",
@@ -3139,6 +3229,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             }
             "clear_queue" => {
                 agent.clear_queues();
+                // 消费即标记（reason=cleared）：内存队列清空时，盘上排队条目一并作废，
+                // 防止重建后回放复活用户已删除的消息
+                let _ = session_jsonl::mark_all_queued_inputs_consumed(&worker_cwd, "cleared");
                 crate::file_snapshot::approval::emit_public_event(
                     "QueueChanged",
                     &serde_json::json!({"action":"clear_all"}),
@@ -4298,6 +4391,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     session_jsonl::append_raw_entry(&worker_cwd, &entry);
                     written.push(serde_json::to_value(msg).unwrap_or(serde_json::Value::Null));
                 }
+                // 消费即标记：已写盘的排队消息落 consumed 标记（防重建后回放双投递）
+                let _ =
+                    session_jsonl::mark_queued_inputs_consumed(&worker_cwd, &written, "consumed");
                 for msg in msgs {
                     agent.push_message(msg);
                 }
@@ -5914,6 +6010,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     details: None,
                     timestamp: now_ms(),
                 });
+                let queued_kind = if deliver_as == "steer" { "steer" } else { "followUp" };
+                // 入队即落盘：send_custom_message 排队消息持久化（与 steer/followUp 同一黑洞面）
+                let _ = session_jsonl::append_queued_input(&worker_cwd, queued_kind, &msg);
                 match deliver_as {
                     "steer" => agent.steer(msg),
                     "nextTurn" | _ => agent.follow_up(msg),
@@ -6174,6 +6273,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         .filter_map(|m| serde_json::to_value(m).ok())
         .collect();
     save_worker_session(&sid, &worker_cwd, &msgs_json);
+    // 退出前补一次消费对账（幂等）：已进对话的排队消息落 consumed 标记；
+    // 未消费的靠 queued_input 回放恢复（不丢）
+    let _ = session_jsonl::mark_queued_inputs_consumed(&worker_cwd, &msgs_json, "consumed");
 
     // exit
 }

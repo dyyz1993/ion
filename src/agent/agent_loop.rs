@@ -406,6 +406,16 @@ impl Agent {
     pub fn follow_up(&mut self, msg: Message) {
         self.follow_up_queue.push_back(msg);
     }
+    /// 回放注入（queued_input 持久化恢复，见 docs/design/CRASH_RECOVERY.md）：
+    /// worker 重建时把盘上未消费的排队消息按 kind 路回对应队列，
+    /// 消息保持原 timestamp/source，之后走与运行时 enqueue 完全相同的消费语义。
+    pub fn queue_replayed(&mut self, kind: &str, msg: Message) {
+        match kind {
+            "steer" => self.steering_queue.push_back(msg),
+            "nextTurn" => self.next_turn_queue.push_back(msg),
+            _ => self.follow_up_queue.push_back(msg),
+        }
+    }
     /// Wire up the async follow-up channel (bash background process completion).
     /// outer_loop drains this into follow_up_queue after each inner_loop, so
     /// completed background tasks can trigger a new agent turn.
