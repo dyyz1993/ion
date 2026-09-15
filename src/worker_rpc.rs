@@ -2199,20 +2199,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                                                                     }
                                                                     // review_pending → agent.run 期间也能查审批队列
                                                                     // （compute_pending 是纯内存计算 + 磁盘读，不碰 agent）
+                                                                    // 形状与空闲路径统一：都走 review_pending_data（Bug3）
                                                                     "review_pending" => {
-                                                                        let result = if let Some(ref mgr) = approval_mgr {
-                                                                            let pending = mgr.compute_pending();
-                                                                            serde_json::json!({
-                                                                                "pending": pending.iter().map(|p| serde_json::json!({
-                                                                                    "path": p.path,
-                                                                                    "status": format!("{:?}", p.status).to_lowercase(),
-                                                                                    "diffStat": p.diff_stat,
-                                                                                })).collect::<Vec<_>>(),
-                                                                                "summary": {"total": pending.len()},
-                                                                            })
-                                                                        } else {
-                                                                            serde_json::json!({"pending": [], "summary": {"total": 0}})
-                                                                        };
+                                                                        let result = review_pending_data(approval_mgr.as_deref());
                                                                         output_response(&bg_id, "review_pending", &result);
                                                                     }
                                                                     // 单文件 diff（与 review_pending 同源，复用其缓存）
@@ -4893,35 +4882,10 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             // ── 审批 RPC（review_pending / approve / reject / approve_all / reject_all / approvals）──
             "review_pending" => {
                 if let Some(ref mgr) = approval_mgr {
-                    let pending = mgr.compute_pending();
-                    let added = pending.iter().filter(|p| p.status == "added").count();
-                    let modified = pending.iter().filter(|p| p.status == "modified").count();
-                    let deleted = pending.iter().filter(|p| p.status == "deleted").count();
-                    let pending_json: Vec<_> = pending
-                        .iter()
-                        .map(|p| {
-                            // 只回摘要字段；oldContent/newContent 会让响应达到几十 MB
-                            // （695 文件 ≈ 55MB），按需走 get_file_diff 单文件拉取
-                            serde_json::json!({
-                                "path": p.path,
-                                "status": p.status,
-                                "diffStat": p.diff_stat,
-                            })
-                        })
-                        .collect();
-                    output_response(
-                        &id,
-                        "review_pending",
-                        &serde_json::json!({
-                            "pending": pending_json,
-                            "summary": {
-                                "total": pending.len(),
-                                "added": added,
-                                "modified": modified,
-                                "deleted": deleted,
-                            },
-                        }),
-                    );
+                    // data 构造统一走 review_pending_data（与 agent.run 期间 bg 路径同源，
+                    // Bug3 形状统一：summary 四字段 + 干净 status）
+                    let data = review_pending_data(Some(mgr));
+                    output_response(&id, "review_pending", &data);
                 } else {
                     output_response(
                         &id,
@@ -7088,6 +7052,44 @@ fn output_error_response(id: &str, command: &str, error: &str) {
     emit_rpc_response_event(id, command, false, Some(error));
 }
 
+/// review_pending 响应 data 的唯一构造点（Bug3 形状统一）。
+///
+/// 空闲主循环与 agent.run 期间的只读 bg 通道两条路径都从这里拿 data，
+/// 保证消费者（webui）只见一种形状：
+/// - `pending[]`: {path, status, diffStat}（status 是干净的 added/modified/deleted）
+/// - `summary`: {total, added, modified, deleted} 四字段
+fn review_pending_data(
+    mgr: Option<&crate::file_snapshot::approval::ApprovalManager>,
+) -> serde_json::Value {
+    match mgr {
+        Some(mgr) => {
+            let pending = mgr.compute_pending();
+            let added = pending.iter().filter(|p| p.status == "added").count();
+            let modified = pending.iter().filter(|p| p.status == "modified").count();
+            let deleted = pending.iter().filter(|p| p.status == "deleted").count();
+            serde_json::json!({
+                "pending": pending.iter().map(|p| serde_json::json!({
+                    "path": p.path,
+                    // p.status 本身就是干净的小写字符串；历史上 bg 路径用
+                    // format!("{:?}") 序列化 String，输出带字面引号（"\"added\""）
+                    "status": p.status,
+                    "diffStat": p.diff_stat,
+                })).collect::<Vec<_>>(),
+                "summary": {
+                    "total": pending.len(),
+                    "added": added,
+                    "modified": modified,
+                    "deleted": deleted,
+                },
+            })
+        }
+        None => serde_json::json!({
+            "pending": [],
+            "summary": {"total": 0, "added": 0, "modified": 0, "deleted": 0},
+        }),
+    }
+}
+
 /// W6 Bug1: append_entry 白名单——统一追加入口只放行扩展语义的条目类型。
 ///
 /// 修复前 match 兜底 `_ => params.clone()` 把任意 type 透传落盘，RPC 客户端可以
@@ -8491,5 +8493,110 @@ mod tests {
         let params = serde_json::json!({"customType": "x", "data": {}});
         let d = build_append_entry_data("custom", &params).expect("default type is custom");
         assert_eq!(d["customType"], "x");
+    }
+
+    // --- review_pending_data（Bug3：双路径形状统一）---
+
+    /// 构造带一条 pending（a.rs: original→modified，未审批）的 ApprovalManager。
+    /// turn_id 沿用 approval.rs 测试约定：baseline 用 ts_000000 保证同秒写入时
+    /// (timestamp, turn_id) 排序下 baseline 排在最前（否则 .last() 误取 baseline）。
+    fn review_pending_fixture()
+    -> (
+        std::path::PathBuf,
+        std::sync::Arc<crate::file_snapshot::SnapshotStore>,
+        crate::file_snapshot::approval::ApprovalManager,
+    ) {
+        let base = std::env::temp_dir().join(format!(
+            "worker_rpc_review_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        let work_dir = base.join("work");
+        std::fs::create_dir_all(&work_dir).unwrap();
+        let store =
+            std::sync::Arc::new(crate::file_snapshot::SnapshotStore::new_at(base.join("store")));
+
+        // baseline tree：a.rs = original（session start 状态）
+        let mut files = std::collections::HashMap::new();
+        files.insert("a.rs".to_string(), b"original".to_vec());
+        let (baseline_hash, _) = crate::file_snapshot::write_tree(store.objects(), &files);
+        std::fs::write(work_dir.join("a.rs"), "original").unwrap();
+        let baseline_step = crate::file_snapshot::StepSnapshot {
+            session_id: "worker_rpc_review".into(),
+            turn_id: "ts_000000".into(),
+            baseline_tree_hash: baseline_hash.clone(),
+            snapshot_tree_hash: baseline_hash.clone(),
+            diff: crate::file_snapshot::TreeDiff {
+                added: vec![],
+                modified: vec![],
+                deleted: vec![],
+            },
+            timestamp: crate::session_jsonl::timestamp_iso(),
+        };
+        store.save_step_snapshot(&baseline_step);
+
+        // 当前 tree：a.rs = changed（一轮 turn 后，未审批 → pending）
+        let mut cur = std::collections::HashMap::new();
+        cur.insert("a.rs".to_string(), b"changed".to_vec());
+        let (cur_hash, _) = crate::file_snapshot::write_tree(store.objects(), &cur);
+        let turn_step = crate::file_snapshot::StepSnapshot {
+            session_id: "worker_rpc_review".into(),
+            turn_id: "ts_000001".into(),
+            baseline_tree_hash: baseline_hash,
+            snapshot_tree_hash: cur_hash,
+            diff: crate::file_snapshot::TreeDiff {
+                added: vec![],
+                modified: vec!["a.rs".into()],
+                deleted: vec![],
+            },
+            timestamp: crate::session_jsonl::timestamp_iso(),
+        };
+        store.save_step_snapshot(&turn_step);
+
+        let storage = crate::storage_context::StorageContext::new(
+            work_dir.to_string_lossy().as_ref(),
+            "worker_rpc_review",
+            work_dir.to_string_lossy().as_ref(),
+        );
+        let mgr = crate::file_snapshot::approval::ApprovalManager::new(store.clone(), storage);
+        (work_dir, store, mgr)
+    }
+
+    #[test]
+    fn test_review_pending_data_summary_four_fields_and_clean_status() {
+        let (work_dir, _store, mgr) = review_pending_fixture();
+        let data = review_pending_data(Some(&mgr));
+
+        // summary 必须四字段齐全（agent.run 期间 bg 路径历史上只有 total）
+        let summary = data.get("summary").expect("summary present");
+        for field in ["total", "added", "modified", "deleted"] {
+            assert!(
+                summary.get(field).and_then(|v| v.as_u64()).is_some(),
+                "summary.{field} 缺失: {data}"
+            );
+        }
+        assert_eq!(summary["total"], 1, "一条 pending: {data}");
+        assert_eq!(summary["modified"], 1, "a.rs 是 modified: {data}");
+
+        // status 必须是干净枚举值，不得带字面引号
+        // （历史 bug：format!("{:?}") 序列化 String → "\"modified\"")
+        let status = data["pending"][0]["status"].as_str().expect("status str");
+        assert!(!status.contains('"'), "status 不得带字面引号: {data}");
+        assert_eq!(status, "modified", "status 应为干净值: {data}");
+
+        // None 分支（file-snapshot 未启用）同样保持四字段形状
+        let empty = review_pending_data(None);
+        assert_eq!(empty["pending"].as_array().map(|a| a.len()), Some(0));
+        for field in ["total", "added", "modified", "deleted"] {
+            assert!(
+                empty["summary"].get(field).is_some(),
+                "None 分支 summary.{field} 缺失: {empty}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(work_dir.parent().unwrap());
     }
 }
