@@ -3189,6 +3189,17 @@ async fn cmd_rpc(session: Option<&str>, method: &str, params: &str) {
         }
     };
 
+    // ── hostId pin（P0.3，可选）──
+    // ION_EXPECT_HOST_ID 设置时，先在同一条连接上发 hello 校验对端 host 的
+    // 逻辑实例身份；不匹配则报错断开——防止连到陈旧 socket（旧 host 未死净 /
+    // 重启窗口）背后的"错误 host"。不设置则零开销、行为不变。
+    if let Ok(expected) = std::env::var("ION_EXPECT_HOST_ID") {
+        let expected = expected.trim().to_string();
+        if !expected.is_empty() {
+            verify_expected_host_id(&mut stream, &expected).await;
+        }
+    }
+
     let params_val: serde_json::Value = serde_json::from_str(params).unwrap_or_else(|e| {
         eprintln!("⚠ params 不是合法 JSON ({e})，用 {{}} 代替");
         serde_json::Value::Object(serde_json::Map::new())
@@ -3260,6 +3271,55 @@ async fn cmd_rpc(session: Option<&str>, method: &str, params: &str) {
             eprintln!("❌ rpc 超时：读了 100 行还没找到响应");
             break;
         }
+    }
+}
+
+/// hostId pin 校验（P0.3）：在既有连接上发 hello，读响应比对 `data.hostId`。
+///
+/// - 匹配 → 返回，连接继续用于正式请求（hello 不消费连接）；
+/// - 不匹配 / 响应缺 hostId / 连接失败 → 报错并 `exit(1)` 断开。
+async fn verify_expected_host_id(stream: &mut tokio::net::UnixStream, expected: &str) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let req = ion_protocol::Request::rpc("hostid-pin", "hello", serde_json::json!({}));
+    if let Err(e) = stream.write_all(format!("{req}\n").as_bytes()).await {
+        eprintln!("❌ hostId pin: 发送 hello 失败: {e}");
+        std::process::exit(1);
+    }
+    let _ = stream.flush().await;
+    let mut reader = BufReader::new(&mut *stream);
+    loop {
+        let mut line = String::new();
+        let n = match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            reader.read_line(&mut line),
+        )
+        .await
+        {
+            Ok(Ok(n)) => n,
+            _ => {
+                eprintln!("❌ hostId pin: 30s 内未收到 host 的 hello 响应，断开");
+                std::process::exit(1);
+            }
+        };
+        if n == 0 {
+            eprintln!("❌ hostId pin: host 在握手前关闭了连接");
+            std::process::exit(1);
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+            continue;
+        };
+        if v.get("id").and_then(|i| i.as_str()) != Some("hostid-pin") {
+            continue; // 跳过无关帧
+        }
+        let got = v["data"]["hostId"].as_str().unwrap_or("").to_string();
+        if got == expected {
+            return; // pin 通过，同一条连接继续
+        }
+        let shown = if got.is_empty() { "<missing>".to_string() } else { got };
+        eprintln!(
+            "❌ hostId pin 不匹配: 期望 {expected}，实际 {shown}\n   socket 背后可能不是预期的 host（陈旧 socket / host 重启窗口）。重启后请更新 ION_EXPECT_HOST_ID。"
+        );
+        std::process::exit(1);
     }
 }
 
@@ -5534,11 +5594,12 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                     .and_then(|v| v.as_str())
                                     .map(|s| s.to_string());
 
-                                // ── 协议版本握手（可选）：hello → {"protocolVersion":1} ──
+                                // ── 协议版本握手（可选）：hello → {"protocolVersion":1,"hostId":...} ──
                                 // 不消费连接：回包后 continue，客户端可继续 subscribe / rpc。
-                                // 旧客户端不发 hello 完全不受影响。
+                                // 旧客户端不发 hello 完全不受影响。hostId 是本 host 进程
+                                // 的逻辑实例身份（内存态，重启即变），供客户端 pin 校验。
                                 if method == "hello" {
-                                    let resp = hello_reply(cmd.get("id"));
+                                    let resp = hello_reply(cmd.get("id"), ion_protocol::host_id());
                                     let _ = write_half
                                         .write_all(format!("{resp}\n").as_bytes())
                                         .await;
@@ -5694,7 +5755,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                                                 }
                                                                 "hello" => {
                                                                     let resp =
-                                                                        hello_reply(cc.get("id"));
+                                                                        hello_reply(cc.get("id"), ion_protocol::host_id());
                                                                     let _ = write_half
                                                                         .write_all(
                                                                             format!("{resp}\n")
@@ -10096,20 +10157,34 @@ mod subscribe_protocol_tests {
 
     #[test]
     fn hello_reply_returns_protocol_version() {
-        let resp = hello_reply(Some(&serde_json::json!("h1")));
+        let resp = hello_reply(Some(&serde_json::json!("h1")), ion_protocol::host_id());
         assert_eq!(resp["type"], "response");
         assert_eq!(resp["id"], "h1");
         assert_eq!(resp["success"], true);
         assert_eq!(resp["data"]["protocolVersion"], PROTOCOL_VERSION);
         assert_eq!(resp["data"]["protocolVersion"], 1);
+        // hostId：逻辑实例身份，进程内稳定且为规范 UUIDv4
+        assert_eq!(resp["data"]["hostId"], ion_protocol::host_id());
+        let hid = resp["data"]["hostId"].as_str().unwrap();
+        assert_eq!(hid.len(), 36);
+        assert_eq!(&hid[14..15], "4", "UUIDv4 version 位: {hid}");
     }
 
     #[test]
     fn hello_reply_tolerates_missing_id() {
-        let resp = hello_reply(None);
+        let resp = hello_reply(None, ion_protocol::host_id());
         assert_eq!(resp["success"], true);
         assert!(resp["id"].is_null());
         assert_eq!(resp["data"]["protocolVersion"], 1);
+        assert!(resp["data"]["hostId"].is_string());
+    }
+
+    #[test]
+    fn host_id_stable_within_process_and_canonical() {
+        let a = ion_protocol::host_id();
+        let b = ion_protocol::host_id();
+        assert_eq!(a, b, "进程内 hostId 稳定（OnceLock）");
+        assert_ne!(a, ion_protocol::generate_host_id(), "与新生成的不同");
     }
 
     // ── ui_respond 同源绑定 ──
