@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/error.json",
+  "title": "error — agent 运行错误",
+  "description": "run 错误路径发出（src/worker_rpc.rs run_result Err 分支）。正常结束不发；中止走 agent_stopped。",
+  "type": "object",
+  "required": ["type", "message"],
+  "properties": {
+    "type": { "const": "error" },
+    "message": { "type": "string" },
+    "timestamp": { "type": "integer" }
+  }
+}

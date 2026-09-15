@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/tool_execution_update.json",
+  "title": "tool_execution_update — 长任务工具的中间输出",
+  "description": "StreamingExtension::on_tool_execution_update。partialResult 为部分输出文本。",
+  "type": "object",
+  "required": ["type", "toolCallId", "toolName", "args", "partialResult"],
+  "properties": {
+    "type": { "const": "tool_execution_update" },
+    "sessionId": { "type": "string" },
+    "toolCallId": { "type": "string" },
+    "toolName": { "type": "string" },
+    "args": { "description": "工具入参（自由 JSON）" },
+    "partialResult": { "type": "string" }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/text_delta.json",
+  "title": "text_delta — 助手流式文本增量",
+  "description": "StreamingExtension::on_message_delta（role=assistant 且 delta 非空）+ faux 快速路径。sessionId 在部分快速路径缺省（worker_rpc.rs faux 分支只发 type+delta），故为可选。",
+  "type": "object",
+  "required": ["type", "delta"],
+  "properties": {
+    "type": { "const": "text_delta" },
+    "delta": { "type": "string", "minLength": 1 },
+    "sessionId": { "type": "string" }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/stale_route.json",
+  "title": "stale_route — epoch 栅栏作废通知",
+  "description": "worker 重派/重绑该 session 时，router 统一推进 epoch（host 级 SESSION_EPOCHS 表，单调递增），旧 epoch 订阅各收一条 stale_route 并停止转发（随后连接断开）。客户端凭 currentEpoch 重新 subscribe 拿新 epoch。epoch 是 host 进程内状态：host 重启后从 1 重新计数，客户端不应跨 host 重启比较 epoch。resubscribed 事件已被本帧取代（不再出现）。",
+  "type": "object",
+  "required": ["type", "customType", "session", "epoch", "currentEpoch"],
+  "properties": {
+    "type": { "const": "stale_route" },
+    "customType": { "const": "stale_route" },
+    "session": { "type": "string" },
+    "epoch": { "type": "integer", "minimum": 1, "description": "旧订阅的 epoch（即将作废）" },
+    "currentEpoch": { "type": "integer", "minimum": 2, "description": "推进后的新 epoch（= epoch+1）" }
+  }
+}

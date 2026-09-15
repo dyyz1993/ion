@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/rpc_response_event.json",
+  "title": "rpc_response 事件 — worker RPC 完成摘要广播",
+  "description": "worker 处理的每条用户 RPC（成功/失败/未知命令）都广播一条 rpc_response 事件（src/worker_rpc.rs emit_rpc_response_event，经 output_response/output_error_response 汇聚点统一发射）。通用 RPC 推送兜底：任何新 worker RPC 天然具备多终端实时同步。只带摘要不带响应体（防大响应挤爆订阅者队列）；error 截断至 200 字符。到达订阅端时被 instance_event 信封包一层（epoch 盖章）。",
+  "type": "object",
+  "required": ["type", "id", "method", "success", "sessionId", "timestamp"],
+  "properties": {
+    "type": { "const": "rpc_response" },
+    "id": { "type": "string", "description": "RPC 请求 id（worker 侧）" },
+    "method": { "type": "string", "description": "RPC 命令名" },
+    "success": { "type": "boolean" },
+    "sessionId": { "type": "string", "description": "worker 会话 id；拿不到时为空串" },
+    "timestamp": { "type": "integer", "description": "Unix ms" },
+    "error": { "type": "string", "description": "仅失败时携带，截断 200 字符" }
+  }
+}

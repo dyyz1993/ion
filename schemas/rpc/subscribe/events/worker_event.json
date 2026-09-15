@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/worker_event.json",
+  "title": "worker_event — instance 流内层事件通用壳（event.type 枚举全集）",
+  "description": "instance_event.event 字段的通用形状。产生点穷举（2026-09-15）：StreamingExtension（src/worker_rpc.rs）11 种 + agent_stopped/error（abort/错误路径）+ worker_ready（初始化信号）+ custom（ExtensionApi::emit）+ extension_event（各扩展仿 BashExtension 模式）+ child_crashed（host registry 注入）+ rpc_response（worker RPC 摘要广播）+ tool_call（遗留：泵白名单保留、无当前产生点）。共 19 种。",
+  "type": "object",
+  "required": ["type"],
+  "properties": {
+    "type": {
+      "enum": [
+        "text_delta",
+        "agent_start",
+        "agent_end",
+        "agent_stopped",
+        "message_start",
+        "message_end",
+        "tool_call_delta",
+        "tool_call",
+        "tool_execution_start",
+        "tool_execution_update",
+        "tool_execution_end",
+        "auto_retry_start",
+        "auto_retry_end",
+        "error",
+        "worker_ready",
+        "extension_event",
+        "custom",
+        "child_crashed",
+        "rpc_response"
+      ]
+    }
+  }
+}

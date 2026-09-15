@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/list_sessions.json",
+  "title": "list_sessions — 列出运行中 worker 的会话（host 级）",
+  "description": "host 级快路径（bin/ion.rs handle_manager_command，短锁快照）。注意形状坑：status 用 Display/Debug 格式（首字母大写 Idle/Busy/Dead/Stale），与 get_overview 的 serde snake_case（idle/busy）不同——两个 schema 都固化了各自的大小写。",
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "object",
+      "required": ["id", "method"],
+      "properties": {
+        "id": { "type": ["string", "integer"] },
+        "method": { "const": "list_sessions" },
+        "session": { "type": "string" }
+      }
+    },
+    "response": {
+      "type": "object",
+      "required": ["type", "id", "success", "data"],
+      "properties": {
+        "type": { "const": "response" },
+        "id": { "type": ["string", "integer", "null"] },
+        "success": { "const": true },
+        "session": { "type": "string" },
+        "data": {
+          "type": "object",
+          "required": ["sessions"],
+          "properties": {
+            "sessions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["session_id", "agent", "status", "model", "started_at", "latest_output", "log_short", "model_size"],
+                "properties": {
+                  "session_id": { "type": "string" },
+                  "agent": { "type": "string" },
+                  "status": { "enum": ["Idle", "Busy", "Dead", "Stale"], "description": "Display/Debug 格式（首字母大写）——与 get_overview 的 snake_case 不同" },
+                  "model": { "type": "string" },
+                  "started_at": { "type": "integer", "description": "Unix ms" },
+                  "latest_output": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "最近至多 5 条 text_delta 截断（60 字符）"
+                  },
+                  "log_short": { "type": ["string", "null"] },
+                  "model_size": { "type": ["integer", "null"], "description": "模型上下文窗口大小（token 数）" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/snapshot_frame.json",
+  "title": "snapshot 帧 — 快照先行（水合纪律）",
+  "description": "subscribe(session) 建立后，host 在任何 replay/实时增量之前先推一条完整快照（bin/ion.rs snapshot_event + build_snapshot_data）。帧序契约：subscribed ack → 本帧（snapshot:true）→ replay 帧（replayed:true）→ 实时增量。worker=null 表示当前无存活 worker。pendingApprovals 是 host 级 UI 请求（pending_ui 表），worker 侧 review 类待审批不在其中。generatedAt 为 Unix ms。",
+  "type": "object",
+  "required": ["type", "session", "epoch", "snapshot", "event"],
+  "properties": {
+    "type": { "const": "instance_event" },
+    "session": { "type": "string" },
+    "epoch": { "type": "integer", "minimum": 1 },
+    "snapshot": { "const": true },
+    "event": {
+      "type": "object",
+      "required": ["type", "extension", "customType", "visibility", "session", "data"],
+      "properties": {
+        "type": { "const": "extension_event" },
+        "extension": { "const": "host" },
+        "customType": { "const": "snapshot" },
+        "visibility": { "const": "ui_only" },
+        "session": { "type": "string" },
+        "data": {
+          "type": "object",
+          "required": ["worker", "session", "pendingApprovals", "generatedAt"],
+          "properties": {
+            "worker": {
+              "oneOf": [
+                {
+                  "type": "null",
+                  "description": "null = 当前无存活 worker"
+                },
+                {
+                  "type": "object",
+                  "required": ["workerId", "status", "model", "agent"],
+                  "properties": {
+                    "workerId": { "type": "string" },
+                    "status": { "enum": ["Idle", "Busy", "Dead", "Stale"], "description": "Display/Debug 格式（SnapshotWorker.status = w.status.to_string()）" },
+                    "model": { "type": "string" },
+                    "agent": { "type": "string" }
+                  }
+                }
+              ]
+            },
+            "session": {
+              "type": "object",
+              "required": ["sessionId", "model", "provider", "name"],
+              "description": "SessionIndex 热字段直读；索引无该会话时 model/provider/name 为 null",
+              "properties": {
+                "sessionId": { "type": "string" },
+                "model": { "type": ["string", "null"] },
+                "provider": { "type": ["string", "null"] },
+                "name": { "type": ["string", "null"] }
+              }
+            },
+            "pendingApprovals": {
+              "type": "object",
+              "required": ["count", "requests"],
+              "properties": {
+                "count": { "type": "integer", "minimum": 0 },
+                "requests": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "host 级 UI 审批 request_id 列表（pending_ui 表键）"
+                }
+              }
+            },
+            "generatedAt": { "type": "integer", "description": "Unix ms" }
+          }
+        }
+      }
+    }
+  }
+}

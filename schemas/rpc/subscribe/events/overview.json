@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/overview.json",
+  "title": "overview 载荷 — get_overview / subscribe_overview / overview_snapshot 共用形状",
+  "description": "WorkerRegistry::get_overview 的载荷形状（src/worker_registry.rs）。worker.status 走 serde 序列化（rename_all snake_case → idle/busy/dead/stale），与 list_sessions 的 Display 大写不同——这是两套序列化路径的真实差异，schema 分别固化。",
+  "type": "object",
+  "required": ["workers", "projects", "total_workers", "total_projects", "total_stale", "total_dead", "sessions"],
+  "properties": {
+    "workers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["worker_id", "session_id", "project", "status", "exit_code", "exit_reason", "model", "agent", "channels", "parent", "children", "latest_output", "log_short", "model_size", "started_at"],
+        "properties": {
+          "worker_id": { "type": "string" },
+          "session_id": { "type": "string" },
+          "project": { "type": "string" },
+          "status": { "enum": ["idle", "busy", "dead", "stale"] },
+          "exit_code": { "type": ["integer", "null"] },
+          "exit_reason": { "type": ["string", "null"] },
+          "model": { "type": "string" },
+          "agent": { "type": "string" },
+          "channels": { "type": "array", "items": { "type": "string" } },
+          "parent": { "type": ["string", "null"] },
+          "children": { "type": "array", "items": { "type": "string" } },
+          "latest_output": { "type": "array", "items": { "type": "string" } },
+          "log_short": { "type": ["string", "null"] },
+          "model_size": { "type": ["integer", "null"] },
+          "started_at": { "type": "integer" }
+        }
+      }
+    },
+    "projects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "path", "worker_count"],
+        "properties": {
+          "name": { "type": "string" },
+          "path": { "type": "string" },
+          "worker_count": { "type": "integer" }
+        }
+      }
+    },
+    "total_workers": { "type": "integer", "description": "不含 Dead" },
+    "total_projects": { "type": "integer" },
+    "total_stale": { "type": "integer" },
+    "total_dead": { "type": "integer" },
+    "sessions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["session_id", "worker_id", "project", "created_by"],
+        "properties": {
+          "session_id": { "type": "string" },
+          "worker_id": { "type": "string" },
+          "project": { "type": "string" },
+          "created_by": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/auto_retry_start.json",
+  "title": "auto_retry_start — LLM 自动重试开始（对齐 pi，前端显示重试中 N/M）",
+  "description": "StreamingExtension::on_auto_retry_start。",
+  "type": "object",
+  "required": ["type", "attempt", "maxRetries"],
+  "properties": {
+    "type": { "const": "auto_retry_start" },
+    "sessionId": { "type": "string" },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "maxRetries": { "type": "integer", "minimum": 1 },
+    "timestamp": { "type": "integer" }
+  }
+}

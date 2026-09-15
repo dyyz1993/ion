@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/tool_call.json",
+  "title": "tool_call — 遗留事件类型（保留兼容）",
+  "description": "在 Manager 泵转发白名单（bin/ion.rs / worker_registry.rs）与场景 1 pretty printer 分支中保留，当前代码库无产生点（工具调用流已被 tool_call_delta / tool_execution_* 取代）。schema 保留枚举以兼容旧流 replay/旧 worker 二进制。字段按旧消费点（bin/ion.rs \"tool_call\" 分支读取 ev.tool）记录，均为可选。",
+  "type": "object",
+  "required": ["type"],
+  "properties": {
+    "type": { "const": "tool_call" },
+    "tool": { "type": "string", "description": "旧消费点读取的工具名" },
+    "sessionId": { "type": "string" }
+  }
+}

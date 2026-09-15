@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/verb_pending.json",
+  "title": "verb_pending — 列出待审批的远程动词请求",
+  "description": "M4.5 VerbGate 审批桥（远程 worker grants 拒绝可转人工审批 ask_on_deny）。host 级（bin/ion.rs handle_manager_command），读 verb_approvals_global 表（src/worker_registry.rs verb_pending_list）。",
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "object",
+      "required": ["id", "method"],
+      "properties": {
+        "id": { "type": ["string", "integer"] },
+        "method": { "const": "verb_pending" },
+        "session": { "type": "string" }
+      }
+    },
+    "response": {
+      "type": "object",
+      "required": ["type", "id", "success", "data"],
+      "properties": {
+        "type": { "const": "response" },
+        "id": { "type": ["string", "integer", "null"] },
+        "success": { "const": true },
+        "session": { "type": "string", "description": "请求带 session 时回显" },
+        "data": {
+          "type": "object",
+          "required": ["pending"],
+          "properties": {
+            "pending": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["requestId", "session", "verb", "args", "ageMs"],
+                "properties": {
+                  "requestId": { "type": "string", "description": "verb_review 时使用" },
+                  "session": { "type": "string", "description": "发起动词的 worker 会话" },
+                  "verb": { "type": "string", "description": "封闭动词表内的动词名" },
+                  "args": { "description": "动词参数（自由 JSON）" },
+                  "ageMs": { "type": "integer", "description": "请求年龄（now - created_at，毫秒）" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

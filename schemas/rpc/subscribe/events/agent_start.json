@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/agent_start.json",
+  "title": "agent_start — agent 轮次开始",
+  "description": "StreamingExtension::on_agent_start + faux 快速路径。timestamp 为 Unix ms。",
+  "type": "object",
+  "required": ["type"],
+  "properties": {
+    "type": { "const": "agent_start" },
+    "sessionId": { "type": "string" },
+    "timestamp": { "type": "integer" }
+  }
+}

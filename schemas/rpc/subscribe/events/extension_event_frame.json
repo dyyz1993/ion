@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/extension_event_frame.json",
+  "title": "extension_event 帧 — extension 订阅流的下行帧",
+  "description": "subscribe {extension}（或无参数 subscribe_all）后由 ExtensionEventBus 推送（bin/ion.rs accept 循环 extension 分支）。persisted 表示该事件是否已持久化到 session.jsonl；visibility 二值；correlation_id 为追踪关联 id（可空串）。customType 是开放集合（各扩展自定义：memory_saved/todo_updated/hook_handler_executed/permission_changed/file_snapshot_*/session_switch_seen 等）。",
+  "type": "object",
+  "required": ["type", "extension", "customType", "session", "persisted", "visibility", "correlation_id", "data"],
+  "properties": {
+    "type": { "const": "extension_event" },
+    "extension": { "type": "string" },
+    "customType": { "type": "string" },
+    "session": { "type": ["string", "null"] },
+    "persisted": { "type": "boolean" },
+    "visibility": { "enum": ["llm_and_ui", "ui_only"] },
+    "correlation_id": { "type": "string" },
+    "data": { "description": "事件载荷（自由 JSON）" }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/tool_execution_end.json",
+  "title": "tool_execution_end — 工具执行结束",
+  "description": "StreamingExtension::on_tool_execution_end。isError 标记失败；result 为 ToolResult 载荷；durationMs 为执行耗时。",
+  "type": "object",
+  "required": ["type", "toolCallId", "toolName", "isError", "result"],
+  "properties": {
+    "type": { "const": "tool_execution_end" },
+    "sessionId": { "type": "string" },
+    "toolCallId": { "type": "string" },
+    "toolName": { "type": "string" },
+    "isError": { "type": "boolean" },
+    "result": { "description": "工具结果（自由 JSON；失败时为错误载荷）" },
+    "durationMs": { "type": "integer", "minimum": 0 },
+    "timestamp": { "type": "integer" }
+  }
+}

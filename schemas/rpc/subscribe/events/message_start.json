@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/message_start.json",
+  "title": "message_start — 单条消息开始（对齐 pi）",
+  "description": "StreamingExtension::on_message_start。content_length 为 UTF-8 字节数（content.len()）。",
+  "type": "object",
+  "required": ["type", "role", "content_length"],
+  "properties": {
+    "type": { "const": "message_start" },
+    "sessionId": { "type": "string" },
+    "role": { "type": "string" },
+    "content_length": { "type": "integer", "minimum": 0 },
+    "timestamp": { "type": "integer" }
+  }
+}

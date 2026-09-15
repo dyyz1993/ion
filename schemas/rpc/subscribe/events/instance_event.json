@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/instance_event.json",
+  "title": "instance_event — epoch 盖章的实例事件帧",
+  "description": "SessionRouter::stamp_instance_event / snapshot_event 生成的转发信封（bin/ion.rs）。旧 instance_event 形状 + 新增 epoch 字段（向后兼容：未知字段忽略）。snapshot=true 仅出现在快照帧（每连接至多一条、严格先于 replay 与实时增量）；replayed=true 仅出现在 replay 历史帧。event 字段是 worker 原始事件的 event 对象（形状见 events/worker_event.json 及各内层事件 schema）。",
+  "type": "object",
+  "required": ["type", "session", "epoch", "event"],
+  "properties": {
+    "type": { "const": "instance_event" },
+    "session": { "type": "string" },
+    "epoch": { "type": "integer", "minimum": 1 },
+    "snapshot": {
+      "const": true,
+      "description": "仅快照帧携带；客户端判据 .snapshot==true（或 .event.customType==\"snapshot\"）"
+    },
+    "replayed": {
+      "const": true,
+      "description": "仅 replay 历史帧携带（快照之后、实时增量之前）"
+    },
+    "event": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "enum": [
+            "text_delta",
+            "agent_start",
+            "agent_end",
+            "agent_stopped",
+            "message_start",
+            "message_end",
+            "tool_call_delta",
+            "tool_call",
+            "tool_execution_start",
+            "tool_execution_update",
+            "tool_execution_end",
+            "auto_retry_start",
+            "auto_retry_end",
+            "error",
+            "worker_ready",
+            "extension_event",
+            "custom",
+            "child_crashed",
+            "rpc_response"
+          ],
+          "description": "内层事件类型全集（19 种，穷举自源码产生点；tool_call 为遗留类型，泵白名单保留但当前无产生点）"
+        }
+      }
+    }
+  }
+}

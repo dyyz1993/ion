@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/message_end.json",
+  "title": "message_end — 单条消息结束（含 token 用量，对齐 pi）",
+  "description": "StreamingExtension::on_message_end。usage 来自 ion_provider Usage。",
+  "type": "object",
+  "required": ["type", "role", "usage"],
+  "properties": {
+    "type": { "const": "message_end" },
+    "sessionId": { "type": "string" },
+    "role": { "type": "string" },
+    "usage": {
+      "type": "object",
+      "required": ["input", "output", "total"],
+      "properties": {
+        "input": { "type": "integer", "minimum": 0 },
+        "output": { "type": "integer", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "timestamp": { "type": "integer" }
+  }
+}
