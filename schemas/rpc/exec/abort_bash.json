@@ -112,6 +112,6 @@
   },
   "x-quirks": [
     "所有失败变体都在 success:true 信封内（data.error），只有信封级故障才走 error 分支",
-    "🔴 已知缺陷（master@6003182，实测复现）：worker 主分发臂内 process_map 的 blocking_lock()（src/worker_rpc.rs:5508）在 tokio runtime 上下文 panic —— abort_bash 一旦走到锁路径（bid 非空且 bash 扩展启用）即杀死 worker 进程，无任何响应。本 schema 描述的是修复后的预期契约；修复批应改 parking_lot::lock 或 spawn_blocking。"
+    "P0-1 已修复（fix4/h1-exec-p0）：原实现 process_map 的 blocking_lock()（master@6003182 src/worker_rpc.rs:5508）在 tokio runtime 上下文 panic——abort_bash 一旦走到锁路径（bid 非空且 bash 扩展启用）即杀死 worker 进程（exit 101）无任何响应。现改为 lock().await（临界区纯同步小段：clone 字段即 drop 守卫，不跨 await、不持锁 kill），handler 逻辑抽为 abort_bash_response 可单测（真实 sleep 子进程 kill 验证 4/4 绿）。动态验证已恢复：见 tests/rpc_schema_exec_test.rs（缺 bid 变体 + 未知 bid 走锁路径变体 + worker 存活证明）。"
   ]
 }

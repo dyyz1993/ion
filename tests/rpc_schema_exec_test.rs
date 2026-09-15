@@ -585,10 +585,26 @@ fn dynamic_worker_exec_commands_validate_against_schemas() {
     let resp = proc.send_command("bash_command", serde_json::json!({}));
     assert_eq!(resp["success"].as_bool(), Some(false), "missing command must error: {resp}");
 
-    // abort_bash 不做动态验证（master@6003182 已知缺陷实测复现：
-    // worker_rpc.rs:5508 blocking_lock 在 runtime 内 panic → 命令直接杀死 worker，
-    // 无响应）。契约（三变体形状）由静态层覆盖；缺陷细节见 abort_bash.json 的
-    // x-quirks 与本批次报告。修复批落地后再补动态验证。
+    // abort_bash 动态验证（P0-1 修复后恢复）：修复前 bid 非空即走 process_map
+    // 锁路径 → blocking_lock 在 tokio runtime 内 panic → 一发命令杀死 worker
+    // 进程（master@6003182 实测复现，见 abort_bash.json x-quirks）。修复后
+    // lock().await，未知 bid 正常返回 data.error + available 列表。
+    let v = compile_schema(&dir.join("abort_bash.json"));
+    // ① 缺 bid 变体（不触锁路径）
+    let data = expect_valid(
+        &mut proc, &v, "abort_bash(missing bid)", "abort_bash", serde_json::json!({}),
+    );
+    assert_eq!(data["error"], "missing 'bid' parameter");
+    // ② 未知 bid 变体：走 process_map 锁路径（修复前此处即杀死 worker）
+    let data = expect_valid(
+        &mut proc, &v, "abort_bash(not found)", "abort_bash",
+        serde_json::json!({"bid": "g5ghost"}),
+    );
+    assert!(data["error"].as_str().unwrap_or_default().contains("not found"));
+    assert!(data["available"].is_array(), "not-found 变体附 available: {data}");
+    // ③ 存活证明：abort_bash 之后 worker 仍正常服务（修复前此处拿不到响应）
+    let v_continue = compile_schema(&dir.join("continue.json"));
+    expect_valid(&mut proc, &v_continue, "continue", "continue", serde_json::json!({}));
 
     // ── 远程工具注册 ──
     let v = compile_schema(&dir.join("register_remote_tool.json"));
