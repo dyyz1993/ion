@@ -1,0 +1,269 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/config/get_settings.json",
+  "title": "RPC get_settings response",
+  "description": "读取配置。无 key 参数 → 全量 redacted_value()（脱敏形态：api_key/provider_api_keys/env/headers 全部 '***' 或 null，schema 强制密钥位不得出现明文）；带 key → {key, value}（key=api_key 时 value 强制 '***' 或 ''，if/then 编码）。 ION worker RPC 响应信封：{id, type:'response', command, success, data|error}。success=true → data；success=false → error（output_error_response）。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "command",
+    "success"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "command": {
+      "const": "get_settings"
+    },
+    "success": {
+      "type": "boolean"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "default_provider": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "default_model": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "api_key": {
+                  "oneOf": [
+                    {
+                      "const": "***"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "base_url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "provider_api_keys": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "oneOf": [
+                      {
+                        "const": "***"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "providers": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "api": {
+                        "type": "string"
+                      },
+                      "base_url": {
+                        "type": "string"
+                      },
+                      "api_key": {
+                        "oneOf": [
+                          {
+                            "const": "***"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "headers": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "oneOf": [
+                            {
+                              "const": "***"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "models": {
+                        "type": "array"
+                      },
+                      "model_overrides": {
+                        "type": [
+                          "object",
+                          "null"
+                        ]
+                      }
+                    }
+                  }
+                },
+                "extensions": {
+                  "type": "object"
+                },
+                "tier_models": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "security_mode": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "mcp_servers": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "properties": {
+                      "command": {
+                        "type": "string"
+                      },
+                      "args": {
+                        "type": "array"
+                      },
+                      "url": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "type": "string"
+                      },
+                      "env": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "oneOf": [
+                            {
+                              "const": "***"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "headers": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "oneOf": [
+                            {
+                              "const": "***"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                "runtime": {
+                  "type": "object"
+                },
+                "session": {
+                  "type": "object"
+                },
+                "skills": {
+                  "type": "object"
+                },
+                "fetch": {
+                  "type": "object"
+                },
+                "remote_workers": {
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "key",
+                "value"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "value": {}
+              },
+              "if": {
+                "properties": {
+                  "key": {
+                    "const": "api_key"
+                  }
+                },
+                "required": [
+                  "key"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "value": {
+                    "enum": [
+                      "***",
+                      ""
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true
+}

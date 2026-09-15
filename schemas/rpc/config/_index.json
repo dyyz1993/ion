@@ -1,0 +1,405 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/config/_index.json",
+  "domain": "config",
+  "title": "ION RPC schema — 配置/审批/快照/扩展/MCP 域",
+  "description": "S4 批次：把 ION 动态 JSON RPC 的响应契约固化为 JSON Schema (draft 2020-12)。每个文件自包含（无外部 $ref），校验对象是完整响应信封 {id,type,command,success,data|error}。以 src/worker_rpc.rs 分发 match 的实际实现为准提取，历史怪癖（如 set_model 响应 command='get_state'、call_tool 的 output 为转义字符串、extension_rpc 双路径形状分裂、get_settings 脱敏形态）均已如实编码。",
+  "conventions": {
+    "envelope": "ION worker RPC 响应信封：{id, type:'response', command, success, data|error}。success=true → data；success=false → error（output_error_response）。",
+    "selfContained": "每个 schema 无外部 $ref，可独立用 jsonschema 校验器加载",
+    "oneOf": "success=true 分支校验 data；success=false 分支校验 error",
+    "redaction": "get_settings 的密钥位（api_key/provider_api_keys/env/headers 等）schema 强制为 '***' 或 null（对齐 redact_json_secrets 三层规则）"
+  },
+  "quirks": [
+    "set_model 响应信封 command='get_state'（历史怪癖）",
+    "call_tool 成功时 data.output 是工具返回 JSON 的转义字符串（AgentResult<String>）",
+    "extension_rpc 双路径形状分裂：worker=data{method,output}；manager(singleton)=扩展返回值直接作为 data",
+    "get_settings 全量响应是脱敏后的形态（redacted_value），密钥位一律 '***'/null",
+    "get_available_models / get_tier_models / get_mcp_servers 的 data 是裸数组/裸 map，不包对象壳",
+    "review_pending 只回 diffStat 摘要不回内容；完整 diff 走 review_file_diff",
+    "permission_* 响应外层是 worker 包装 {success,data}，内层 data 才是 permission 扩展返回",
+    "get_tools / get_all_tools / get_flag_values 是硬编码 stub，真实数据用 get_active_tools / get_flags",
+    "mcp_* 的 data 来自 host resp.data 转发，schema 允许 object|null"
+  ],
+  "groups": [
+    "config",
+    "approval",
+    "snapshot",
+    "extension",
+    "mcp"
+  ],
+  "commandCount": 53,
+  "commands": [
+    {
+      "name": "get_settings",
+      "file": "get_settings.json",
+      "group": "config",
+      "description": "读取配置。",
+      "dynamicTested": true
+    },
+    {
+      "name": "set_settings",
+      "file": "set_settings.json",
+      "group": "config",
+      "description": "写入单键配置（default_provider/default_model/api_key/base_url）。",
+      "dynamicTested": true
+    },
+    {
+      "name": "set_model",
+      "file": "set_model.json",
+      "group": "config",
+      "description": "切换模型。",
+      "dynamicTested": true
+    },
+    {
+      "name": "cycle_model",
+      "file": "cycle_model.json",
+      "group": "config",
+      "description": "循环切换当前 provider 的模型。",
+      "dynamicTested": false
+    },
+    {
+      "name": "get_available_models",
+      "file": "get_available_models.json",
+      "group": "config",
+      "description": "列出可用模型。",
+      "dynamicTested": true
+    },
+    {
+      "name": "get_tier_models",
+      "file": "get_tier_models.json",
+      "group": "config",
+      "description": "读 tier 别名映射（fast/pro/max → 'provider/model'）。",
+      "dynamicTested": true
+    },
+    {
+      "name": "set_tier_models",
+      "file": "set_tier_models.json",
+      "group": "config",
+      "description": "写 tier 别名。",
+      "dynamicTested": true
+    },
+    {
+      "name": "set_thinking_level",
+      "file": "set_thinking_level.json",
+      "group": "config",
+      "description": "设置思考级别（off/minimal/low/medium/high/xhigh）+ SettingsChanged 事件。",
+      "dynamicTested": true
+    },
+    {
+      "name": "cycle_thinking_level",
+      "file": "cycle_thinking_level.json",
+      "group": "config",
+      "description": "循环切换思考级别，写 SessionIndex。",
+      "dynamicTested": true
+    },
+    {
+      "name": "set_cwd",
+      "file": "set_cwd.json",
+      "group": "config",
+      "description": "切换工作目录。",
+      "dynamicTested": true
+    },
+    {
+      "name": "add_dir",
+      "file": "add_dir.json",
+      "group": "config",
+      "description": "添加额外工作目录（参数 dir|cwd|path 均可）。",
+      "dynamicTested": true
+    },
+    {
+      "name": "remove_dir",
+      "file": "remove_dir.json",
+      "group": "config",
+      "description": "移除额外工作目录。",
+      "dynamicTested": true
+    },
+    {
+      "name": "list_dirs",
+      "file": "list_dirs.json",
+      "group": "config",
+      "description": "列出工作目录（cwd + extra_cwds）。",
+      "dynamicTested": true
+    },
+    {
+      "name": "set_permission_mode",
+      "file": "set_permission_mode.json",
+      "group": "config",
+      "description": "切命令守卫模式（open/blacklist/whitelist）。",
+      "dynamicTested": true
+    },
+    {
+      "name": "set_auto_compaction",
+      "file": "set_auto_compaction.json",
+      "group": "config",
+      "description": "开关自动压缩。",
+      "dynamicTested": true
+    },
+    {
+      "name": "set_auto_retry",
+      "file": "set_auto_retry.json",
+      "group": "config",
+      "description": "开关 LLM 自动重试。",
+      "dynamicTested": true
+    },
+    {
+      "name": "review_pending",
+      "file": "review_pending.json",
+      "group": "approval",
+      "description": "列出待审文件（只回摘要：path/status/diffStat，不含内容，大 diff 走 review_file_diff）。",
+      "dynamicTested": true
+    },
+    {
+      "name": "review_file_diff",
+      "file": "review_file_diff.json",
+      "group": "approval",
+      "description": "单文件完整 diff（tree 快照 + baseline 语义）。",
+      "dynamicTested": true
+    },
+    {
+      "name": "review_approve",
+      "file": "review_approve.json",
+      "group": "approval",
+      "description": "批准单文件。",
+      "dynamicTested": true
+    },
+    {
+      "name": "review_reject",
+      "file": "review_reject.json",
+      "group": "approval",
+      "description": "拒绝单文件并回滚到 baseline，注入 <approval_feedback> XML deny 消息进 session JSONL。",
+      "dynamicTested": true
+    },
+    {
+      "name": "review_approve_all",
+      "file": "review_approve_all.json",
+      "group": "approval",
+      "description": "批准全部 pending（failures 含部分失败明细）。",
+      "dynamicTested": true
+    },
+    {
+      "name": "review_reject_all",
+      "file": "review_reject_all.json",
+      "group": "approval",
+      "description": "拒绝全部并批量回滚 + 单条批量 deny 消息注入。",
+      "dynamicTested": true
+    },
+    {
+      "name": "review_approvals",
+      "file": "review_approvals.json",
+      "group": "approval",
+      "description": "审批表列表（可选 params.status 过滤 pending/approved/rejected）。",
+      "dynamicTested": true
+    },
+    {
+      "name": "permission_store_decision",
+      "file": "permission_store_decision.json",
+      "group": "approval",
+      "description": "存储权限决策（always allow）。",
+      "dynamicTested": true
+    },
+    {
+      "name": "permission_list_stored",
+      "file": "permission_list_stored.json",
+      "group": "approval",
+      "description": "列出已存储决策规则（session + project 两级）。",
+      "dynamicTested": true
+    },
+    {
+      "name": "permission_remove_stored",
+      "file": "permission_remove_stored.json",
+      "group": "approval",
+      "description": "删除某条存储决策（removed = 被删规则对象）。",
+      "dynamicTested": true
+    },
+    {
+      "name": "permission_clear_stored",
+      "file": "permission_clear_stored.json",
+      "group": "approval",
+      "description": "清空所有存储决策（removed = 删除条数）。",
+      "dynamicTested": true
+    },
+    {
+      "name": "restore_files",
+      "file": "restore_files.json",
+      "group": "snapshot",
+      "description": "代码回滚到指定 turn（tree-hash restore）。",
+      "dynamicTested": true
+    },
+    {
+      "name": "turn_file_diff",
+      "file": "turn_file_diff.json",
+      "group": "snapshot",
+      "description": "单轮单文件 diff。",
+      "dynamicTested": true
+    },
+    {
+      "name": "turn_changes",
+      "file": "turn_changes.json",
+      "group": "snapshot",
+      "description": "单轮变更文件列表。",
+      "dynamicTested": true
+    },
+    {
+      "name": "get_modified_files",
+      "file": "get_modified_files.json",
+      "group": "snapshot",
+      "description": "变更文件清单（可选 fromTurn/toTurn 范围）。",
+      "dynamicTested": true
+    },
+    {
+      "name": "get_batch_diffs",
+      "file": "get_batch_diffs.json",
+      "group": "snapshot",
+      "description": "批量 diff（可选 fromTurn/toTurn 范围，按 path 取首尾快照）。",
+      "dynamicTested": false
+    },
+    {
+      "name": "get_file_history",
+      "file": "get_file_history.json",
+      "group": "snapshot",
+      "description": "单文件快照历史。",
+      "dynamicTested": false
+    },
+    {
+      "name": "extension_rpc",
+      "file": "extension_rpc.json",
+      "group": "extension",
+      "description": "调扩展私有 RPC。",
+      "dynamicTested": true
+    },
+    {
+      "name": "call_tool",
+      "file": "call_tool.json",
+      "group": "extension",
+      "description": "直接调 LLM 注册的工具（绕过 LLM）。",
+      "dynamicTested": true
+    },
+    {
+      "name": "extension_list",
+      "file": "extension_list.json",
+      "group": "extension",
+      "description": "列出已加载的 WASM 扩展（.wasm 文件级，区别于 get_extensions 的内核扩展名）。",
+      "dynamicTested": true
+    },
+    {
+      "name": "extension_add",
+      "file": "extension_add.json",
+      "group": "extension",
+      "description": "加载 .wasm 扩展并注册其工具。",
+      "dynamicTested": false
+    },
+    {
+      "name": "extension_remove",
+      "file": "extension_remove.json",
+      "group": "extension",
+      "description": "卸载 .wasm 扩展并反注册工具。",
+      "dynamicTested": false
+    },
+    {
+      "name": "extension_reload",
+      "file": "extension_reload.json",
+      "group": "extension",
+      "description": "热重载 .wasm 扩展（先卸旧再加新）。",
+      "dynamicTested": false
+    },
+    {
+      "name": "get_extensions",
+      "file": "get_extensions.json",
+      "group": "extension",
+      "description": "列出已加载的内核扩展名（ExtensionRunner）。",
+      "dynamicTested": true
+    },
+    {
+      "name": "get_flags",
+      "file": "get_flags.json",
+      "group": "extension",
+      "description": "读扩展 flag。",
+      "dynamicTested": true
+    },
+    {
+      "name": "set_flag",
+      "file": "set_flag.json",
+      "group": "extension",
+      "description": "写扩展 flag。",
+      "dynamicTested": true
+    },
+    {
+      "name": "get_active_tools",
+      "file": "get_active_tools.json",
+      "group": "extension",
+      "description": "列出当前激活工具名。",
+      "dynamicTested": true
+    },
+    {
+      "name": "set_active_tools",
+      "file": "set_active_tools.json",
+      "group": "extension",
+      "description": "限制激活工具集（restrict_tools）。",
+      "dynamicTested": true
+    },
+    {
+      "name": "get_tools",
+      "file": "get_tools.json",
+      "group": "extension",
+      "description": "⚠️ 硬编码 stub（9 个固定工具名），非真实工具表。",
+      "dynamicTested": false
+    },
+    {
+      "name": "get_all_tools",
+      "file": "get_all_tools.json",
+      "group": "extension",
+      "description": "⚠️ 硬编码 stub：恒返回空数组。",
+      "dynamicTested": false
+    },
+    {
+      "name": "get_flag_values",
+      "file": "get_flag_values.json",
+      "group": "extension",
+      "description": "⚠️ 硬编码 stub：恒返回空对象。",
+      "dynamicTested": false
+    },
+    {
+      "name": "get_skills",
+      "file": "get_skills.json",
+      "group": "extension",
+      "description": "列出全局 + 项目级 skills（.md，brief 取前 3 行截 80 字符）。",
+      "dynamicTested": true
+    },
+    {
+      "name": "get_mcp_servers",
+      "file": "get_mcp_servers.json",
+      "group": "mcp",
+      "description": "列出 MCP server 状态（方案 C：worker 经 manager_bridge 转发 host McpManager.server_list_json，data 是裸数组）。",
+      "dynamicTested": true
+    },
+    {
+      "name": "mcp_toggle_server",
+      "file": "mcp_toggle_server.json",
+      "group": "mcp",
+      "description": "启停 MCP server（转发 host）。",
+      "dynamicTested": false
+    },
+    {
+      "name": "mcp_restart_server",
+      "file": "mcp_restart_server.json",
+      "group": "mcp",
+      "description": "重启 MCP server（转发 host，成功 status='connected'）。",
+      "dynamicTested": false
+    },
+    {
+      "name": "mcp_reload",
+      "file": "mcp_reload.json",
+      "group": "mcp",
+      "description": "热重载 MCP 配置（转发 host，重读 config.json mcp_servers）。",
+      "dynamicTested": true
+    },
+    {
+      "name": "mcp_read_resource",
+      "file": "mcp_read_resource.json",
+      "group": "mcp",
+      "description": "读 MCP 资源文本内容（转发 host，30s 超时）。",
+      "dynamicTested": false
+    }
+  ]
+}
