@@ -1182,15 +1182,14 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         // LspCheckTool 不再暴露给 LLM（设计纠正：LSP 是钩子驱动，write/edit 后自动触发）
     }
 
-    // 发 ready 信号
-    output(&serde_json::json!({
-        "type": "ready",
-        "session": sid,
-        "model": model_id,
-        "provider": provider,
-        "channels": channels,
-        "version": VERSION,
-    }));
+    // 发 ready 信号（信封形状由 ion-protocol 定义）
+    output(&ion_protocol::ready_frame(
+        &sid,
+        &model_id,
+        &provider,
+        &channels,
+        VERSION,
+    ));
 
     // RPC 主循环（async stdin + ManagerBridge correlation）
     //
@@ -1304,10 +1303,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     // 键控的路径全部误拒（2026-08-27 gateway bootstrap busy-empty 空白根因）
     println!(
         "{}",
-        serde_json::json!({
-            "type": "event",
-            "event": {"type": "worker_ready"}
-        })
+        ion_protocol::worker_ready_event()
     );
 
     // 孤儿防护（W8）：host 被 kill -9 后本进程成孤儿继续跑——stdout EPIPE 被
@@ -7083,24 +7079,12 @@ impl crate::agent::extension::Extension for SessionProbeExtension {
 }
 
 fn output_response(id: &str, command: &str, data: &serde_json::Value) {
-    output(&serde_json::json!({
-        "id": id,
-        "type": "response",
-        "command": command,
-        "success": true,
-        "data": data,
-    }));
+    output(&ion_protocol::worker_response::success(id, command, data));
     emit_rpc_response_event(id, command, true, None);
 }
 
 fn output_error_response(id: &str, command: &str, error: &str) {
-    output(&serde_json::json!({
-        "id": id,
-        "type": "response",
-        "command": command,
-        "success": false,
-        "error": error,
-    }));
+    output(&ion_protocol::worker_response::error(id, command, error));
     emit_rpc_response_event(id, command, false, Some(error));
 }
 
@@ -7156,18 +7140,7 @@ fn emit_rpc_response_event(id: &str, command: &str, success: bool, error: Option
         .ok()
         .and_then(|g| g.clone())
         .unwrap_or_default();
-    let mut event = serde_json::json!({
-        "type": "rpc_response",
-        "id": id,
-        "method": command,
-        "success": success,
-        "sessionId": session_id,
-        "timestamp": now_ms(),
-    });
-    if let Some(err) = error {
-        event["error"] = serde_json::Value::String(err.chars().take(200).collect());
-    }
-    output(&serde_json::json!({ "type": "event", "event": event }));
+    output(&ion_protocol::rpc_response_event(&session_id, id, command, success, error));
 }
 
 // ---------------------------------------------------------------------------
