@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/request_restart.json",
+  "title": "RPC request_restart response",
+  "description": "自进化 watchdog 双版本切换哨兵：写 /tmp/.ion-evolve-restart 哨兵文件（watchdog.sh 轮询）。worker 级（带 command 字段）与 host 级（不带 command，内容含 pid）双实现，data 形状一致 {notified,file}。写失败走 error 信封。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "command": {
+      "type": "string",
+      "description": "worker 级响应回显命令名；host 级响应不带此字段"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "notified": {
+              "const": true
+            },
+            "file": {
+              "const": "/tmp/.ion-evolve-restart"
+            }
+          },
+          "required": [
+            "notified",
+            "file"
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true,
+  "x-quirks": [
+    "worker 级信封带 command:'request_restart'；host 级信封不带 command——双形状如实覆盖"
+  ]
+}

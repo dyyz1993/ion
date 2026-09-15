@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/send_custom_message.json",
+  "title": "RPC send_custom_message response",
+  "description": "以 Message::Custom（非 User，历史重建可与真实用户消息区分）投递自定义消息：deliverAs=steer 入插队队列，其余值（含缺省 followUp/nextTurn）入 follow_up 队列。回执 status:queued。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success",
+    "command"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "send_custom_message"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "queued"
+            },
+            "queue": {
+              "type": "string",
+              "description": "回显 deliverAs 原值（steer | followUp | nextTurn | 任意传入值）"
+            }
+          },
+          "required": [
+            "status",
+            "queue"
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "description": "customType",
+          "type": "string"
+        },
+        "content": {
+          "description": "文本内容",
+          "type": "string"
+        },
+        "deliverAs": {
+          "description": "投递方式：steer 插队 / 缺省 followUp 下一轮",
+          "type": "string"
+        }
+      }
+    }
+  },
+  "x-quirks": [
+    "queue 字段回显 deliverAs 原样（未归一化）"
+  ]
+}

@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/list_sandboxes.json",
+  "title": "RPC list_sandboxes response (host)",
+  "description": "host 级：列出 remote_workers 沙盒池状态（含各沙盒当前承载的 worker 数）。host 响应不带 command 字段。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success"
+  ],
+  "properties": {
+    "id": {
+      "description": "透传请求 id（解析失败时为 null）"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "sandboxes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "remote_workers 配置名"
+                  },
+                  "dest": {
+                    "type": "string",
+                    "description": "user@hostname:port 展示串"
+                  },
+                  "health": {
+                    "type": "string",
+                    "enum": [
+                      "unknown",
+                      "reachable",
+                      "unreachable",
+                      "version_mismatch"
+                    ],
+                    "description": "SandboxHealth snake_case 序列化"
+                  },
+                  "version": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "最近探测到的远端 ion --version"
+                  },
+                  "worker_count": {
+                    "type": "integer"
+                  },
+                  "last_probe": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "description": "最近探测 unix 秒"
+                  }
+                },
+                "required": [
+                  "name",
+                  "dest",
+                  "health",
+                  "worker_count"
+                ]
+              }
+            }
+          },
+          "required": [
+            "sandboxes"
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true,
+  "x-quirks": [
+    "worker_count 由 registry 现算合并进池状态；未配置 remote_workers 时为空数组"
+  ]
+}

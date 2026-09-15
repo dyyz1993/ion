@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/drain_follow_ups.json",
+  "title": "RPC drain_follow_ups response",
+  "description": "主动 drain follow_up 通道并入盘（典型：bash background=true → sleep N → drain_follow_ups → JSONL 出现 <bash_result>）。可选先 sleep wait_ms 等长任务完成。只把 follow_up_queue 写盘；steering/nextTurn 队列长度一并回传供核对。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success",
+    "command"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "drain_follow_ups"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "drained": {
+              "type": "integer",
+              "description": "follow_up_rx 通道取到的消息数"
+            },
+            "written": {
+              "type": "integer",
+              "description": "落盘 JSONL 的消息数（=messages 长度）"
+            },
+            "messages": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "description": "写入历史的消息（serde Message 形态）"
+            },
+            "queue_lengths": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "steering": {
+                  "type": "integer"
+                },
+                "followUp": {
+                  "type": "integer"
+                },
+                "nextTurn": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "steering",
+                "followUp",
+                "nextTurn"
+              ]
+            }
+          },
+          "required": [
+            "drained",
+            "written",
+            "messages",
+            "queue_lengths"
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "wait_ms": {
+          "description": "drain 前先 sleep 的毫秒数（默认 0）",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

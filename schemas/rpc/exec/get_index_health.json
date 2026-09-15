@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/get_index_health.json",
+  "title": "RPC get_index_health response (host)",
+  "description": "host 级：sessions.index.json 体检（S2 注记称归'会话目录域'，但 session 域索引未收录——exec 批次收编兜底）。host 响应不带 command 字段。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success"
+  ],
+  "properties": {
+    "id": {
+      "description": "透传请求 id（解析失败时为 null）"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "parse_ok": {
+              "type": "boolean"
+            },
+            "entries": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "description": "解析成功时的 session 条数；失败 null"
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "last_issue": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "本 host 进程视角最近持久化问题"
+            },
+            "quarantined_files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "索引目录下 *.corrupt-* 隔离文件"
+            }
+          },
+          "required": [
+            "path",
+            "parse_ok",
+            "entries",
+            "error",
+            "last_issue",
+            "quarantined_files"
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true
+}

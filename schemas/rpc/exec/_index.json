@@ -1,0 +1,416 @@
+{
+  "reconciliation": {
+    "date": "2026-09-15",
+    "baseRevision": "6003182",
+    "sources": [
+      "src/worker_rpc.rs 主分发 match（1353-6240，134 臂）",
+      "src/bin/ion.rs handle_manager_command 读路径（8 臂）+ handle_manager_command_write（20 臂）+ 兜底直读/空闲合成",
+      "src/worker_registry.rs manager_command 桥接 match（3987+，21 臂，内部传输）"
+    ],
+    "totalDistinctRpcCommands": 176,
+    "coveredByFourDomains": 129,
+    "coveredThisBatch": 43,
+    "coveredByFourDomainsNote": "session 34（S1）+ worker 25（S2）+ subscribe 8 命令（S3）+ config 53（S4），去重后 129（get_state/get_active_tools/list_sessions/get_overview/create_session 等同命令跨域双登记按 1 计）",
+    "remaining": "0 对外 RPC 命令未覆盖；永久 outOfScope 见 outOfScope 段"
+  },
+  "outOfScope": {
+    "_comment": "以下为内部传输协议/进程内句柄，不属于对外 RPC 契约面，永久不立 schema",
+    "llm_chunk": "worker 主分发臂（worker_rpc.rs:1355）：Provider Bridge M2 — Manager 经 stdin 代发 LLM 流式分片的路由入口，内部传输协议",
+    "manager_response": "worker 主分发臂（worker_rpc.rs:6190）：ManagerBridge 回执按 _reply_to 触发 oneshot，内部传输协议",
+    "bridge_manager_commands": "worker_registry.rs:3987 match（llm_request/host_call/session_entry/llm_cancel/wait_then_respond/deliver_response/peer_follow_up/send_follow_up/mcp_call_tool/mcp_list_tools/mcp_get_servers）：worker stdin/stdout 上的 manager_command 内部桥接协议；其对外用户面命令（create_worker/send_to_worker/channel_send/resume_worker/await_worker/kill_worker/mcp_*）已由 S2/S4 覆盖",
+    "agent_rpc_handle": "worker_rpc.rs:6848 AgentRpcHandle::call（get_context_usage/get_full_messages/steer/inject_follow_up/llm_call/get_worker_status/compact_now/create_worktree/read_file/write_file/list_dir/path_exists/glob/data_dirs）：WASM 扩展进程内句柄，非 RPC 面",
+    "export_html": "worker 侧存根（worker_rpc.rs:3550 恒 {\"path\":\"\"}），S1 已声明暂不立契约，exec 批次沿用（真实导出走 CLI export 链路）",
+    "create_workspace_session/close_workspace_session": "当前代码（master@6003182）不存在同名 RPC 命令——S2 注记有误；workspace 子会话经 create_worker(worktree:{...}) + kill_worker 承担（见 tests/session_workspace_ci.sh），两命令形状已由 S2 schema 覆盖"
+  },
+  "crossDomainErrata": [
+    "S1 session/_index.json 缺 get_index_health 登记（S2 注记其归会话目录域，S1 未收录）→ 本批次收编 exec/host-misc，session 域补登时可直接引用 schemas/rpc/exec/get_index_health.json",
+    "S1 outOfScope 注记 'prompt/steer/abort/continue/follow_up 未分配' 中：steer/abort/follow_up 实际已由 S2 worker 域覆盖（S1 注记过期）；prompt/continue 由本批次覆盖",
+    "S2 worker/_index.json 注记 'workspace 子会话（create_workspace_session/close_workspace_session/get_session_snapshot）归 session workspace 域'：前两者在 master@6003182 无对应 handler（经由 create_worker worktree 配置承担），get_session_snapshot 真实存在、本批次已收编"
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/_index.json",
+  "title": "ION RPC Schema Index — 执行域 + 四域收尾兜底（G5 缺口批次）",
+  "description": "G5 批次：全量对账三源命令臂（worker_rpc 主分发 134 臂 / ion.rs host 读写两路径 / worker_registry 内部桥接）与 S1-S4 四域 _index 求差，补齐全部未覆盖对外命令。本域重点是执行族 prompt（视觉 images[mimeType]/origin/behavior 忙时分派/!cmd 拦截/queued 回执），另含会话 JSONL 追加族、agent 元信息族、远程工具注册、host 杂项（沙盒/快照/索引体检）。每个 schema 校验【完整响应信封】（worker 级带 command，host 级不带——ion-protocol host_response 差异如实编码）；请求 params 在 $defs/requestParams。跨域错漏只记录在本文件，不改别域文件。",
+  "domain": "exec",
+  "baseRevision": "6003182",
+  "envelope": {
+    "worker": {
+      "type": "object",
+      "description": "worker 级信封：{id, type:'response', command, success, data|error}",
+      "required": [
+        "id",
+        "type",
+        "command",
+        "success"
+      ]
+    },
+    "host": {
+      "type": "object",
+      "description": "host 级信封：{id, type:'response', success, data|error}（无 command；session 字段请求带 session 时回显）",
+      "required": [
+        "id",
+        "type",
+        "success"
+      ]
+    }
+  },
+  "groups": [
+    "execution",
+    "agent",
+    "entry-append",
+    "remote-tool",
+    "misc-worker",
+    "host-misc"
+  ],
+  "commandCount": 43,
+  "commands": [
+    {
+      "command": "abort_bash",
+      "file": "abort_bash.json",
+      "group": "execution",
+      "level": "worker",
+      "schema": "./abort_bash.json",
+      "title": "RPC abort_bash response"
+    },
+    {
+      "command": "abort_retry",
+      "file": "abort_retry.json",
+      "group": "execution",
+      "level": "worker",
+      "schema": "./abort_retry.json",
+      "title": "RPC abort_retry response"
+    },
+    {
+      "command": "append_active_tools_change",
+      "file": "append_active_tools_change.json",
+      "group": "entry-append",
+      "level": "worker",
+      "schema": "./append_active_tools_change.json",
+      "title": "RPC append_active_tools_change response"
+    },
+    {
+      "command": "append_agent_change",
+      "file": "append_agent_change.json",
+      "group": "entry-append",
+      "level": "worker",
+      "schema": "./append_agent_change.json",
+      "title": "RPC append_agent_change response"
+    },
+    {
+      "command": "append_custom_entry",
+      "file": "append_custom_entry.json",
+      "group": "entry-append",
+      "level": "worker",
+      "schema": "./append_custom_entry.json",
+      "title": "RPC append_custom_entry response"
+    },
+    {
+      "command": "append_custom_message",
+      "file": "append_custom_message.json",
+      "group": "entry-append",
+      "level": "worker",
+      "schema": "./append_custom_message.json",
+      "title": "RPC append_custom_message response"
+    },
+    {
+      "command": "append_entry",
+      "file": "append_entry.json",
+      "group": "entry-append",
+      "level": "worker",
+      "schema": "./append_entry.json",
+      "title": "RPC append_entry response"
+    },
+    {
+      "command": "append_label",
+      "file": "append_label.json",
+      "group": "entry-append",
+      "level": "worker",
+      "schema": "./append_label.json",
+      "title": "RPC append_label response"
+    },
+    {
+      "command": "append_model_change",
+      "file": "append_model_change.json",
+      "group": "entry-append",
+      "level": "worker",
+      "schema": "./append_model_change.json",
+      "title": "RPC append_model_change response"
+    },
+    {
+      "command": "append_session_name",
+      "file": "append_session_name.json",
+      "group": "entry-append",
+      "level": "worker",
+      "schema": "./append_session_name.json",
+      "title": "RPC append_session_name response"
+    },
+    {
+      "command": "append_system_event",
+      "file": "append_system_event.json",
+      "group": "entry-append",
+      "level": "worker",
+      "schema": "./append_system_event.json",
+      "title": "RPC append_system_event response"
+    },
+    {
+      "command": "append_thinking_level_change",
+      "file": "append_thinking_level_change.json",
+      "group": "entry-append",
+      "level": "worker",
+      "schema": "./append_thinking_level_change.json",
+      "title": "RPC append_thinking_level_change response"
+    },
+    {
+      "command": "bash",
+      "file": "bash.json",
+      "group": "execution",
+      "level": "worker",
+      "schema": "./bash.json",
+      "title": "RPC bash response"
+    },
+    {
+      "command": "bash_command",
+      "file": "bash_command.json",
+      "group": "execution",
+      "level": "worker",
+      "schema": "./bash_command.json",
+      "title": "RPC bash_command response"
+    },
+    {
+      "command": "clear_queue",
+      "file": "clear_queue.json",
+      "group": "misc-worker",
+      "level": "worker",
+      "schema": "./clear_queue.json",
+      "title": "RPC clear_queue response"
+    },
+    {
+      "command": "clone",
+      "file": "clone.json",
+      "group": "misc-worker",
+      "level": "worker",
+      "schema": "./clone.json",
+      "title": "RPC clone response"
+    },
+    {
+      "command": "continue",
+      "file": "continue.json",
+      "group": "execution",
+      "level": "worker",
+      "schema": "./continue.json",
+      "title": "RPC continue response"
+    },
+    {
+      "command": "copy_fork",
+      "file": "copy_fork.json",
+      "group": "misc-worker",
+      "level": "worker",
+      "schema": "./copy_fork.json",
+      "title": "RPC copy_fork response"
+    },
+    {
+      "command": "drain_follow_ups",
+      "file": "drain_follow_ups.json",
+      "group": "execution",
+      "level": "worker",
+      "schema": "./drain_follow_ups.json",
+      "title": "RPC drain_follow_ups response"
+    },
+    {
+      "command": "get_agent_detail",
+      "file": "get_agent_detail.json",
+      "group": "agent",
+      "level": "worker",
+      "schema": "./get_agent_detail.json",
+      "title": "RPC get_agent_detail response"
+    },
+    {
+      "command": "get_agents_files",
+      "file": "get_agents_files.json",
+      "group": "agent",
+      "level": "worker",
+      "schema": "./get_agents_files.json",
+      "title": "RPC get_agents_files response"
+    },
+    {
+      "command": "get_commands",
+      "file": "get_commands.json",
+      "group": "agent",
+      "level": "worker",
+      "schema": "./get_commands.json",
+      "title": "RPC get_commands response"
+    },
+    {
+      "command": "get_file_diff",
+      "file": "get_file_diff.json",
+      "group": "misc-worker",
+      "level": "worker",
+      "schema": "./get_file_diff.json",
+      "title": "RPC get_file_diff response"
+    },
+    {
+      "command": "get_index_health",
+      "file": "get_index_health.json",
+      "group": "host-misc",
+      "level": "host",
+      "schema": "./get_index_health.json",
+      "title": "RPC get_index_health response (host)"
+    },
+    {
+      "command": "get_latest_agent_change",
+      "file": "get_latest_agent_change.json",
+      "group": "agent",
+      "level": "worker",
+      "schema": "./get_latest_agent_change.json",
+      "title": "RPC get_latest_agent_change response"
+    },
+    {
+      "command": "get_process_snapshot",
+      "file": "get_process_snapshot.json",
+      "group": "agent",
+      "level": "worker",
+      "schema": "./get_process_snapshot.json",
+      "title": "RPC get_process_snapshot response"
+    },
+    {
+      "command": "get_session_snapshot",
+      "file": "get_session_snapshot.json",
+      "group": "host-misc",
+      "level": "host",
+      "schema": "./get_session_snapshot.json",
+      "title": "RPC get_session_snapshot response (host)"
+    },
+    {
+      "command": "get_system_prompt",
+      "file": "get_system_prompt.json",
+      "group": "agent",
+      "level": "worker",
+      "schema": "./get_system_prompt.json",
+      "title": "RPC get_system_prompt response"
+    },
+    {
+      "command": "goal_evolver_run_once",
+      "file": "goal_evolver_run_once.json",
+      "group": "misc-worker",
+      "level": "worker",
+      "schema": "./goal_evolver_run_once.json",
+      "title": "RPC goal_evolver_run_once response"
+    },
+    {
+      "command": "list_sandboxes",
+      "file": "list_sandboxes.json",
+      "group": "host-misc",
+      "level": "host",
+      "schema": "./list_sandboxes.json",
+      "title": "RPC list_sandboxes response (host)"
+    },
+    {
+      "command": "prompt",
+      "file": "prompt.json",
+      "group": "execution",
+      "level": "worker",
+      "schema": "./prompt.json",
+      "title": "RPC prompt response"
+    },
+    {
+      "command": "register_remote_tool",
+      "file": "register_remote_tool.json",
+      "group": "remote-tool",
+      "level": "worker",
+      "schema": "./register_remote_tool.json",
+      "title": "RPC register_remote_tool response"
+    },
+    {
+      "command": "reload",
+      "file": "reload.json",
+      "group": "execution",
+      "level": "worker",
+      "schema": "./reload.json",
+      "title": "RPC reload response"
+    },
+    {
+      "command": "request_restart",
+      "file": "request_restart.json",
+      "group": "misc-worker",
+      "level": "worker+host",
+      "schema": "./request_restart.json",
+      "title": "RPC request_restart response"
+    },
+    {
+      "command": "rollback_preview",
+      "file": "rollback_preview.json",
+      "group": "misc-worker",
+      "level": "worker",
+      "schema": "./rollback_preview.json",
+      "title": "RPC rollback_preview response"
+    },
+    {
+      "command": "sandbox_probe",
+      "file": "sandbox_probe.json",
+      "group": "host-misc",
+      "level": "host",
+      "schema": "./sandbox_probe.json",
+      "title": "RPC sandbox_probe response (host)"
+    },
+    {
+      "command": "send_custom_message",
+      "file": "send_custom_message.json",
+      "group": "entry-append",
+      "level": "worker",
+      "schema": "./send_custom_message.json",
+      "title": "RPC send_custom_message response"
+    },
+    {
+      "command": "set_follow_up_mode",
+      "file": "set_follow_up_mode.json",
+      "group": "execution",
+      "level": "worker",
+      "schema": "./set_follow_up_mode.json",
+      "title": "RPC set_follow_up_mode response"
+    },
+    {
+      "command": "set_session_name",
+      "file": "set_session_name.json",
+      "group": "agent",
+      "level": "worker",
+      "schema": "./set_session_name.json",
+      "title": "RPC set_session_name response"
+    },
+    {
+      "command": "set_steering_mode",
+      "file": "set_steering_mode.json",
+      "group": "execution",
+      "level": "worker",
+      "schema": "./set_steering_mode.json",
+      "title": "RPC set_steering_mode response"
+    },
+    {
+      "command": "switch_agent",
+      "file": "switch_agent.json",
+      "group": "agent",
+      "level": "worker",
+      "schema": "./switch_agent.json",
+      "title": "RPC switch_agent response"
+    },
+    {
+      "command": "switch_session",
+      "file": "switch_session.json",
+      "group": "misc-worker",
+      "level": "worker",
+      "schema": "./switch_session.json",
+      "title": "RPC switch_session response"
+    },
+    {
+      "command": "unregister_remote_tool",
+      "file": "unregister_remote_tool.json",
+      "group": "remote-tool",
+      "level": "worker",
+      "schema": "./unregister_remote_tool.json",
+      "title": "RPC unregister_remote_tool response"
+    }
+  ],
+  "dynamicTested": {
+    "method": "tests/rpc_schema_exec_test.rs — 静态层（index↔文件一致 + draft 2020-12 可编译）+ 动态层（隔离 worker：假 HOME + 私有 ION_SESSION_DIR，ION_FAUX_SCRIPT 驱动真实 agent 轮拿真实 prompt 响应过 schema）",
+    "note": "faux 动态校验必须 ION_FAUX_REPEAT=1（静态脚本只排 1 条响应，repeat 防 run 挂死）"
+  }
+}

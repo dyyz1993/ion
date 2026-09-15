@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/append_model_change.json",
+  "title": "RPC append_model_change response",
+  "description": "追加 model_change 条目并同步 SessionIndex.set_model（O(1) 查询热字段）。向会话 JSONL 追加一条条目（对齐 AGENTS.md 存储落位原则）。成功恒 {status:'appended'}；落盘走 append_session_entry（host 侧同形）。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success",
+    "command"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "append_model_change"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "status": {
+              "const": "appended"
+            }
+          },
+          "required": [
+            "status"
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "provider": {
+          "description": "provider 名",
+          "type": "string"
+        },
+        "modelId": {
+          "description": "模型 id",
+          "type": "string"
+        }
+      }
+    }
+  }
+}

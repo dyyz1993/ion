@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/abort_bash.json",
+  "title": "RPC abort_bash response",
+  "description": "按 bid 终止后台 bash 进程（bash 扩展 process_map 查 pid → kill -TERM）。三类失败都以 success:true + data.error 形态返回（缺 bid / 进程不存在 / bash 扩展未启用）。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success",
+    "command"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "abort_bash"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "bid": {
+                  "type": "string"
+                },
+                "pid": {
+                  "type": "integer"
+                },
+                "command": {
+                  "type": "string"
+                },
+                "signal": {
+                  "const": "SIGTERM"
+                },
+                "success": {
+                  "type": "boolean",
+                  "description": "kill 系统调用是否成功"
+                }
+              },
+              "required": [
+                "bid",
+                "pid",
+                "command",
+                "signal",
+                "success"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "error": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error"
+              ],
+              "description": "进程不存在（附 available: 在跑 bid 列表）/ 缺 bid / bash 扩展未启用"
+            }
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "bid": {
+          "description": "后台进程 id（bash 工具返回的 bid）",
+          "type": "string"
+        }
+      }
+    }
+  },
+  "x-quirks": [
+    "所有失败变体都在 success:true 信封内（data.error），只有信封级故障才走 error 分支",
+    "🔴 已知缺陷（master@6003182，实测复现）：worker 主分发臂内 process_map 的 blocking_lock()（src/worker_rpc.rs:5508）在 tokio runtime 上下文 panic —— abort_bash 一旦走到锁路径（bid 非空且 bash 扩展启用）即杀死 worker 进程，无任何响应。本 schema 描述的是修复后的预期契约；修复批应改 parking_lot::lock 或 spawn_blocking。"
+  ]
+}
