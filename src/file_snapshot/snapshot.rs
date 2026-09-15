@@ -73,6 +73,11 @@ pub struct SnapshotStore {
     snapshots_dir: PathBuf,
     /// object store 引用（用于存内容）
     objects: std::sync::Arc<ObjectStore>,
+    /// step 序号基线：首次分配时从既有 step 文件取 max(seq)（跨进程重启续号），
+    /// 之后进程内单调递增（fix4/h5-sandbox-failover 任务2）
+    step_seq_base: std::sync::OnceLock<u64>,
+    /// step 序号进程内偏移（与 step_seq_base 相加得到下一个 seq）
+    step_seq_counter: std::sync::atomic::AtomicU64,
 }
 
 impl SnapshotStore {
@@ -84,6 +89,8 @@ impl SnapshotStore {
         Self {
             snapshots_dir,
             objects: std::sync::Arc::new(ObjectStore::for_project(project_key)),
+            step_seq_base: std::sync::OnceLock::new(),
+            step_seq_counter: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -97,6 +104,8 @@ impl SnapshotStore {
         Self {
             snapshots_dir,
             objects: std::sync::Arc::new(objects),
+            step_seq_base: std::sync::OnceLock::new(),
+            step_seq_counter: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -248,7 +257,10 @@ impl SnapshotStore {
     // ── tree 快照方法（步骤 2 新增）──
 
     /// 存储 step-snapshot（每 turn 有变更时写一条）
+    /// seq 在此分配（写入顺序权威）：同毫秒写入时排序不再依赖 turn_id 字典序
     pub fn save_step_snapshot(&self, snap: &super::tree_store::StepSnapshot) {
+        let mut snap = snap.clone();
+        snap.seq = self.next_step_seq();
         let safe_name = snap.turn_id.replace('/', "_");
         let path = self
             .snapshots_dir
@@ -257,11 +269,27 @@ impl SnapshotStore {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
-        let json = serde_json::to_string_pretty(snap).unwrap_or_default();
+        let json = serde_json::to_string_pretty(&snap).unwrap_or_default();
         let _ = std::fs::write(&path, json);
     }
 
-    /// 读取全部 step-snapshot（按 timestamp 排序，timestamp 相同按 turn_id）
+    /// 下一个 step seq：基线 = 既有 step 文件的最大 seq（跨进程重启续号），
+    /// 进程内单调递增。基线只扫一次（OnceLock），竞态下最多多扫一次目录（幂等）。
+    fn next_step_seq(&self) -> u64 {
+        let base = *self.step_seq_base.get_or_init(|| {
+            self.load_all_step_snapshots()
+                .iter()
+                .map(|s| s.seq)
+                .max()
+                .unwrap_or(0)
+        });
+        base + self.step_seq_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+    }
+
+    /// 读取全部 step-snapshot（按 timestamp → seq → turn_id 排序）。
+    /// seq 是写入时分配的单调序号：同毫秒写入按真实写入顺序定序（current_tree_hash
+    /// 不再可能取到陈旧快照）；旧格式 step 无 seq（default 0）→ 退化为旧
+    /// (timestamp, turn_id) 行为，向后兼容。
     pub fn load_all_step_snapshots(&self) -> Vec<super::tree_store::StepSnapshot> {
         let dir = self.snapshots_dir.join("tree");
         let mut all = Vec::new();
@@ -275,10 +303,10 @@ impl SnapshotStore {
                 }
             }
         }
-        // timestamp 相同（同秒写入）时用 turn_id 做次要排序键，保证顺序稳定
         all.sort_by(|a, b| {
             a.timestamp
                 .cmp(&b.timestamp)
+                .then_with(|| a.seq.cmp(&b.seq))
                 .then_with(|| a.turn_id.cmp(&b.turn_id))
         });
         all
@@ -492,6 +520,147 @@ pub fn capture_after_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── step-snapshot 同毫秒写入序（fix4/h5-sandbox-failover 任务2）──
+
+    /// 同毫秒写两个 step：current_tree_hash 必须取后写的（写入顺序权威），
+    /// 不能由 turn_id 字典序决定（旧行为：turn_id 反序时取到陈旧快照）。
+    #[test]
+    fn same_timestamp_steps_order_by_write_seq() {
+        let tmp = std::env::temp_dir().join(format!(
+            "fs_step_seq_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let store = SnapshotStore::new_at(tmp.clone());
+        let ts = "2026-09-15T10:00:00.123Z"; // 人为同毫秒
+
+        // 先写：turn_id 字典序大（"ts_z9"），tree 状态 = stale
+        let first = crate::file_snapshot::tree_store::StepSnapshot {
+            session_id: "s".into(),
+            turn_id: "ts_z9".into(),
+            baseline_tree_hash: "h0".into(),
+            snapshot_tree_hash: "stale_hash".into(),
+            diff: crate::file_snapshot::tree_store::TreeDiff {
+                added: vec![],
+                modified: vec![],
+                deleted: vec![],
+            },
+            timestamp: ts.into(),
+        seq: 0,
+        };
+        store.save_step_snapshot(&first);
+        // 后写：turn_id 字典序小（"ts_a1"），tree 状态 = latest
+        let second = crate::file_snapshot::tree_store::StepSnapshot {
+            session_id: "s".into(),
+            turn_id: "ts_a1".into(),
+            baseline_tree_hash: "stale_hash".into(),
+            snapshot_tree_hash: "latest_hash".into(),
+            diff: crate::file_snapshot::tree_store::TreeDiff {
+                added: vec![],
+                modified: vec![],
+                deleted: vec![],
+            },
+            timestamp: ts.into(),
+        seq: 0,
+        };
+        store.save_step_snapshot(&second);
+
+        // 旧排序（ts,turn_id）会把 ts_a1 排前 → current_tree_hash = stale_hash（红）
+        assert_eq!(
+            store.current_tree_hash(),
+            Some("latest_hash".to_string()),
+            "同毫秒写入时 current_tree_hash 必须取后写的 step"
+        );
+        let steps = store.load_all_step_snapshots();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].turn_id, "ts_z9", "先写的排前");
+        assert_eq!(steps[1].turn_id, "ts_a1", "后写的排后");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 向后兼容：旧 step 文件无 seq 字段 → serde default 回落，
+    /// 与带 seq 的新 step 混排不炸，旧 step 之间仍按 (timestamp, turn_id) 定序。
+    #[test]
+    fn legacy_step_without_seq_mixed_with_new() {
+        let tmp = std::env::temp_dir().join(format!(
+            "fs_step_legacy_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(tmp.join("snapshots/tree")).unwrap();
+        // 手写旧格式（无 seq 字段）
+        let legacy = r#"{
+            "turn_id": "ts_legacy_b",
+            "session_id": "s",
+            "baseline_tree_hash": "lb",
+            "snapshot_tree_hash": "legacy_hash",
+            "diff": {"added": [], "modified": [], "deleted": []},
+            "timestamp": "2026-09-15T09:00:00.000Z"
+        }"#;
+        std::fs::write(tmp.join("snapshots/tree/ts_legacy_b.json"), legacy).unwrap();
+
+        let store = SnapshotStore::new_at(tmp.clone());
+        // 新格式写入（带 seq）：晚于 legacy 的时间戳
+        let new_step = crate::file_snapshot::tree_store::StepSnapshot {
+            session_id: "s".into(),
+            turn_id: "ts_new_a".into(),
+            baseline_tree_hash: "legacy_hash".into(),
+            snapshot_tree_hash: "new_hash".into(),
+            diff: crate::file_snapshot::tree_store::TreeDiff {
+                added: vec![],
+                modified: vec![],
+                deleted: vec![],
+            },
+            timestamp: "2026-09-15T10:00:00.000Z".into(),
+            seq: 0,
+        };
+        store.save_step_snapshot(&new_step);
+
+        let steps = store.load_all_step_snapshots();
+        assert_eq!(steps.len(), 2, "旧格式必须能被读出（不炸）");
+        assert_eq!(steps[0].turn_id, "ts_legacy_b");
+        assert_eq!(steps[0].seq, 0, "旧格式 seq 回落 0");
+        assert_eq!(steps[1].turn_id, "ts_new_a");
+        assert!(steps[1].seq > 0, "新写入 step 分配到 >0 的 seq");
+        assert_eq!(store.current_tree_hash(), Some("new_hash".to_string()));
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 旧格式 step 之间（seq 全 0）仍按 (timestamp, turn_id) 旧行为定序。
+    #[test]
+    fn legacy_steps_fall_back_to_turn_id_order() {
+        let tmp = std::env::temp_dir().join(format!(
+            "fs_step_legacy_order_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(tmp.join("snapshots/tree")).unwrap();
+        for (tid, hash) in [("ts_b", "h_b"), ("ts_a", "h_a"), ("ts_c", "h_c")] {
+            let json = format!(
+                r#"{{"turn_id":"{tid}","baseline_tree_hash":"x","snapshot_tree_hash":"{hash}","diff":{{"added":[],"modified":[],"deleted":[]}},"timestamp":"2026-09-15T09:00:00.000Z"}}"#
+            );
+            std::fs::write(tmp.join(format!("snapshots/tree/{tid}.json")), json).unwrap();
+        }
+        let store = SnapshotStore::new_at(tmp.clone());
+        let steps = store.load_all_step_snapshots();
+        let ids: Vec<&str> = steps.iter().map(|s| s.turn_id.as_str()).collect();
+        assert_eq!(ids, vec!["ts_a", "ts_b", "ts_c"], "seq 全 0 时退化为 turn_id 字典序");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
 
     #[test]
     fn capture_write_new_file() {
