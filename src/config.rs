@@ -459,6 +459,12 @@ pub struct RuntimeConfig {
     /// 开启后本地 crash 走与远程同一套会话解析 + 接力提示词 + 配额（≤3 次）。
     #[serde(default)]
     pub auto_respawn_local: bool,
+    /// LLM 永久性错误（401/402/403/配额语义）自动降级 tier_models。
+    /// 触发条件：错误被分类为永久（该模型重试无意义，即时判定）且 tier_models
+    /// 存在与当前不同的可用档（pro/fast）。降级 = set_model + ModelFallback 事件
+    /// + 继续当前任务；无可用档保持现状报死。默认 true（无人值守容错）。
+    #[serde(default = "default_true")]
+    pub auto_fallback_tier: bool,
 }
 
 fn default_runtime_mode() -> String {
@@ -478,6 +484,7 @@ impl Default for RuntimeConfig {
             protected_paths_extra: Vec::new(),
             hooks_trust: HooksTrustConfig::default(),
             auto_respawn_local: false,
+            auto_fallback_tier: true,
         }
     }
 }
@@ -876,6 +883,41 @@ impl IonConfig {
             compat: None,
             headers: p.headers.clone(),
         })
+    }
+
+    /// 永久性错误 tier 降级候选池（`runtime.auto_fallback_tier` 消费，worker 注入
+    /// `AgentConfig::fallback_models`）。
+    ///
+    /// **严格 tier_models 语义**：只有 tier_models 里显式配置且可解析（形如
+    /// `provider/model` 且 providers 里存在该模型）的条目才算候选。
+    /// `resolve_tier_model` 在缺档/畸形时回落 default_model 的行为**不得**泄漏进
+    /// 候选池——无档 = 保持现状报死，不能悄悄切到默认模型（用户对降级要有感知，
+    /// 且默认模型可能就是触发 401 的同一把 key）。
+    ///
+    /// 按 pro → fast 优先级排序；跳过与 `current_key`（"provider/model"）相同的档；
+    /// 同一模型去重。
+    pub fn tier_fallback_candidates(&self, current_key: &str) -> Vec<ion_provider::types::Model> {
+        let mut out: Vec<ion_provider::types::Model> = Vec::new();
+        for tier in ["pro", "fast"] {
+            let Some(tier_str) = self.tier_models.get(tier) else {
+                continue;
+            };
+            if let Some(m) = self.resolve_tier_model(tier) {
+                let key = format!("{}/{}", m.provider, m.id);
+                // 防泄漏双保险：解析结果必须真的来自该 tier 条目——
+                // resolve_tier_model 在条目缺失/畸形/指向不存在的 provider 时
+                // 会回落 default_model，那种回落不得混进候选池
+                if key == tier_str.as_str()
+                    && key != current_key
+                    && !out.iter().any(|f: &ion_provider::types::Model| {
+                        format!("{}/{}", f.provider, f.id) == key
+                    })
+                {
+                    out.push(m);
+                }
+            }
+        }
+        out
     }
 
     /// Resolve the API key for a provider (custom provider's api_key, falling
@@ -1600,6 +1642,112 @@ mod merge_tests {
         assert_eq!(nas.worker_bin, "", "default empty bin");
         // SAFETY 同上：仅本测试消费该变量
         unsafe { std::env::remove_var("ION_REMOTE_WORKERS") };
+    }
+
+    #[test]
+    fn auto_fallback_tier_defaults_true_and_roundtrips() {
+        // 默认开（无人值守容错）：缺省字段反序列化为 true
+        let cfg: RuntimeConfig = serde_json::from_str("{}").unwrap();
+        assert!(cfg.auto_fallback_tier, "missing field should default true");
+        // 显式 false 可关闭（写进 RuntimeConfig）
+        let cfg: RuntimeConfig =
+            serde_json::from_str(r#"{"auto_fallback_tier": false}"#).unwrap();
+        assert!(!cfg.auto_fallback_tier);
+        // 序列化保留
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains("auto_fallback_tier\":false"));
+        // Default 实现同样为 true
+        assert!(RuntimeConfig::default().auto_fallback_tier);
+    }
+
+    /// 构造带 zai(glm-5.2/glm-4.6) + opencode(deepseek) 三个模型的 config
+    fn fallback_cfg() -> IonConfig {
+        let mut cfg = IonConfig::default();
+        let mk = |models: &[&str]| CustomProvider {
+            name: "p".into(),
+            api: "openai-completions".into(),
+            base_url: "https://example.invalid/v4".into(),
+            api_key: None,
+            headers: None,
+            models: models
+                .iter()
+                .map(|id| CustomModel {
+                    id: (*id).into(),
+                    name: None,
+                    reasoning: None,
+                    context_window: None,
+                    max_tokens: None,
+                    cost: None,
+                })
+                .collect(),
+            model_overrides: None,
+        };
+        cfg.providers.insert("zai".into(), mk(&["glm-5.2", "glm-4.6"]));
+        cfg.providers
+            .insert("opencode".into(), mk(&["deepseek-v4-flash"]));
+        cfg.default_provider = Some("zai".into());
+        cfg.default_model = Some("glm-5.2".into());
+        // Default 实现预填 default_tier_models()（deepseek/...）——测试夹具清空，
+        // 各用例显式插入自己需要的 tier 条目（模拟"用户是否配了 tier"两种现实）
+        cfg.tier_models.clear();
+        cfg
+    }
+
+    #[test]
+    fn tier_fallback_candidates_strict_semantics() {
+        let mut cfg = fallback_cfg();
+        cfg.tier_models
+            .insert("pro".into(), "zai/glm-4.6".into());
+        cfg.tier_models
+            .insert("fast".into(), "opencode/deepseek-v4-flash".into());
+
+        // 当前模型 zai/glm-5.2 → pro 优先，fast 次之
+        let cands = cfg.tier_fallback_candidates("zai/glm-5.2");
+        let keys: Vec<String> = cands
+            .iter()
+            .map(|m| format!("{}/{}", m.provider, m.id))
+            .collect();
+        assert_eq!(keys, vec!["zai/glm-4.6", "opencode/deepseek-v4-flash"]);
+
+        // 当前模型已是 pro 档 → 只剩 fast，不包含自己（防自切）
+        let cands = cfg.tier_fallback_candidates("zai/glm-4.6");
+        let keys: Vec<String> = cands
+            .iter()
+            .map(|m| format!("{}/{}", m.provider, m.id))
+            .collect();
+        assert_eq!(keys, vec!["opencode/deepseek-v4-flash"]);
+    }
+
+    #[test]
+    fn tier_fallback_candidates_no_tier_means_no_default_leak() {
+        // 🔴 严格语义：tier_models 为空 → 候选池必须为空。
+        // resolve_tier_model 会回落 default_model（zai/glm-5.2），但那不是
+        // "tier_models 有不同可用档"——无档 = 保持现状报死，不悄悄切默认模型。
+        let cfg = fallback_cfg();
+        assert!(cfg.tier_fallback_candidates("opencode/deepseek-v4-flash").is_empty());
+    }
+
+    #[test]
+    fn tier_fallback_candidates_dedup_and_skip_current_and_malformed() {
+        let mut cfg = fallback_cfg();
+        // pro 与 fast 指向同一档 → 去重
+        cfg.tier_models.insert("pro".into(), "zai/glm-4.6".into());
+        cfg.tier_models.insert("fast".into(), "zai/glm-4.6".into());
+        let cands = cfg.tier_fallback_candidates("zai/glm-5.2");
+        assert_eq!(cands.len(), 1, "同档去重: {cands:?}");
+
+        // 畸形条目（无 "provider/model" 形状）→ 跳过，不回落 default
+        let mut cfg = fallback_cfg();
+        cfg.tier_models.insert("pro".into(), "not-a-tier-ref".into());
+        assert!(
+            cfg.tier_fallback_candidates("zai/glm-5.2").is_empty(),
+            "畸形 tier 条目不得泄漏 default_model 进候选池"
+        );
+
+        // 指向 providers 里不存在的模型 → resolve 失败，跳过
+        let mut cfg = fallback_cfg();
+        cfg.tier_models.insert("pro".into(), "ghost/no-such-model".into());
+        assert!(cfg.tier_fallback_candidates("zai/glm-5.2").is_empty());
     }
 
     /// 构造一个带各种字段的全局 config 作为合并基准

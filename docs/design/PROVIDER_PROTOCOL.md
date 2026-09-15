@@ -853,9 +853,90 @@ cargo test -p ion-provider --test e2e_real_api -- --ignored --nocapture
 
 ---
 
-## 8. 配置参考
+## 8. 协议层健壮性：空补全重试 + 永久错误 tier 降级（2026-09-15 新增）
 
-### 8.1 config.json 自定义 provider
+### 8.1 空补全 = 可重试协议错误（治"幻影 turn"）
+
+**背景**（生产实测，zai 网关）：LLM 偶发返回空 content 的补全——HTTP 成功、stop_reason 正常，
+但不报错、不计会话条目，却烧掉一个 turn（实测 remind currentTurn 37/40 vs 会话仅 4 条 assistant，
+预算被空转耗尽）。
+
+**判定**（`ion_provider::is_empty_completion`，防误伤精确条件）：
+
+| 条件 | 说明 |
+|------|------|
+| `stop_reason` 非 Error/Aborted | 错误/中止走既有错误通路 |
+| 无 ToolCall | 纯 tool_call 响应（content 无文本）是**合法**的，不误伤 |
+| 无有效 Text | 文本为空或纯空白 |
+| 无有效 Thinking | thinking-only 是**合法**响应（agent_loop 会作为 content 块落盘），不误伤 |
+
+**处置**：在 `stream_with_retry` 流组装完成处（所有 provider 的汇聚点）转成可重试协议错误——
+走既有 attempt/retry 预算/退避通路重试（`on_auto_retry_start`/`on_auto_retry_end` 照发），
+不进 inner_loop、不烧 turn、不计 LLM 统计。重试耗尽返回
+`AgentError::Provider("[empty-completion] ...")` 报错，不无限重试。
+
+**验证**：`cargo test --test empty_completion_harness`（5 用例：空补全重试换真实补全 /
+纯空白同罪 / 纯 tool_call 不误伤 / thinking-only 不误伤 / 重试耗尽报错）；
+单元判定 `cargo test -p ion-provider empty_completion`（6 用例）。
+
+### 8.2 LLM 永久性错误自动降级 tier_models
+
+**背景**（容错调研 P2）：401/402/403/配额类永久错误只发 error 事件，worker 空转等死
+（无人值守场景整晚挂）。
+
+**触发条件**：错误被 `retry::is_permanent_llm_error` 分类为永久（认证 401/403/AuthError/
+invalid api key/unauthorized/forbidden；付费 402/insufficient/payment required/quota
+exceeded/credit；配额语义 usage limit/monthly usage/resets in/balance/rate limit exceeded）
+且 `tier_models` 存在与当前不同的可用档。永久错误本就不重试当前模型（即时 AbortPermanent），
+即"该模型重试已耗尽"；瞬时错误（timeout/5xx/瞬时 429）绝不提前降级；上下文溢出走
+overflow 恢复分支，不参与降级（换模型治不了超限）。
+
+**处置**（`Agent::try_tier_fallback`）：按 pro → fast 顺序取第一个未试过且 ≠ 当前模型的
+候选档 → set_model 切换 + 发事件 + 继续当前任务。tried 集合不随 run 重置（防翻转）；
+候选耗尽保持既有报死路径。
+
+**候选池解析**（`config::tier_fallback_candidates`，严格 tier_models 语义）：只有
+tier_models 里**显式配置且可解析**（形如 `provider/model` 且 providers 里存在）的条目
+才算候选——`resolve_tier_model` 缺档时回落 default_model 的行为**不**泄漏进候选池
+（无档 = 保持现状报死，不能悄悄切默认模型）；畸形/不存在条目跳过；同档去重。
+
+**配置开关**：`config.json` → `runtime.auto_fallback_tier`（默认 **true**，写进 RuntimeConfig）：
+
+```json
+{ "runtime": { "auto_fallback_tier": true } }
+```
+
+**事件形状**（worker 侧 customType=`ModelFallback`，走 extension_event 外壳 → EventBus
+多终端同步；同时同步 SessionIndex + 落 model_change 条目，UI 刷新可见）：
+
+```json
+{
+  "type": "event",
+  "event": {
+    "type": "extension_event",
+    "extension": "agent-core",
+    "customType": "ModelFallback",
+    "visibility": "llm_and_ui",
+    "sessionId": "sess_xxx",
+    "data": {
+      "from": "zai/glm-5.2",
+      "to": "zai/glm-4.6",
+      "reason": "Stream error: HTTP error: 401 Unauthorized"
+    }
+  }
+}
+```
+
+**验证**：`cargo test --test tier_fallback_harness`（3 用例：401→降级→任务继续+事件形状 /
+无可用档报死不切模型 / 瞬时错误不降级不发事件）；分类单测
+`cargo test --lib permanent_llm_error_classification`；开关单测
+`cargo test --lib auto_fallback_tier`。
+
+---
+
+## 9. 配置参考
+
+### 9.1 config.json 自定义 provider
 
 **文件**：[src/config.rs:69](file:///Users/xuyingzhou/Project/study-rust/ion/src/config.rs#L69)
 
@@ -871,7 +952,7 @@ pub struct CustomProvider {
 }
 ```
 
-### 8.2 默认 provider 映射
+### 9.2 默认 provider 映射
 
 **文件**：[src/config.rs:164](file:///Users/xuyingzhou/Project/study-rust/ion/src/config.rs#L164)
 
@@ -883,7 +964,7 @@ pub struct CustomProvider {
 | `google` | `gemini-3.1-pro-preview` |
 | `opencode` | `deepseek-v4-flash` |
 
-### 8.3 CLI 参数
+### 9.3 CLI 参数
 
 | 参数 | 说明 |
 |------|------|
@@ -895,7 +976,7 @@ pub struct CustomProvider {
 
 ---
 
-## 9. 暂不实现的 Provider
+## 10. 暂不实现的 Provider
 
 按用户要求，常见够用即可（`mistral-conversations` 已实现，见上方概览表）：
 

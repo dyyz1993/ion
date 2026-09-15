@@ -481,6 +481,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             0
         },
         retry_config: Some(crate::retry::RetryConfig::default()),
+        // 永久性错误 tier 降级候选：Agent 构造后按 ion_cfg.runtime.auto_fallback_tier
+        // + tier_models 解析注入（见下方 set_fallback_models）
+        fallback_models: Vec::new(),
     };
 
     let registry = Arc::new(registry);
@@ -805,6 +808,22 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
 
     // INPUT_ORIGIN 消费侧①：按 origin 隐藏工具（schema 级）
     agent.set_origin_hide_tools(ion_cfg.origin_hide_tools.clone());
+
+    // ── 永久性错误 tier 降级候选（runtime.auto_fallback_tier，默认 true）──
+    // 候选池解析收口在 config::tier_fallback_candidates（严格 tier_models 语义：
+    // 只认显式配置且可解析的档，pro → fast 排序、跳过当前档、去重）；
+    // 开关关闭或无可用档 = 不降级（保持现状报死）。
+    if ion_cfg.runtime.auto_fallback_tier {
+        let cur_key = format!("{}/{}", model.provider, model.id);
+        let fallbacks = ion_cfg.tier_fallback_candidates(&cur_key);
+        if !fallbacks.is_empty() {
+            tracing::info!(
+                "[worker] tier fallback armed: {} candidate(s)",
+                fallbacks.len()
+            );
+            agent.set_fallback_models(fallbacks);
+        }
+    }
 
     // LSP tool registration deferred to inside extension block
 
@@ -6630,6 +6649,55 @@ impl crate::agent::extension::Extension for StreamingExtension {
                 "timestamp": now_ms(),
             }
         }));
+        Ok(())
+    }
+
+    /// 模型自动降级事件（LLM 永久性错误 → tier_models 候选档）。
+    /// customType=ModelFallback，data 含 from/to/reason；同时同步 SessionIndex
+    /// 并落 model_change 条目（对齐 set_model RPC 的持久化路径，UI 刷新可见）。
+    async fn on_model_fallback(
+        &self,
+        from: &str,
+        to: &str,
+        reason: &str,
+    ) -> crate::agent::error::AgentResult<()> {
+        output(&serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "extension_event",
+                "extension": "agent-core",
+                "customType": "ModelFallback",
+                "visibility": "llm_and_ui",
+                "sessionId": self.session_id,
+                "timestamp": now_ms(),
+                "data": {
+                    "from": from,
+                    "to": to,
+                    "reason": reason,
+                },
+            }
+        }));
+        // to = "provider/model" → 同步索引（get_session_info / UI 列表直接读）
+        let (provider, model_id) = match to.splitn(2, '/').collect::<Vec<_>>()[..] {
+            [p, m] => (p.to_string(), m.to_string()),
+            _ => (String::new(), to.to_string()),
+        };
+        crate::session_index::SessionIndex::set_model(&self.session_id, &provider, &model_id);
+        // 权威记录：写 session JSONL（worker 重建时从这里读）
+        let cwd = SESSION_CWD.lock().unwrap().clone();
+        if let Some(cwd) = cwd {
+            append_session_entry(
+                &cwd,
+                &self.session_id,
+                "model_change",
+                &serde_json::json!({
+                    "provider": provider,
+                    "modelId": model_id,
+                    "fallbackFrom": from,
+                    "reason": reason,
+                }),
+            );
+        }
         Ok(())
     }
 

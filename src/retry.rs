@@ -71,46 +71,14 @@ pub fn should_retry(error: &str, attempt: u32, config: &RetryConfig) -> RetryDec
         return RetryDecision::TransientExhausted;
     }
 
-    // "没钱" → 永久放弃
-    let lower = error.to_lowercase();
-    if lower.contains("insufficient")
-        || lower.contains("insufficient balance")
-        || lower.contains("insufficient_quota")
-        || lower.contains("payment required")
-        || lower.contains("402")
-        || lower.contains("quota exceeded")
-        || lower.contains("rate limit exceeded")
-        || lower.contains("credit")
-    {
-        // These errors indicate resource exhaustion; retrying won't help.
+    // 永久性错误（没钱/配额/认证）→ 永久放弃
+    if is_permanent_llm_error(error) {
         return RetryDecision::AbortPermanent;
     }
 
-    // Usage limit / monthly quota exceeded → never retry (429 GoUsageLimitError etc.)
-    if lower.contains("usage limit")
-        || lower.contains("monthly usage")
-        || lower.contains("usagelimiterror")
-        || lower.contains("resets in")
-        || lower.contains("balance")
-    {
-        return RetryDecision::AbortPermanent;
-    }
-
-    // Auth failures (HTTP 401/403) → never retry. The key is invalid/expired or
-    // lacks permission; retrying with the same key is pointless and wastes time.
-    // Keep retrying 429/5xx/timeouts/network errors (handled by the fallthrough below).
-    if lower.contains("401")
-        || lower.contains("403")
-        || lower.contains("autherror")
-        || lower.contains("invalid api key")
-        || lower.contains("unauthorized")
-        || lower.contains("forbidden")
-    {
-        // Auth failure: retrying won't fix an invalid/expired key.
-        return RetryDecision::AbortPermanent;
-    }
-
-    // 上下文溢出 → 不重试（重试也不会变小），交给 compaction 溢出恢复处理
+    // 上下文溢出 → 不重试（重试也不会变小），交给 compaction 溢出恢复处理。
+    // 注意：溢出是"永久"但不参与 tier 降级（is_permanent_llm_error 不含它），
+    // 因为降级换模型治不了上下文超限。
     if ion_provider::is_overflow_message(error) {
         return RetryDecision::AbortPermanent;
     }
@@ -118,6 +86,39 @@ pub fn should_retry(error: &str, attempt: u32, config: &RetryConfig) -> RetryDec
     // 其余情况都重试（超时、5xx、连接失败等）
     let delay = backoff_duration(attempt, config);
     RetryDecision::Retry(delay)
+}
+
+/// 判断一条 LLM 错误是否为"永久性错误"——重试同一模型无意义。
+///
+/// 覆盖（与 `should_retry` 的 AbortPermanent 语义保持一致，但**不含**上下文溢出）：
+/// - 付费/余额：insufficient / 402 / payment required / quota exceeded / credit
+/// - 配额语义：usage limit / monthly usage / resets in / balance / rate limit exceeded
+/// - 认证授权：401 / 403 / AuthError / invalid api key / unauthorized / forbidden
+///
+/// 用途：tier 降级（`runtime.auto_fallback_tier`）——永久错误触发后降级到
+/// tier_models 的其他可用档继续任务，而不是空转报死。
+pub fn is_permanent_llm_error(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    // 付费/余额（402 语义）
+    lower.contains("insufficient")
+        || lower.contains("payment required")
+        || lower.contains("402")
+        || lower.contains("quota exceeded")
+        || lower.contains("rate limit exceeded")
+        || lower.contains("credit")
+    // 配额耗尽（429 的配额语义，区别于可重试的瞬时 429 限流）
+        || lower.contains("usage limit")
+        || lower.contains("monthly usage")
+        || lower.contains("usagelimiterror")
+        || lower.contains("resets in")
+        || lower.contains("balance")
+    // 认证/授权（401/403 语义）
+        || lower.contains("401")
+        || lower.contains("403")
+        || lower.contains("autherror")
+        || lower.contains("invalid api key")
+        || lower.contains("unauthorized")
+        || lower.contains("forbidden")
 }
 
 /// 计算第 n 次重试的退避时长（公开，供 WorkerRegistry 集成使用）
@@ -385,6 +386,46 @@ mod tests {
             should_retry("Service Unavailable", 0, &c),
             RetryDecision::Retry(_)
         ));
+    }
+
+    #[test]
+    fn permanent_llm_error_classification() {
+        // 认证/授权（401/403）→ 永久，可降级
+        for e in [
+            "HTTP 401 Unauthorized",
+            "403 Forbidden",
+            "AuthError: token expired",
+            "Invalid API key",
+            "invalid api key",
+        ] {
+            assert!(is_permanent_llm_error(e), "should be permanent: {e}");
+        }
+        // 付费/配额（402 + 429 配额语义）→ 永久，可降级
+        for e in [
+            "402 Payment Required",
+            "insufficient_quota",
+            "InsufficientBalance",
+            "quota exceeded",
+            "Usage limit reached, resets in 3h",
+            "monthly usage exceeded",
+            "rate limit exceeded",
+        ] {
+            assert!(is_permanent_llm_error(e), "should be permanent: {e}");
+        }
+        // 瞬时错误 → 非永久（绝不触发降级）
+        for e in [
+            "timeout",
+            "500 Internal Server Error",
+            "connection refused",
+            "too many requests", // 瞬时 429 限流仍可重试
+            "Service Unavailable",
+            "",
+        ] {
+            assert!(!is_permanent_llm_error(e), "should be transient: {e}");
+        }
+        // 上下文溢出：永久（不重试）但**不参与降级**（换模型治不了超限）
+        assert!(!is_permanent_llm_error("prompt is too long: 213462 tokens"));
+        assert!(!is_permanent_llm_error("context_length_exceeded"));
     }
 
     #[test]

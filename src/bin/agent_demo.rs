@@ -185,6 +185,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             compact_model_id: None,
             retry_on_no_tool_use: 0,
             retry_config: None,
+            fallback_models: Vec::new(),
         },
     );
 

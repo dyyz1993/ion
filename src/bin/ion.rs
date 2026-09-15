@@ -1467,6 +1467,8 @@ fn build_agent_config(eff: &EffectiveConfig) -> AgentConfig {
         compact_model_id: eff.compact_model.clone(),
         retry_on_no_tool_use: 0,
         retry_config: None,
+        // 场景 1 短生命周期进程不注入 tier 降级候选（worker 场景才注入）
+        fallback_models: Vec::new(),
     }
 }
 
