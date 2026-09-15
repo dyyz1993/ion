@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/config/get_mcp_servers.json",
+  "title": "RPC get_mcp_servers response",
+  "description": "列出 MCP server 状态（方案 C：worker 经 manager_bridge 转发 host McpManager.server_list_json，data 是裸数组）。无 host 连接时走信封 error（success:false）。 ION worker RPC 响应信封：{id, type:'response', command, success, data|error}。success=true → data；success=false → error（output_error_response）。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "command",
+    "success"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "command": {
+      "const": "get_mcp_servers"
+    },
+    "success": {
+      "type": "boolean"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "transport": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "disconnected",
+                  "connecting",
+                  "connected",
+                  "error"
+                ]
+              },
+              "disabled": {
+                "type": "boolean"
+              },
+              "tools": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "properties": {
+                    "full_name": {
+                      "type": "string"
+                    },
+                    "original_name": {
+                      "type": "string"
+                    },
+                    "description": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "full_name",
+                    "original_name"
+                  ]
+                }
+              },
+              "resources": {},
+              "prompts": {},
+              "error": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "transport",
+              "status",
+              "disabled",
+              "tools",
+              "resources",
+              "prompts",
+              "error"
+            ]
+          }
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true
+}

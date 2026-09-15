@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/config/extension_list.json",
+  "title": "RPC extension_list response",
+  "description": "列出已加载的 WASM 扩展（.wasm 文件级，区别于 get_extensions 的内核扩展名）。 ION worker RPC 响应信封：{id, type:'response', command, success, data|error}。success=true → data；success=false → error（output_error_response）。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "command",
+    "success"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "command": {
+      "const": "extension_list"
+    },
+    "success": {
+      "type": "boolean"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "extensions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "abi_version": {
+                    "type": "integer"
+                  },
+                  "tools": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "path",
+                  "abi_version",
+                  "tools"
+                ]
+              }
+            }
+          },
+          "required": [
+            "extensions"
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true
+}

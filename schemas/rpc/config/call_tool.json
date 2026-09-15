@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/config/call_tool.json",
+  "title": "RPC call_tool response",
+  "description": "直接调 LLM 注册的工具（绕过 LLM）。⚠️ data.output 是工具返回 JSON 的转义字符串（AgentResult<String>），不是对象。缺 tool → 信封 success:false。 ION worker RPC 响应信封：{id, type:'response', command, success, data|error}。success=true → data；success=false → error（output_error_response）。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "command",
+    "success"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "command": {
+      "const": "call_tool"
+    },
+    "success": {
+      "type": "boolean"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "tool": {
+              "type": "string"
+            },
+            "output": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tool",
+            "output"
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true
+}

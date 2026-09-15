@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/config/get_all_tools.json",
+  "title": "RPC get_all_tools response",
+  "description": "⚠️ 硬编码 stub：恒返回空数组。 ION worker RPC 响应信封：{id, type:'response', command, success, data|error}。success=true → data；success=false → error（output_error_response）。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "command",
+    "success"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "command": {
+      "const": "get_all_tools"
+    },
+    "success": {
+      "type": "boolean"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "type": "array",
+          "items": {}
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true
+}

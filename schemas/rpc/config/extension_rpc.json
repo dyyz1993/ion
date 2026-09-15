@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/config/extension_rpc.json",
+  "title": "RPC extension_rpc response",
+  "description": "调扩展私有 RPC。⚠️ 双路径形状分裂（data 为任意 JSON，两种形态都合法）：worker 路径（--session，内核/WASM 扩展）data={method, output}，output 为扩展返回值；manager 路径（singleton 扩展如 memory，无 session 直调）data=扩展返回值本身。plan 工具面也经此通道（extension='plan'）。测试断言见 rpc_schema_config_test.rs。 ION worker RPC 响应信封：{id, type:'response', command, success, data|error}。success=true → data；success=false → error（output_error_response）。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "command",
+    "success"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "command": {
+      "const": "extension_rpc"
+    },
+    "success": {
+      "type": "boolean"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {}
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true
+}

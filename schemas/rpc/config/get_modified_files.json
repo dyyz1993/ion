@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/config/get_modified_files.json",
+  "title": "RPC get_modified_files response",
+  "description": "变更文件清单（可选 fromTurn/toTurn 范围）。file-snapshot 未启用 → data.error。 ION worker RPC 响应信封：{id, type:'response', command, success, data|error}。success=true → data；success=false → error（output_error_response）。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "command",
+    "success"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "command": {
+      "const": "get_modified_files"
+    },
+    "success": {
+      "type": "boolean"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "files": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "added",
+                          "modified",
+                          "deleted",
+                          "unchanged"
+                        ]
+                      },
+                      "source": {
+                        "type": "string",
+                        "enum": [
+                          "tool_write",
+                          "tool_edit",
+                          "turn_scan",
+                          "tool"
+                        ]
+                      },
+                      "turnId": {
+                        "type": "string"
+                      },
+                      "toolCallId": {
+                        "type": "string"
+                      },
+                      "tool": {
+                        "type": "string"
+                      },
+                      "hasDiff": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "status",
+                      "source",
+                      "turnId",
+                      "toolCallId",
+                      "tool",
+                      "hasDiff"
+                    ]
+                  }
+                },
+                "summary": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "properties": {
+                    "added": {
+                      "type": "integer"
+                    },
+                    "modified": {
+                      "type": "integer"
+                    },
+                    "deleted": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "added",
+                    "modified",
+                    "deleted"
+                  ]
+                }
+              },
+              "required": [
+                "files",
+                "summary"
+              ]
+            },
+            {
+              "type": "object",
+              "required": [
+                "error"
+              ],
+              "properties": {
+                "error": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": true
+            }
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true
+}

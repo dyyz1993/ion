@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/config/review_pending.json",
+  "title": "RPC review_pending response",
+  "description": "列出待审文件（只回摘要：path/status/diffStat，不含内容，大 diff 走 review_file_diff）。⚠️ 双路径形状分裂：空闲路径 summary 含 total/added/modified/deleted；agent.run 期间经只读 bg 通道 summary 只有 total（status 带字面引号）。file-snapshot 未启用 → data.error='approval not enabled'。 ION worker RPC 响应信封：{id, type:'response', command, success, data|error}。success=true → data；success=false → error（output_error_response）。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "command",
+    "success"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "const": "response"
+    },
+    "command": {
+      "const": "review_pending"
+    },
+    "success": {
+      "type": "boolean"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "pending": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "added",
+                          "modified",
+                          "deleted",
+                          "\"added\"",
+                          "\"modified\"",
+                          "\"deleted\""
+                        ]
+                      },
+                      "diffStat": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "status",
+                      "diffStat"
+                    ]
+                  }
+                },
+                "summary": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "properties": {
+                    "total": {
+                      "type": "integer"
+                    },
+                    "added": {
+                      "type": "integer"
+                    },
+                    "modified": {
+                      "type": "integer"
+                    },
+                    "deleted": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "total"
+                  ]
+                }
+              },
+              "required": [
+                "pending",
+                "summary"
+              ]
+            },
+            {
+              "type": "object",
+              "required": [
+                "error"
+              ],
+              "properties": {
+                "error": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": true
+            }
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true
+}
