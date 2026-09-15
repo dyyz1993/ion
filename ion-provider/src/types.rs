@@ -368,6 +368,36 @@ impl std::fmt::Display for StopReason {
 }
 
 // ---------------------------------------------------------------------------
+// Empty completion detection — 治"幻影 turn"
+// ---------------------------------------------------------------------------
+
+/// 判定一次补全是否为"空补全"（协议级异常，应转可重试错误）。
+///
+/// 生产实测（zai 等网关）：偶发返回空 content 的补全——HTTP 成功、stop_reason
+/// 正常，但没有任何内容。消费方把它当正常 turn 接受会烧掉一个 turn（turn 计数
+/// +1 而会话条目 +0）。空补全应视为协议错误交由上层重试。
+///
+/// 精确条件（防误伤）：
+/// - `stop_reason` **非** Error/Aborted（错误/中止走既有错误通路，不算空补全）
+/// - 无 ToolCall —— 纯 tool_call 响应（content 无文本）是**合法**的
+/// - 无有效 Text —— 文本为空或纯空白
+/// - 无有效 Thinking —— thinking-only 是**合法**响应（消费方会作为 content 落盘）
+pub fn is_empty_completion(reason: &StopReason, message: &AssistantMessage) -> bool {
+    if matches!(reason, StopReason::Error | StopReason::Aborted) {
+        return false;
+    }
+    for block in &message.content {
+        match block {
+            AssistantContentBlock::ToolCall(_) => return false,
+            AssistantContentBlock::Text(t) if !t.text.trim().is_empty() => return false,
+            AssistantContentBlock::Thinking(t) if !t.thinking.trim().is_empty() => return false,
+            _ => {}
+        }
+    }
+    true
+}
+
+// ---------------------------------------------------------------------------
 // StreamEvent — the protocol between Provider and Consumer
 // ---------------------------------------------------------------------------
 
@@ -471,6 +501,104 @@ pub struct ToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── 空补全判定（is_empty_completion）──
+
+    fn msg_with_content(content: Vec<AssistantContentBlock>, reason: StopReason) -> AssistantMessage {
+        AssistantMessage {
+            role: "assistant".into(),
+            content,
+            api: "test".into(),
+            provider: "test".into(),
+            model: "test-1".into(),
+            response_model: None,
+            response_id: None,
+            usage: Usage::default(),
+            stop_reason: reason,
+            error_message: None,
+            timestamp: 0,
+        }
+    }
+
+    #[test]
+    fn empty_completion_detected() {
+        // 空 content + Stop = 空补全（幻影 turn）
+        assert!(is_empty_completion(
+            &StopReason::Stop,
+            &msg_with_content(vec![], StopReason::Stop)
+        ));
+        // Length 结束也算（同样什么都没给）
+        assert!(is_empty_completion(
+            &StopReason::Length,
+            &msg_with_content(vec![], StopReason::Length)
+        ));
+    }
+
+    #[test]
+    fn whitespace_only_text_is_empty_completion() {
+        let m = msg_with_content(
+            vec![AssistantContentBlock::Text(TextContent {
+                text: "   \n\t  ".into(),
+                text_signature: None,
+            })],
+            StopReason::Stop,
+        );
+        assert!(is_empty_completion(&StopReason::Stop, &m));
+    }
+
+    #[test]
+    fn tool_call_only_response_is_legal() {
+        // 纯 tool_call（content 无文本）绝不能判空补全
+        let m = msg_with_content(
+            vec![AssistantContentBlock::ToolCall(ToolCall {
+                call_type: "function".into(),
+                id: "call_1".into(),
+                name: "read".into(),
+                arguments: serde_json::json!({}),
+                thought_signature: None,
+            })],
+            StopReason::ToolUse,
+        );
+        assert!(!is_empty_completion(&StopReason::ToolUse, &m));
+    }
+
+    #[test]
+    fn thinking_only_response_is_legal() {
+        let m = msg_with_content(
+            vec![AssistantContentBlock::Thinking(ThinkingContent {
+                thinking: "reasoning...".into(),
+                thinking_signature: None,
+                redacted: None,
+            })],
+            StopReason::Stop,
+        );
+        assert!(!is_empty_completion(&StopReason::Stop, &m));
+    }
+
+    #[test]
+    fn text_response_is_legal() {
+        let m = msg_with_content(
+            vec![AssistantContentBlock::Text(TextContent {
+                text: "hello".into(),
+                text_signature: None,
+            })],
+            StopReason::Stop,
+        );
+        assert!(!is_empty_completion(&StopReason::Stop, &m));
+    }
+
+    #[test]
+    fn error_and_aborted_reasons_are_not_empty_completion() {
+        // Error/Aborted 走既有错误通路，不归空补全管
+        assert!(!is_empty_completion(
+            &StopReason::Error,
+            &msg_with_content(vec![], StopReason::Error)
+        ));
+        assert!(!is_empty_completion(
+            &StopReason::Aborted,
+            &msg_with_content(vec![], StopReason::Aborted)
+        ));
+    }
 
     #[test]
     fn test_message_bashexecution_serde() {
