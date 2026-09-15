@@ -797,6 +797,8 @@ ion --mode rpc           → 内部 Worker 子进程 (JSONL over stdin/stdout)
 
 > **2026-09-08 规划交接（待执行）**：项目抽样审查、已复现的 CI 假成功问题、T01–T08 队列及 24 小时执行方案已合并到 [SELF_EVOLUTION.md §9](./docs/design/SELF_EVOLUTION.md#9-2026-09-08-项目审查与-24-小时执行计划)。本轮只完成分析与计划，未实施功能修复；定时任务 `ion-24` 已创建并暂停，待选执行模型。新增测试数量为 0；已有输入来源 Harness 抽查 3/3 通过，不代表全量验收。
 
+> **2026-09-15 交叉调研八线修复批次（master 9c80459→11333bc，8 worktree 并行 + 统一合并）**：三智能体调研（安全/pi 对标/容错）产出的 P0-P1 全部落地——①heartbeat 判死健壮化：任何 worker stdout 事件都刷 last_heartbeat（治长工具期误杀+双写）、SIGKILL 死亡 Dead 标记+child_crashed、本地 crash 可观测（`runtime.auto_respawn_local` 默认关）②**subscribe 协议升级**（对标 pi protocol 纪律）：per-session epoch 栅栏（重派推进+`stale_route` 作废旧订阅）+ snapshot 快照先行（新终端不再空白）+ 可选 hello 握手（protocolVersion）+ ui_respond 同源绑定（[SUBSCRIBE_PROTOCOL.md](./docs/design/SUBSCRIBE_PROTOCOL.md)）③host socket 安全：peercred 同 uid 校验（fail-closed）+ get_session_messages 路径限死会话目录（canonicalize+symlink）+ verb_review 缺省改拒绝④get_settings/`config show` 密钥统一脱敏 `redacted_value()`（三层规则，顺带收口 5 个泄漏点）⑤远端/容器 write_file 弃 heredoc 改 base64 分块 argv（治 IONEOF 注入 RCE）⑥append_entry 白名单 + generate_resume_prompt 只认 origin==user（治会话注入劫持重派任务卡）+ respawn 继承原 agent/model⑦项目级 .wasm 信任门（复用 hooks trusted_projects）+ 场景 1 ctx.fs 套 SecuredRuntime⑧资产同步 tar argv 化（治文件名注入 RCE）+ 会话回流白名单 + ION_HOST_PID 孤儿自退。测试：lib 1071/0 · ion bin 68/0 · heartbeat_ci 14/14 · socket_security_ci 12/12 · subscribe_protocol_ci 20/20 · rpc_event_push_ci 18/0 · host_read_ci 20/20（fixture 已适配路径收紧）。⚠️ 行为变更注意：跨连接 ui_respond 被拒（ion-webui 网关若独立连接应答审批需改同源）；`config show` 不再回显明文 key。
+
 > **2026-09-08 第 1 轮执行（T01/T02 完成）**：CI 汇总器假成功与矩阵重复调度/隔离缺陷已修——退出码 0/1/2/3/4 语义 + manifest 校验 + attempts 保留（后次 PASS 不抹前次 FAIL）；去重调度 + 每运行独立目录 + 源 `.ion/monitors` 不再删除 + 失败向上传播。故障注入 30/30 全绿（`tests/aggregate_ci_fault_ci.sh` 15 + `tests/ci_matrix_schedule_ci.sh` 15），分支 `codex/ion24-t01-t02`（master 未动，未推送）。⚠️ 自动化 `ion-24` 实测不在当前 workspace（自动化列表为空），启用前先确认归属。详见 [SELF_EVOLUTION.md §9.9](./docs/design/SELF_EVOLUTION.md)。
 
 > **2026-09-08 连续执行 run-002（T03 完成，进行中）**：24 小时连续执行窗口已开启（截止 2026-09-09 03:48 CST，检查点在 [SELF_EVOLUTION.md §9.10](./docs/design/SELF_EVOLUTION.md)）。T03 已完成（commit `42df79d`）：workflows 不再吞错（continue-on-error/`|| echo` 清零）、并行 runner 真 cargo preflight + 树指纹 stamp + 诚实 shim（伪造 "900 passed" 删除）、serial/rpc 旧 runner per-run 隔离 + rpc 改私有 socket 不再杀用户 host。`tests/ci_trust_gates_ci.sh` 21/21+1 SKIP×2。下一卡 T06。
@@ -805,7 +807,7 @@ ion --mode rpc           → 内部 Worker 子进程 (JSONL over stdin/stdout)
 >
 > 快速概览（2026-08-08 实测）：
 > - **代码规模**：99,682 行 Rust（src 82,912）
-> - **lib 测试**：1013 passed / 2 failed（2 个 hooks 测试逻辑缺陷，非产品 bug，待修）
+> - **lib 测试**：1071 passed / 0 failed（2026-09-15 实测，--test-threads=2）
 > - **已完成**：核心内核 + 15+ 扩展系统 + 三场景引擎 + A→B 自进化
 > - **HTML Export**：ION 自有单文件离线模板 + active branch 完整有序 `sourceEntries` + Flow Summary + Timeline/正文完整映射；目录展示 17 种固定 Entry、25 种已识别内置 Custom 与当前会话实际类型，运行时 Extension Custom 统一显示为 `Custom` 并保留来源、LLM 上下文与实时 UI 受众；Hook 归组、Compaction 与 parented File Snapshot 独立卡片；仅当隐藏正文超过 3 行时折叠（`tests/export_ci.sh` 54/54）
 > - **PreToolUse 拒绝闭环**：拒绝转错误 ToolResult、Agent 继续、Hook 审计与 toolCallId/当前分支关联、SessionIndex 准确计数，导出类型目录保留 Hook/Extension 来源（Harness 1/1 + `tests/hooks_pretool_deny_ci.sh` 8/8）
