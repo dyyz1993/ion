@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ion:schemas:rpc:session:fork",
+  "title": "fork — branch from a turn (leaf_pointer + label entries)",
+  "description": "Domain: session/message. Source: src/worker_rpc.rs:3556. NOTE: params.turnId here is the NUMERIC per-entry turn number, different from the string turn anchor ids returned by list_turns/list_inputs. Wire envelope (validated separately, not by this schema): worker replies {\"id\",\"type\":\"response\",\"command\",\"success\":true,\"data\":<this payload>} (src/worker_rpc.rs output_response); host replies {\"type\":\"response\",\"id\",\"success\":true,\"data\":<this payload>,\"session\"?}. Errors use {\"success\":false,\"error\":string} with no data.",
+  "type": "object",
+  "properties": {
+    "sessionId": {
+      "type": "string"
+    },
+    "branch": {
+      "type": "string"
+    },
+    "forkFromEntry": {
+      "type": "string"
+    },
+    "appended": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "sessionId",
+    "branch",
+    "forkFromEntry",
+    "appended"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "properties": {
+        "turnId": {
+          "type": "integer",
+          "description": "Numeric turn number; the branch point is the LAST entry carrying this turnId."
+        },
+        "name": {
+          "type": "string",
+          "description": "Branch label; default branch-<n>."
+        }
+      },
+      "required": [
+        "turnId"
+      ],
+      "additionalProperties": true
+    }
+  }
+}

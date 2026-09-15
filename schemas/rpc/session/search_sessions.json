@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ion:schemas:rpc:session:search_sessions",
+  "title": "search_sessions — search sessions by title/project (+ optional content scan)",
+  "description": "Domain: session/message (host). Source: src/bin/ion.rs:7413. Empty query → envelope error \"missing 'query'\". Wire envelope (validated separately, not by this schema): worker replies {\"id\",\"type\":\"response\",\"command\",\"success\":true,\"data\":<this payload>} (src/worker_rpc.rs output_response); host replies {\"type\":\"response\",\"id\",\"success\":true,\"data\":<this payload>,\"session\"?}. Errors use {\"success\":false,\"error\":string} with no data.",
+  "type": "object",
+  "properties": {
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "firstMessage": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "messageCount": {
+            "type": "integer"
+          },
+          "updatedAt": {
+            "type": "integer"
+          },
+          "matchType": {
+            "type": "string",
+            "enum": [
+              "title",
+              "content"
+            ]
+          },
+          "contentHits": {
+            "type": "integer"
+          },
+          "snippets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "firstMessage",
+          "project",
+          "model",
+          "messageCount",
+          "updatedAt",
+          "matchType",
+          "contentHits",
+          "snippets"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "totalMatches": {
+      "type": "integer"
+    },
+    "query": {
+      "type": "string"
+    },
+    "searchContent": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "results",
+    "totalMatches",
+    "query",
+    "searchContent"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1
+        },
+        "searchContent": {
+          "type": "boolean",
+          "default": false
+        },
+        "limit": {
+          "type": "integer",
+          "default": 20
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": true
+    }
+  }
+}

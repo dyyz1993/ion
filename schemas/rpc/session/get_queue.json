@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ion:schemas:rpc:session:get_queue",
+  "title": "get_queue — steering / follow-up queues",
+  "description": "Domain: session/message. Sources: worker src/worker_rpc.rs:3107; host idle synthesis src/bin/ion.rs:7024 (empty queues). Items are serialized Message values. Wire envelope (validated separately, not by this schema): worker replies {\"id\",\"type\":\"response\",\"command\",\"success\":true,\"data\":<this payload>} (src/worker_rpc.rs output_response); host replies {\"type\":\"response\",\"id\",\"success\":true,\"data\":<this payload>,\"session\"?}. Errors use {\"success\":false,\"error\":string} with no data.",
+  "type": "object",
+  "properties": {
+    "steering": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "Arbitrary JSON object (entry/Message payload, not contracted here)"
+      }
+    },
+    "followUp": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "Arbitrary JSON object (entry/Message payload, not contracted here)"
+      }
+    },
+    "steeringCount": {
+      "type": "integer"
+    },
+    "followUpCount": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "steering",
+    "followUp",
+    "steeringCount",
+    "followUpCount"
+  ],
+  "additionalProperties": false
+}

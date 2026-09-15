@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ion:schemas:rpc:session:get_inflight_messages",
+  "title": "get_inflight_messages — in-memory (not yet reloaded) messages",
+  "description": "Domain: session/message. Source: src/worker_rpc.rs:1492. Wire envelope (validated separately, not by this schema): worker replies {\"id\",\"type\":\"response\",\"command\",\"success\":true,\"data\":<this payload>} (src/worker_rpc.rs output_response); host replies {\"type\":\"response\",\"id\",\"success\":true,\"data\":<this payload>,\"session\"?}. Errors use {\"success\":false,\"error\":string} with no data.",
+  "type": "object",
+  "properties": {
+    "total": {
+      "type": "integer"
+    },
+    "returned": {
+      "type": "integer"
+    },
+    "is_running": {
+      "type": "boolean"
+    },
+    "messages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "Arbitrary JSON object (entry/Message payload, not contracted here)"
+      },
+      "description": "Serialized Message enum values."
+    }
+  },
+  "required": [
+    "total",
+    "returned",
+    "is_running",
+    "messages"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "default": 20,
+          "description": "Return the last N in-memory messages."
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

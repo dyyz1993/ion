@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ion:schemas:rpc:session:get_session_messages",
+  "title": "get_session_messages — HOST-level direct disk read (no worker spawn)",
+  "description": "Domain: session/message. Sources: host dispatch src/bin/ion.rs:6521 and intercept src/bin/ion.rs:7893 (old name get_messages with session also lands here); reader src/bin/ion.rs:6861. params.session is REQUIRED on this surface (id or .jsonl path). Data shape is identical to get_messages.json. Wire envelope (validated separately, not by this schema): worker replies {\"id\",\"type\":\"response\",\"command\",\"success\":true,\"data\":<this payload>} (src/worker_rpc.rs output_response); host replies {\"type\":\"response\",\"id\",\"success\":true,\"data\":<this payload>,\"session\"?}. Errors use {\"success\":false,\"error\":string} with no data.",
+  "type": "object",
+  "properties": {
+    "messages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "Arbitrary JSON object (entry/Message payload, not contracted here)"
+      },
+      "description": "message/branch_summary JSONL entries on the requested page."
+    },
+    "hasMore": {
+      "type": "boolean"
+    },
+    "totalCount": {
+      "type": "integer"
+    },
+    "nextCursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "view": {
+      "type": "string",
+      "description": "Echo of the applied view, lowercased Debug format, e.g. live/full/since_compaction/branch(..)."
+    },
+    "compactionPoints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "Arbitrary JSON object (entry/Message payload, not contracted here)"
+      },
+      "description": "compaction entries (bypass data, always returned)."
+    }
+  },
+  "required": [
+    "messages",
+    "hasMore",
+    "totalCount",
+    "nextCursor",
+    "view",
+    "compactionPoints"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "properties": {
+        "after": {
+          "type": "string",
+          "description": "Cursor: return entries strictly after this entry id."
+        },
+        "before": {
+          "type": "string",
+          "description": "Cursor: return entries strictly before this entry id."
+        },
+        "limit": {
+          "type": "integer",
+          "default": 50,
+          "description": "Page size; 0 = unlimited (RetrievalParams)."
+        },
+        "from": {
+          "type": "string",
+          "enum": [
+            "head"
+          ],
+          "description": "Only \"head\" is meaningful: page from the oldest entry forward. Any other value is treated as absent (worker_rpc.rs:1627)."
+        },
+        "complete_turn": {
+          "type": "boolean",
+          "default": true,
+          "description": "Trim the page to whole turns."
+        },
+        "include_custom": {
+          "type": "string",
+          "enum": [
+            "none",
+            "display_only",
+            "all"
+          ],
+          "default": "none",
+          "description": "custom-message bypass filter (CustomFilter)."
+        },
+        "view": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "live",
+                "since_compaction",
+                "full"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^branch:.+",
+              "description": "branch:<name>: read only that branch's path."
+            }
+          ],
+          "default": "live"
+        },
+        "session": {
+          "type": "string",
+          "description": "Session id or .jsonl file path. Required on the HOST direct-read surface; ignored by the worker surface (worker is bound to its session)."
+        }
+      },
+      "required": [
+        "session"
+      ],
+      "additionalProperties": true
+    }
+  }
+}

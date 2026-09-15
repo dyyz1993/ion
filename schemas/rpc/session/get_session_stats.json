@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ion:schemas:rpc:session:get_session_stats",
+  "title": "get_session_stats — message counts + token + lineage",
+  "description": "Domain: session/message. Source: src/worker_rpc.rs:1515. Note camelCase keys here vs snake_case in get_state/get_session_info (historical). No params. Wire envelope (validated separately, not by this schema): worker replies {\"id\",\"type\":\"response\",\"command\",\"success\":true,\"data\":<this payload>} (src/worker_rpc.rs output_response); host replies {\"type\":\"response\",\"id\",\"success\":true,\"data\":<this payload>,\"session\"?}. Errors use {\"success\":false,\"error\":string} with no data.",
+  "type": "object",
+  "properties": {
+    "sessionId": {
+      "type": "string"
+    },
+    "userMessages": {
+      "type": "integer"
+    },
+    "assistantMessages": {
+      "type": "integer"
+    },
+    "toolResults": {
+      "type": "integer"
+    },
+    "totalMessages": {
+      "type": "integer"
+    },
+    "tokens": {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "integer"
+        },
+        "output": {
+          "type": "integer"
+        },
+        "cacheRead": {
+          "type": "integer"
+        },
+        "cacheWrite": {
+          "type": "integer"
+        },
+        "total": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input",
+        "output",
+        "cacheRead",
+        "cacheWrite",
+        "total"
+      ],
+      "additionalProperties": false
+    },
+    "cost": {
+      "type": "number"
+    },
+    "lastEntryId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "parentSession": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "parentType": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "sessionId",
+    "userMessages",
+    "assistantMessages",
+    "toolResults",
+    "totalMessages",
+    "tokens",
+    "cost",
+    "lastEntryId",
+    "parentSession",
+    "parentType"
+  ],
+  "additionalProperties": false
+}

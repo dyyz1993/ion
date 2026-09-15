@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ion:schemas:rpc:session:compact",
+  "title": "compact — compaction run (LLM summarizer; emergency fallback possible)",
+  "description": "Domain: session/message. Source: src/worker_rpc.rs:3514. Failure path is still a SUCCESS envelope with compacted:false + error. Wire envelope (validated separately, not by this schema): worker replies {\"id\",\"type\":\"response\",\"command\",\"success\":true,\"data\":<this payload>} (src/worker_rpc.rs output_response); host replies {\"type\":\"response\",\"id\",\"success\":true,\"data\":<this payload>,\"session\"?}. Errors use {\"success\":false,\"error\":string} with no data.",
+  "type": "object",
+  "properties": {
+    "compacted": {
+      "type": "boolean"
+    },
+    "beforeMessages": {
+      "type": "integer"
+    },
+    "beforeTokens": {
+      "type": "integer"
+    },
+    "afterMessages": {
+      "type": "integer"
+    },
+    "afterTokens": {
+      "type": "integer"
+    },
+    "stage": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "batchCount": {
+      "type": "integer"
+    },
+    "batchSummaries": {
+      "type": "integer"
+    },
+    "hasMergedSummary": {
+      "type": "boolean"
+    },
+    "summaryPreview": {
+      "type": "string"
+    },
+    "error": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "compacted",
+    "beforeMessages",
+    "beforeTokens"
+  ],
+  "additionalProperties": false
+}

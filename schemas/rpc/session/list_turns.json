@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ion:schemas:rpc:session:list_turns",
+  "title": "list_turns — per-turn overview (worker surface; list_session_turns is an alias here)",
+  "description": "Domain: session/message. Sources: worker src/worker_rpc.rs:1672 (match arm 'list_turns' | 'list_session_turns'); host intercept src/bin/ion.rs:7893; host direct read src/bin/ion.rs:6905. Data shape identical on all surfaces. Wire envelope (validated separately, not by this schema): worker replies {\"id\",\"type\":\"response\",\"command\",\"success\":true,\"data\":<this payload>} (src/worker_rpc.rs output_response); host replies {\"type\":\"response\",\"id\",\"success\":true,\"data\":<this payload>,\"session\"?}. Errors use {\"success\":false,\"error\":string} with no data.",
+  "type": "object",
+  "properties": {
+    "turns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "turnId": {
+            "type": "string"
+          },
+          "userContent": {
+            "type": "string"
+          },
+          "assistantContent": {
+            "type": "string"
+          },
+          "keySteps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "toolCallCount": {
+            "type": "integer"
+          },
+          "tokens": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "integer"
+              },
+              "output": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "input",
+              "output"
+            ],
+            "additionalProperties": false
+          },
+          "status": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "durationMs": {
+            "type": "integer"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "turnId",
+          "userContent",
+          "assistantContent",
+          "keySteps",
+          "toolCallCount",
+          "tokens",
+          "status",
+          "summary",
+          "durationMs",
+          "source"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "hasMore": {
+      "type": "boolean"
+    },
+    "totalCount": {
+      "type": "integer"
+    },
+    "nextCursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "turns",
+    "hasMore",
+    "totalCount",
+    "nextCursor"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "properties": {
+        "full_content": {
+          "type": "boolean",
+          "default": false,
+          "description": "Return full content instead of truncated overviews."
+        },
+        "limit": {
+          "type": "integer",
+          "default": 50
+        },
+        "session": {
+          "type": "string",
+          "description": "Host direct-read surface only."
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

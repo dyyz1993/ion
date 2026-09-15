@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ion:schemas:rpc:session:get_last_assistant_text",
+  "title": "get_last_assistant_text — bare JSON string payload",
+  "description": "Last assistant text block; empty string when none.",
+  "type": "string"
+}

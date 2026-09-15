@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ion:schemas:rpc:session:summarize_entries",
+  "title": "summarize_entries — soft-fold messages into a summary (SegmentSummaryEntry)",
+  "description": "Domain: session/message. Source: src/worker_rpc.rs:3858. When params.summary is omitted an LLM call generates it (falls back to a fixed Chinese placeholder on failure). Soft failures carry `error` in an otherwise-successful payload. Wire envelope (validated separately, not by this schema): worker replies {\"id\",\"type\":\"response\",\"command\",\"success\":true,\"data\":<this payload>} (src/worker_rpc.rs output_response); host replies {\"type\":\"response\",\"id\",\"success\":true,\"data\":<this payload>,\"session\"?}. Errors use {\"success\":false,\"error\":string} with no data.",
+  "type": "object",
+  "properties": {
+    "summarized": {
+      "type": "integer"
+    },
+    "before": {
+      "type": "integer"
+    },
+    "after": {
+      "type": "integer"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "error": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "summarized",
+    "before",
+    "after"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "requestParams": {
+      "type": "object",
+      "properties": {
+        "targetIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "summary": {
+          "type": "string",
+          "description": "Pre-written summary; empty/omitted triggers LLM summarization."
+        }
+      },
+      "required": [
+        "targetIds"
+      ],
+      "additionalProperties": true
+    }
+  }
+}

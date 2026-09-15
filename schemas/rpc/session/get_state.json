@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ion:schemas:rpc:session:get_state",
+  "title": "get_state — worker runtime state snapshot",
+  "description": "Domain: session/message (worker). Source: src/worker_rpc.rs:1416. No params. Wire envelope (validated separately, not by this schema): worker replies {\"id\",\"type\":\"response\",\"command\",\"success\":true,\"data\":<this payload>} (src/worker_rpc.rs output_response); host replies {\"type\":\"response\",\"id\",\"success\":true,\"data\":<this payload>,\"session\"?}. Errors use {\"success\":false,\"error\":string} with no data.",
+  "type": "object",
+  "properties": {
+    "model": {
+      "type": "string"
+    },
+    "provider": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "message_count": {
+      "type": "integer"
+    },
+    "is_running": {
+      "type": "boolean"
+    },
+    "steering_queue": {
+      "type": "integer"
+    },
+    "follow_up_queue": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "model",
+    "provider",
+    "session_id",
+    "message_count",
+    "is_running",
+    "steering_queue",
+    "follow_up_queue"
+  ],
+  "additionalProperties": false
+}

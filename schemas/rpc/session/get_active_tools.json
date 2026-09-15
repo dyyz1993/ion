@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ion:schemas:rpc:session:get_active_tools",
+  "title": "get_active_tools — active tool names",
+  "description": "Domain: session/message. Sources: worker src/worker_rpc.rs:3277; host idle synthesis src/bin/ion.rs:7027 (falls back to SessionIndex last_active_tools). No params. Wire envelope (validated separately, not by this schema): worker replies {\"id\",\"type\":\"response\",\"command\",\"success\":true,\"data\":<this payload>} (src/worker_rpc.rs output_response); host replies {\"type\":\"response\",\"id\",\"success\":true,\"data\":<this payload>,\"session\"?}. Errors use {\"success\":false,\"error\":string} with no data.",
+  "type": "object",
+  "properties": {
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "count": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "tools",
+    "count"
+  ],
+  "additionalProperties": false
+}

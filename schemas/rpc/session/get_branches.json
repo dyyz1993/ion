@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ion:schemas:rpc:session:get_branches",
+  "title": "get_branches — named branches + synthesized main trunk",
+  "description": "Domain: session/message. Source: src/worker_rpc.rs:3603. Note the synthesized `main` item has NO updatedAt key (unlike named branches). No params. Wire envelope (validated separately, not by this schema): worker replies {\"id\",\"type\":\"response\",\"command\",\"success\":true,\"data\":<this payload>} (src/worker_rpc.rs output_response); host replies {\"type\":\"response\",\"id\",\"success\":true,\"data\":<this payload>,\"session\"?}. Errors use {\"success\":false,\"error\":string} with no data.",
+  "type": "object",
+  "properties": {
+    "sessionId": {
+      "type": "string"
+    },
+    "currentLeaf": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "main": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "const": "main"
+        },
+        "targetId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "messages": {
+          "type": "integer"
+        },
+        "brief": {
+          "type": "string"
+        },
+        "current": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "targetId",
+        "messages",
+        "brief",
+        "current"
+      ],
+      "additionalProperties": false
+    },
+    "branches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "targetId": {
+            "type": "string"
+          },
+          "messages": {
+            "type": "integer"
+          },
+          "brief": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "current": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "targetId",
+          "messages",
+          "brief",
+          "updatedAt",
+          "current"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "sessionId",
+    "currentLeaf",
+    "main",
+    "branches"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ion:schemas:rpc:session:create_session",
+  "title": "create_session — spawn a session worker (two accepted call forms, NOT unified)",
+  "description": "Domain: session/message (host). Sources: dispatch src/bin/ion.rs:7595; do_create_session src/bin/ion.rs:5125. Form split (recorded as-is, intentionally not 'fixed'): (1) RPC client form — fields nested under params; (2) flat stdin form — the whole command object is the params. Field naming: `project_path` OR `cwd` (3-level fallback project_path > cwd > host cwd, bin/ion.rs:5234), `session_id` optional (auto sess_<8hex>), `agent` default \"build\", plus optional model/provider/initial_prompt. Wire envelope (validated separately, not by this schema): worker replies {\"id\",\"type\":\"response\",\"command\",\"success\":true,\"data\":<this payload>} (src/worker_rpc.rs output_response); host replies {\"type\":\"response\",\"id\",\"success\":true,\"data\":<this payload>,\"session\"?}. Errors use {\"success\":false,\"error\":string} with no data.",
+  "type": "object",
+  "properties": {
+    "session_id": {
+      "type": "string"
+    },
+    "agent": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "const": "created"
+    }
+  },
+  "required": [
+    "session_id",
+    "agent",
+    "status"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "requestParams": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "agent": {
+              "type": "string",
+              "default": "build"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "project_path": {
+              "type": "string",
+              "description": "Project dir; auto-created if missing."
+            },
+            "cwd": {
+              "type": "string",
+              "description": "Fallback for project_path."
+            },
+            "model": {
+              "type": "string"
+            },
+            "provider": {
+              "type": "string"
+            },
+            "initial_prompt": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true,
+          "description": "Form 1: RPC client, fields under params."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "agent": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "project_path": {
+              "type": "string"
+            },
+            "cwd": {
+              "type": "string"
+            },
+            "model": {
+              "type": "string"
+            },
+            "provider": {
+              "type": "string"
+            },
+            "initial_prompt": {
+              "type": "string"
+            },
+            "method": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true,
+          "description": "Form 2: flat stdin command (whole cmd is the params)."
+        }
+      ]
+    }
+  }
+}

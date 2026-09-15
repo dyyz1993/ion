@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ion:schemas:rpc:session:token_usage_summary",
+  "title": "token_usage_summary — cross-session token usage aggregated from SessionIndex",
+  "description": "Domain: session/message (host). Source: src/bin/ion.rs:7507. No params. Wire envelope (validated separately, not by this schema): worker replies {\"id\",\"type\":\"response\",\"command\",\"success\":true,\"data\":<this payload>} (src/worker_rpc.rs output_response); host replies {\"type\":\"response\",\"id\",\"success\":true,\"data\":<this payload>,\"session\"?}. Errors use {\"success\":false,\"error\":string} with no data.",
+  "type": "object",
+  "properties": {
+    "sessions": {
+      "type": "integer"
+    },
+    "totalInput": {
+      "type": "integer"
+    },
+    "totalOutput": {
+      "type": "integer"
+    },
+    "totalTokens": {
+      "type": "integer"
+    },
+    "byModel": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string"
+          },
+          "input": {
+            "type": "integer"
+          },
+          "output": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "model",
+          "input",
+          "output",
+          "total"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "byProject": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "input": {
+            "type": "integer"
+          },
+          "output": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project",
+          "input",
+          "output",
+          "total"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "sessions",
+    "totalInput",
+    "totalOutput",
+    "totalTokens",
+    "byModel",
+    "byProject"
+  ],
+  "additionalProperties": false
+}
