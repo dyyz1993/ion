@@ -2758,16 +2758,20 @@ impl WorkerRegistry {
             // ── AUTO-RECOVERY：spawn 替补 worker（锁外异步） ──
             if let Some((prompt, host)) = auto_respawn {
                 tracing::info!("[auto-recovery] respawning on {host}");
-                {
-                    let reg = sub_registry.lock();
-                    reg.broadcast_ui_event(
-                        "auto_recovered",
-                        serde_json::json!({"trigger": "stdout_eof", "host": host}),
-                        None,
-                    );
-                }
                 let reg_ar = sub_registry.clone();
                 tokio::spawn(async move {
+                    // fix4/h5-sandbox-failover：原 host 是沙盒池成员时重选健康节点
+                    //（沙盒死了重派=送死）；非池成员零开销原样返回。事件在决策后发，
+                    // 携带最终 host + failover 信息。
+                    let (host, failover) = respawn_host_failover(&host).await;
+                    {
+                        let reg = reg_ar.lock();
+                        let mut ev = serde_json::json!({"trigger": "stdout_eof", "host": host});
+                        if let Some(f) = failover {
+                            ev["failover"] = f;
+                        }
+                        reg.broadcast_ui_event("auto_recovered", ev, None);
+                    }
                     // W6 Bug3: 重派配置继承原 record 的 agent + 会话当前 model/provider
                     //（SessionIndex），找不到回落默认——不再硬编码 "build"
                     let (inherit_agent, inherit_model, inherit_provider) = respawn_ctx
@@ -8411,6 +8415,75 @@ fn auto_respawn_counts() -> &'static std::sync::Mutex<std::collections::HashMap<
     static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, u32>>> =
         std::sync::OnceLock::new();
     C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// auto-respawn host 故障转移（fix4/h5-sandbox-failover，两处重派点共用）：
+/// 原 host 是沙盒池成员（host=="auto" 或命中 remote_workers / ION_REMOTE_WORKERS）
+/// 时，重跑 probe_all + pick_healthy 选健康节点替换 host——不再固定回原病沙盒；
+/// 池内无健康节点 → 回落原 host 并 WARN（保持可重派性）。
+///
+/// 返回 (最终 host, failover 事件信息)：None 表示非池成员/本地（无 failover 发生，
+/// 既有行为零开销——不探测）。事件信息含 mode/from/to/pool_size，供 auto_recovered
+/// 事件携带，UI 可区分「切换节点」与「全死回落」。
+pub async fn respawn_host_failover(original_host: &str) -> (String, Option<serde_json::Value>) {
+    let cfg = crate::config::IonConfig::load();
+    // 快路径：非池成员且非 auto → 不构建探测（本地 worker / 显式外部 host 场景零开销）
+    if original_host != "auto" && !crate::sandbox_pool::SandboxPool::from_config(&cfg).contains(original_host)
+    {
+        return (original_host.to_string(), None);
+    }
+    let mut pool = crate::sandbox_pool::SandboxPool::from_config(&cfg);
+    pool.probe_all().await;
+    let pool_size = pool.statuses().len();
+    match crate::sandbox_pool::failover_decision(&pool, original_host) {
+        crate::sandbox_pool::FailoverDecision::Failover { to } => {
+            if to == original_host {
+                // 原 host 探测后仍健康（心跳误杀场景），选点可能选回自身
+                tracing::info!(
+                    "[auto-recovery] sandbox probe: original host {original_host} still healthy, respawn on it"
+                );
+                (
+                    to.clone(),
+                    Some(serde_json::json!({
+                        "mode": "pool_pick",
+                        "from": original_host,
+                        "to": to,
+                        "poolSize": pool_size,
+                    })),
+                )
+            } else {
+                tracing::warn!(
+                    "[auto-recovery] sandbox failover: original host {original_host} unhealthy, respawning on {to} (pool={pool_size})"
+                );
+                (
+                    to.clone(),
+                    Some(serde_json::json!({
+                        "mode": "pool_failover",
+                        "from": original_host,
+                        "to": to,
+                        "poolSize": pool_size,
+                    })),
+                )
+            }
+        }
+        crate::sandbox_pool::FailoverDecision::NoHealthyFallback => {
+            tracing::warn!(
+                "[auto-recovery] sandbox pool has no healthy node ({pool_size} probed), falling back to original host {original_host} — respawn kept but likely to fail again"
+            );
+            (
+                original_host.to_string(),
+                Some(serde_json::json!({
+                    "mode": "fallback_no_healthy",
+                    "from": original_host,
+                    "to": original_host,
+                    "poolSize": pool_size,
+                })),
+            )
+        }
+        crate::sandbox_pool::FailoverDecision::NotPoolMember => {
+            (original_host.to_string(), None)
+        }
+    }
 }
 
 /// W6 Bug3: respawn 继承决策（纯函数，供测试）。
