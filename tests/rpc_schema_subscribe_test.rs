@@ -227,6 +227,28 @@ fn subscribe_request_three_modes_validate() {
 }
 
 #[test]
+fn connection_error_frames_validate() {
+    // 连接级 error 帧（subscribe 失败 + P0.1 行长超限拒绝帧）
+    let schema = read_schema("subscribe.json");
+    let c = Validator::new(&schema["properties"]["errors"]).expect("compile");
+    // instance 订阅失败（60s 无 worker）
+    assert!(c.is_valid(&json!({"type":"error","error":"no worker for session within 60s"})));
+    // P0.1 行长超限帧（ion-protocol::line_too_large_frame）：带 limitBytes/actualBytes
+    assert!(c.is_valid(&json!({
+        "type":"error",
+        "error":"line too large: 16785408 bytes exceeds limit 16777216",
+        "limitBytes":16777216,
+        "actualBytes":16785408
+    })));
+    // 负例：缺 type / limitBytes 非 16MiB / actualBytes 未超限
+    assert!(!c.is_valid(&json!({"error":"boom"})));
+    assert!(!c.is_valid(&json!({"type":"error","error":"x","limitBytes":1024})));
+    assert!(!c.is_valid(&json!({
+        "type":"error","error":"x","limitBytes":16777216,"actualBytes":16777216
+    })));
+}
+
+#[test]
 fn subscribed_ack_variants_validate() {
     let c = compile("events/subscribed_ack.json");
     // instance ack（带 epoch）— 源码：SessionRouter::handle_subscribe

@@ -54,6 +54,13 @@ pub const TYPE_EVENT: &str = "event";
 /// 旧 epoch 订阅者收到的一次性作废通知帧 `type`。
 pub const TYPE_STALE_ROUTE: &str = "stale_route";
 
+/// JSONL 单行字节上限（16 MiB）——对齐 pi protocol `framing.ts` 的行长上限。
+///
+/// 防滥用：恶意/异常客户端发超大行不允许被读端无限缓冲（OOM 风险）。host socket
+/// 与 worker stdin 的读循环在**行累计字节超限**时立即拒绝：发
+/// [`line_too_large_frame`] 错误帧后断开连接/退出，绝不把整行缓冲进内存再做解析。
+pub const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
+
 // ---------------------------------------------------------------------------
 // 请求信封（C→S / host→worker stdin）
 // ---------------------------------------------------------------------------
@@ -429,6 +436,20 @@ pub fn stream_error_frame(error: impl Into<String>) -> Value {
     json!({"type": "error", "error": error.into()})
 }
 
+/// 行长超限错误帧（[`MAX_LINE_BYTES`] 防滥用的拒绝回执）。
+///
+/// 形状归 `type:"error"` 家族（与 [`stream_error_frame`] 同族，现有错误帧消费者
+/// 无需改造即可识别），额外携带 `limitBytes` / `actualBytes` 便于诊断。
+/// **无 `id`**——超长行不做 JSON 解析，无法安全提取请求 id。
+pub fn line_too_large_frame(limit: usize, actual: usize) -> Value {
+    json!({
+        "type": "error",
+        "error": format!("line too large: {actual} bytes exceeds limit {limit}"),
+        "limitBytes": limit,
+        "actualBytes": actual,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // 行解析与序列化
 // ---------------------------------------------------------------------------
@@ -698,6 +719,35 @@ mod tests {
         assert_eq!(v["id"], "1");
         assert_eq!(v["future_field"], 42);
         assert!(parse_line("not json").is_err());
+    }
+
+    // ── 行长上限（P0.1 对标 pi framing）──
+
+    #[test]
+    fn max_line_bytes_is_16mib() {
+        assert_eq!(MAX_LINE_BYTES, 16 * 1024 * 1024);
+        assert_eq!(MAX_LINE_BYTES, 16_777_216);
+    }
+
+    #[test]
+    fn line_too_large_frame_shape() {
+        let v = line_too_large_frame(MAX_LINE_BYTES, MAX_LINE_BYTES + 1);
+        assert_eq!(v["type"], "error", "归 error 帧家族");
+        assert_eq!(
+            v["error"],
+            format!(
+                "line too large: {} bytes exceeds limit {}",
+                MAX_LINE_BYTES + 1,
+                MAX_LINE_BYTES
+            )
+        );
+        assert_eq!(v["limitBytes"], MAX_LINE_BYTES);
+        assert_eq!(v["actualBytes"], MAX_LINE_BYTES + 1);
+        // 无 id：超长行不解析，无法安全提取请求 id
+        assert!(v.get("id").is_none(), "超限错误帧不应带 id: {v}");
+        // 一行一帧：序列化后不含换行
+        let line = serialize_line(&v);
+        assert!(!line.contains('\n'));
     }
 
     #[test]

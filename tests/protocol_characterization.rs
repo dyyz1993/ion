@@ -92,6 +92,16 @@ fn next_json_matching(
     pred: impl Fn(&serde_json::Value) -> bool,
 ) -> serde_json::Value {
     let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    next_json_matching_before(rx, deadline, pred)
+}
+
+/// 同 next_json_matching，但 deadline 由调用方控制（行长上限测试用短 deadline：
+/// 红态下不应长时间等待，绿态下正常秒级命中）。
+fn next_json_matching_before(
+    rx: &mpsc::Receiver<String>,
+    deadline: std::time::Instant,
+    pred: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
     loop {
         let line = next_line_before(rx, deadline);
         let trimmed = line.trim();
@@ -288,5 +298,70 @@ fn request_with_session_field_is_accepted() {
     });
     assert_eq!(resp["id"], "rpc-client");
     assert_eq!(resp["success"], true);
+    shutdown(child);
+}
+
+// ---------------------------------------------------------------------------
+// 特征 7（P0.1 对标 pi framing 行长上限）：>16MiB 的行 → 错误帧 + 退出
+// {"type":"error","error":"line too large: ...","limitBytes":16777216,"actualBytes":...}
+//
+// 防滥用：恶意/异常客户端发超大行不允许被缓冲进内存（OOM 风险）。上限检查必须
+// 先于 JSON 解析；超限后 worker 发错误帧并按现有 EOF 模式优雅退出。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn oversized_line_rejected_with_error_frame() {
+    let (mut child, rx) = spawn_worker();
+    next_json_matching(&rx, |v| v["event"]["type"] == "worker_ready");
+
+    // 写线程：17MiB 超限行分块写入。绿态下 worker 消费到 ~16MiB 即拒绝并退出，
+    // 剩余写入会 EPIPE——写线程必须吞掉写错误退出而非 panic/永久阻塞。
+    let stdin = child.stdin.take().unwrap();
+    let writer = std::thread::spawn(move || {
+        let mut w = stdin;
+        let chunk = "x".repeat(1024 * 1024);
+        for _ in 0..17 {
+            if w.write_all(chunk.as_bytes()).is_err() {
+                return; // worker 已断开（预期：超限拒绝后退出）
+            }
+        }
+        let _ = w.write_all(b"\n");
+        let _ = w.flush();
+    });
+
+    // 错误帧（短 deadline：红态下 20s 内拿不到 → 失败，而非挂 120s）
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let frame = next_json_matching_before(&rx, deadline, |v| {
+        v["type"] == "error" && v.get("limitBytes").is_some()
+    });
+    let err = frame["error"].as_str().expect("error 必须是字符串");
+    assert!(
+        err.contains("line too large"),
+        "错误信息要可诊断: {frame}"
+    );
+    assert_eq!(
+        frame["limitBytes"].as_u64(),
+        Some(16 * 1024 * 1024),
+        "上限必须是 16MiB: {frame}"
+    );
+    let actual = frame["actualBytes"].as_u64().expect("actualBytes");
+    assert!(
+        actual > 16 * 1024 * 1024,
+        "actualBytes 应报告超限时的实际字节: {frame}"
+    );
+
+    // 超限 → 退出（现有 EOF 处理模式），不留在无读端僵尸状态
+    let exit_deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.try_wait().expect("try_wait") {
+            Some(_) => break,
+            None if std::time::Instant::now() < exit_deadline => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            None => panic!("worker 收到超限行后应在 10s 内退出"),
+        }
+    }
+    // 写线程收尾（worker 已退出，write 应已失败返回）
+    let _ = writer.join();
     shutdown(child);
 }
