@@ -7496,9 +7496,12 @@ async fn handle_manager_command_write(
             // 索引移除（写事务+墓碑：此前 load().remove() 没 save 是空操作，
             // 且 patch_meta 的重建逻辑会把条目救活）
             ion::session_index::SessionIndex::remove_persist(&sid);
-            // JSONL 文件删除（所有项目目录下同名文件）
+            // JSONL 文件删除（所有项目目录下同名文件）。
+            // 必须走 sessions_dir()（吃 ION_SESSION_DIR 覆盖）——与读路径
+            // （resolve_session_path / load_session_entries）保持同一来源，
+            // 否则隔离环境里 removed_files 恒 0（S1 实测 bug）。
             let mut removed_files = 0;
-            let sessions_root = ion::paths::root().join("agent/sessions");
+            let sessions_root = ion::paths::sessions_dir();
             if let Ok(read) = std::fs::read_dir(&sessions_root) {
                 for proj in read.flatten() {
                     let target = proj.path().join(format!("{sid}.jsonl"));

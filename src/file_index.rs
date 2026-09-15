@@ -102,9 +102,39 @@ struct TextInner {
 
 /// message 对象的形态：{"User":{...}} / {"Assistant":{...}} / {"ToolResult":{...}}
 /// 变体名即 role；只对 User/Assistant 提取 content 预览。
+/// 兼容简形 {"role":"user","content":...}（外部构造 / pi 风格会话文件）——
+/// 检索层 message_role/message_payload 均已支持简形，索引层必须同样识别，
+/// 否则 metas 缺 message.role → fast_turns 0 turns（S1 实测 Bug 2）。
 fn message_head(raw: &RawValue) -> (Option<&'static str>, Option<String>, Option<String>) {
     let s = raw.get();
-    // 快速判定变体（避免整对象反序列化）："User"/"Assistant"/"ToolResult" 之一为首个 key
+    let trimmed = s.trim_start();
+    // 形态二：简形——首个 key 是 "role"。先于枚举判定（content 文本里
+    // 可能出现变体名字样，首 key 判定不受 content 干扰）。
+    if trimmed.starts_with("{\"role\"") {
+        #[derive(Deserialize)]
+        struct SimpleMsg<'a> {
+            #[serde(borrow)]
+            role: Option<&'a str>,
+            #[serde(borrow)]
+            content: Option<&'a RawValue>,
+        }
+        if let Ok(m) = serde_json::from_str::<SimpleMsg>(s) {
+            let role = match m.role {
+                Some("user") => Some("user"),
+                Some("assistant") => Some("assistant"),
+                Some("toolResult") => Some("toolResult"),
+                _ => None,
+            };
+            // 与枚举形一致：只对 User/Assistant 提取预览
+            let preview = match role {
+                Some("user") | Some("assistant") => m.content.and_then(content_preview),
+                _ => None,
+            };
+            return (role, preview.clone(), preview);
+        }
+        // 解析失败 → 落到下面的枚举判定
+    }
+    // 形态一：枚举变体（避免整对象反序列化）："User"/"Assistant"/"ToolResult" 之一为首个 key
     let variant = if s.contains("\"User\"") {
         "user"
     } else if s.contains("\"Assistant\"") {
@@ -447,5 +477,47 @@ mod tests {
         let mut idx = FileIndex::build(&p).unwrap();
         std::fs::write(&p, "{\"type\":\"session\",\"id\":\"s9\"}\n").unwrap();
         assert!(!idx.refresh(), "截短必须要求全量重建");
+    }
+
+    // ── 简形 message 兼容（Bug 2：{"role":"user"} 而非 {"User":{...}}）──
+    // S1 实测：FileIndex 只认枚举形 → metas 缺 message.role → fast_turns
+    // 返回 0 turns 且不回落慢路径，与 get_session_messages（2 条）行为分裂。
+
+    #[test]
+    fn test_simple_form_message_role_and_preview() {
+        let l1 = r#"{"type":"session","id":"s1"}"#.to_string();
+        let l2 = r#"{"type":"message","id":"u1","parentId":"s1","timestamp":"t1","message":{"role":"user","content":"简形第一问"}}"#.to_string();
+        let l3 = r#"{"type":"message","id":"a1","parentId":"u1","message":{"role":"assistant","content":[{"Text":{"text":"简形第一答"}}]}}"#.to_string();
+        let l4 = r#"{"type":"message","id":"tr1","parentId":"a1","message":{"role":"toolResult","content":[{"Text":{"text":"ok"}}]}}"#.to_string();
+        let (_dir, p) = write_tmp_named(&[l1, l2, l3, l4], "t4_simple.jsonl");
+        let idx = FileIndex::build(&p).unwrap();
+        // role 识别（简形以 role 字段为准）
+        assert_eq!(idx.heads[1].role, Some("user"));
+        assert_eq!(idx.heads[2].role, Some("assistant"));
+        assert_eq!(idx.heads[3].role, Some("toolResult"));
+        // 预览：User/Assistant 提取；toolResult 不提取（与枚举形行为一致）
+        assert_eq!(idx.heads[1].user_head.as_deref(), Some("简形第一问"));
+        assert_eq!(idx.heads[2].asst_head.as_deref(), Some("简形第一答"));
+        assert_eq!(idx.heads[3].user_head, None);
+        // metas 兼容 group_into_turns（此前简形 0 turns 的根因）
+        let turns = crate::message_retrieval::group_into_turns(&idx.metas);
+        assert_eq!(turns.len(), 1, "简形消息必须按 user 边界分组出 1 turn");
+        assert_eq!(turns[0][0]["id"], "u1");
+        // live 视点消息数不受影响
+        assert_eq!(idx.live_total, 3);
+    }
+
+    #[test]
+    fn test_simple_form_takes_precedence_over_variant_substring() {
+        // 简形判定必须先于枚举 contains 判定：content 里出现带引号的
+        // "User"/"Assistant" 字样时，不得把 assistant 误判成 user
+        let l1 = r#"{"type":"message","id":"a1","message":{"role":"assistant","content":"he typed \"User\" then \"Assistant\" in chat"}}"#.to_string();
+        let (_dir, p) = write_tmp_named(&[l1], "t5_simple_words.jsonl");
+        let idx = FileIndex::build(&p).unwrap();
+        assert_eq!(
+            idx.heads[0].role,
+            Some("assistant"),
+            "简形 role 必须以 role 字段为准，不受 content 文本干扰"
+        );
     }
 }
