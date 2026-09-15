@@ -906,6 +906,267 @@ pub fn append_custom_entry(
     Some((entry_id, parent_id))
 }
 
+// ── queued_input：排队消息落盘（steer/followUp/nextTurn crash 持久化）────────
+//
+// 存储落位原则：排队消息属于单个会话轨迹 → 落会话 JSONL custom 条目，不建 sidecar：
+//   排队：custom/queued_input          data = {kind, text, images?, queuedAt, message}
+//   消费：custom/queued_input_consumed data = {entryId, reason, consumedAt}
+// 回放（worker 重建）只认「排队之后无消费标记、未被会话消息吸收、仍在 live path」
+// 的条目——append-only 无删除，幂等不双投递。消费标记追加在消费边界
+// （post-run save / drain 落盘 / remove / clear），不改变内存队列的原有消费语义。
+
+/// 从序列化 Message（外部标签格式 {"User":{...}} / {"Custom":{...}}）提取
+/// (timestamp, text) 对账键。仅 User / Custom 两种消息可排队（steer/followUp 路径）。
+fn queued_msg_key(msg_json: &serde_json::Value) -> Option<(i64, String)> {
+    let obj = msg_json.as_object()?;
+    let (_tag, inner) = obj.iter().next()?;
+    let ts = inner.get("timestamp")?.as_i64()?;
+    let text = match inner.get("content")? {
+        // User: content 是 ContentBlock 数组（外部标签 {"Text":{"text":..}}）
+        serde_json::Value::Array(blocks) => blocks
+            .iter()
+            .filter_map(|c| {
+                c.as_object()?
+                    .values()
+                    .next()?
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .map(String::from)
+            })
+            .collect::<String>(),
+        // Custom: content untagged，Text 变体序列化为纯字符串
+        serde_json::Value::String(s) => s.clone(),
+        _ => return None,
+    };
+    Some((ts, text))
+}
+
+/// 提取排队消息里的图片块（User content 的 Image 变体），无则 None。
+fn queued_msg_images(msg_json: &serde_json::Value) -> Option<Vec<serde_json::Value>> {
+    let obj = msg_json.as_object()?;
+    let (_tag, inner) = obj.iter().next()?;
+    let blocks = inner.get("content")?.as_array()?;
+    let images: Vec<serde_json::Value> = blocks
+        .iter()
+        .filter(|c| {
+            c.as_object()
+                .and_then(|o| o.keys().next())
+                .map(|k| k == "Image")
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+    if images.is_empty() {
+        None
+    } else {
+        Some(images)
+    }
+}
+
+/// 排队消息入队即落盘：追加 custom/queued_input 条目，返回条目 id。
+/// data 携带完整序列化 message（回放直接反序列化）+ kind/text/queuedAt 便于检索与对账。
+pub fn append_queued_input(
+    cwd: &str,
+    kind: &str,
+    msg: &crate::agent::messages::Message,
+) -> Option<String> {
+    let msg_json = serde_json::to_value(msg).ok()?;
+    let (queued_at, text) = queued_msg_key(&msg_json)?;
+    let mut data = serde_json::json!({
+        "kind": kind,
+        "text": text,
+        "queuedAt": queued_at,
+        "message": msg_json,
+    });
+    if let Some(images) = queued_msg_images(data.get("message")?) {
+        data["images"] = serde_json::Value::Array(images);
+    }
+    let (entry_id, _parent) = append_custom_entry(cwd, "queued_input", data)?;
+    Some(entry_id)
+}
+
+/// 单遍扫描会话文件：返回未消费的 queued_input (entryId, data) 列表（保持排队顺序）。
+/// 消费 = 出现 data.entryId 引用它的 queued_input_consumed 标记。
+fn scan_queued_entries(cwd: &str) -> Vec<(String, serde_json::Value)> {
+    let path = resolve_session_file(cwd);
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let mut out: Vec<(String, serde_json::Value)> = Vec::new();
+    for line in content.lines() {
+        // 快速预过滤：不含标记词的行直接跳过
+        if !line.contains("queued_input") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(|x| x.as_str()) != Some("custom") {
+            continue;
+        }
+        match v.get("customType").and_then(|x| x.as_str()) {
+            Some("queued_input") => {
+                if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
+                    out.push((
+                        id.to_string(),
+                        v.get("data").cloned().unwrap_or(serde_json::Value::Null),
+                    ));
+                }
+            }
+            Some("queued_input_consumed") => {
+                let consumed_id = v
+                    .get("data")
+                    .and_then(|d| d.get("entryId"))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
+                out.retain(|(id, _)| id != consumed_id);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// live path 上的条目 id 集（与 filter_messages_on_live_path 同规则：
+/// 只有存在 leaf_pointer 且 leafId 非空时才过滤——分支回滚抛弃的条目不回放）。
+fn live_entry_ids(
+    entries: &[serde_json::Value],
+    session_id: &str,
+) -> Option<std::collections::HashSet<String>> {
+    // 无 leaf_pointer（或 leafId 为空）→ 整个文件视为 live（不过滤）
+    let leaf_id: &str = entries
+        .iter()
+        .rev()
+        .find(|e| e.get("type").and_then(|v| v.as_str()) == Some("leaf_pointer"))
+        .and_then(|lp| lp.get("leafId").and_then(|v| v.as_str()))?;
+    let by_id: std::collections::HashMap<&str, &serde_json::Value> = entries
+        .iter()
+        .filter_map(|e| e.get("id").and_then(|v| v.as_str()).map(|id| (id, e)))
+        .collect();
+    let mut live = std::collections::HashSet::new();
+    let mut cur: Option<&str> = Some(leaf_id);
+    let mut visited = std::collections::HashSet::new();
+    while let Some(id) = cur {
+        if !visited.insert(id) {
+            break; // 环保护
+        }
+        live.insert(id.to_string());
+        cur = by_id
+            .get(id)
+            .and_then(|e| e.get("parentId").and_then(|v| v.as_str()));
+        if cur == Some(session_id) || cur.is_none() {
+            if let Some(sid) = cur {
+                live.insert(sid.to_string());
+            }
+            break;
+        }
+    }
+    Some(live)
+}
+
+/// 回放候选：未消费、未被会话消息吸收（增量 save 已把它落成真实消息条目的视为已消费，
+/// 用 timestamp+text 对账）、且仍在 live path 上。按排队顺序返回 (entryId, data)。
+/// worker 重建（同 sid 重启 / 崩溃恢复）时调用，逐条 queue_replayed 重新入队。
+pub fn replay_queued_inputs(cwd: &str) -> Vec<(String, serde_json::Value)> {
+    let path = resolve_session_file(cwd);
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let entries: Vec<serde_json::Value> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    let header_id = entries
+        .first()
+        .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("session"))
+        .and_then(|e| e.get("id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let live = live_entry_ids(&entries, &header_id);
+    let on_live = |id: &str| live.as_ref().map_or(true, |ids| ids.contains(id));
+    // 已被吸收的排队消息（真实 message 条目里 timestamp+text 相同的）
+    let saved_keys: std::collections::HashSet<(i64, String)> = entries
+        .iter()
+        .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("message"))
+        .filter(|e| {
+            on_live(e.get("id").and_then(|v| v.as_str()).unwrap_or(""))
+        })
+        .filter_map(|e| e.get("message"))
+        .filter_map(queued_msg_key)
+        .collect();
+    scan_queued_entries(cwd)
+        .into_iter()
+        .filter(|(id, _)| on_live(id))
+        .filter(|(_, data)| {
+            match data.get("queuedAt").and_then(|v| v.as_i64()) {
+                Some(ts) => {
+                    let text = data.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                    !saved_keys.contains(&(ts, text.to_string()))
+                }
+                None => true, // 无对账键的条目保守回放（宁多勿丢）
+            }
+        })
+        .collect()
+}
+
+/// 消费即标记：把一批已消费消息（序列化 Message 值，如 save_worker_session 的 msgs_json /
+/// drain_follow_ups 的 written）与未消费 queued_input 条目按 (timestamp, text) 对账，
+/// 命中的追加 queued_input_consumed 标记。返回标记条数。幂等：已标记的不再重复标记。
+pub fn mark_queued_inputs_consumed(
+    cwd: &str,
+    consumed_msgs: &[serde_json::Value],
+    reason: &str,
+) -> usize {
+    let keys: std::collections::HashSet<(i64, String)> =
+        consumed_msgs.iter().filter_map(queued_msg_key).collect();
+    if keys.is_empty() {
+        return 0;
+    }
+    let consumed_at = now_ms_i64();
+    let mut marked = 0;
+    for (id, data) in scan_queued_entries(cwd) {
+        if let Some(ts) = data.get("queuedAt").and_then(|v| v.as_i64()) {
+            let text = data.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            if keys.contains(&(ts, text.to_string())) {
+                let _ = append_custom_entry(
+                    cwd,
+                    "queued_input_consumed",
+                    serde_json::json!({"entryId": id, "reason": reason, "consumedAt": consumed_at}),
+                );
+                marked += 1;
+            }
+        }
+    }
+    marked
+}
+
+/// 全部标记为已消费（clear_queue 语义：内存队列被清空时，盘上排队条目一并作废，
+/// 防止重建后回放复活用户已删除的消息）。
+pub fn mark_all_queued_inputs_consumed(cwd: &str, reason: &str) -> usize {
+    let consumed_at = now_ms_i64();
+    let mut marked = 0;
+    for (id, _) in scan_queued_entries(cwd) {
+        let _ = append_custom_entry(
+            cwd,
+            "queued_input_consumed",
+            serde_json::json!({"entryId": id, "reason": reason, "consumedAt": consumed_at}),
+        );
+        marked += 1;
+    }
+    marked
+}
+
+fn now_ms_i64() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 /// 倒序扫描会话 JSONL，返回最后一条指定 customType 的 custom 条目 data。
 /// T05 Goal 中断恢复用：恢复 = 回放最后一条 goal_state 快照。
 pub fn read_last_custom_entry(cwd: &str, custom_type: &str) -> Option<serde_json::Value> {

@@ -372,3 +372,81 @@ ion --resume <sid> "继续运行"
 | 重启 in-flight 工具调用 | 少数场景，复杂性高 |
 | `ION_RESTART_*` 环境变量传递 | 无自动重启，不需要 |
 | WorkerCreateConfig.restart_policy 字段 | 无自动重启，不需要 |
+
+---
+
+## 8. 排队消息落盘持久化（queued_input，H3，已实现）
+
+> **状态：已实现** — steer/followUp 排队消息「入队即落盘 / 消费即标记 / 重建回放」，
+> kill -9 / crash 不再丢用户消息。Harness：`tests/queue_persist_harness.rs` 5/5。
+
+### 8.1 问题：纯内存黑洞
+
+worker 的三个排队机制全是纯内存（`Agent.steering_queue / follow_up_queue / next_turn_queue`
++ worker_rpc run 中的 `pending_steer_queue` / `follow_up_tx` channel）：
+
+- 用户在 agent 忙时发 `prompt(behavior=steer/followUp)` / `steer` / `follow_up` → 返回
+  `{"status":"queued"}`，但消息只活在内存里
+- kill -9 / crash / AUTO-RECOVERY 原地重建 → **排队消息凭空蒸发**（排队回执 ≠ 送达，
+  历史教训的 crash 版）
+
+### 8.2 设计：按存储落位原则落会话 JSONL
+
+排队消息属于单个会话轨迹 → 落会话 JSONL custom 条目（append-only，不建 sidecar 文件，
+不改变内存队列的任何消费语义）：
+
+| 条目 | customType | data |
+|------|-----------|------|
+| 排队 | `queued_input` | `{kind: "steer"\|"followUp", text, images?, queuedAt, message}`（message = 完整序列化 Message，回放直接反序列化） |
+| 消费 | `queued_input_consumed` | `{entryId, reason: "consumed"\|"removed"\|"cleared", consumedAt}` |
+
+**消费即标记**的追加位置（消费边界，不在 agent_loop 内存 drain 处标记）：
+
+- run 成功 `save_worker_session` 后：整份 `msgs_json` 与未消费条目对账标记
+- `graceful_drain_follow_ups` / `drain_follow_ups` RPC 写盘后：对已写消息标记
+- `remove_follow_up` / `remove_steering`（reason=removed）、`clear_queue`（reason=cleared）：
+  用户显式作废，防重建后复活
+- stdin EOF 退出 save 后：幂等补一次对账
+
+### 8.3 回放算法（worker 重建时，幂等）
+
+worker 启动（`with_messages` 之后）调 `session_jsonl::replay_queued_inputs(cwd)`，
+**只回放同时满足三条**的 `queued_input` 条目：
+
+1. **无消费标记**：排队之后没有引用其 entryId 的 `queued_input_consumed`
+2. **未被会话消息吸收**：消息尚未作为真实 message 条目落盘（按 timestamp+text 对账）——
+   覆盖 fork 增量 save（`on_before_tool_execute`）等 crash 窗口，防双投递
+3. **仍在 live path**：存在 `leaf_pointer` 时按 parentId 链回溯（与
+   `filter_messages_on_live_path` 同规则），分支回滚抛弃的条目不复活
+
+回放命中后按 kind 路回原队列（`Agent::queue_replayed`：steer→steering、
+nextTurn→next_turn、其余→follow_up），消息保持原 timestamp/source，之后走与运行时
+enqueue 完全相同的消费语义。同时广播 `queued_input_replayed` 事件（count 供 UI 提示）。
+
+### 8.4 接线点（worker_rpc.rs）
+
+| 类型 | 位置 |
+|------|------|
+| 入队落盘 | prompt 忙时 steer/followUp（主循环 + run 中 select 分支）、`steer`/`follow_up` RPC（idle + busy 两路径）、`promote_follow_up` 携带 text、`send_custom_message` |
+| 消费标记 | run 后 save、graceful drain、`drain_follow_ups`、`remove_follow_up`/`remove_steering`、`clear_queue`、EOF save |
+| 回放 | worker 启动 `with_messages` 之后 |
+
+### 8.5 验证（`tests/queue_persist_harness.rs`，FauxProvider Factory）
+
+验收标准对齐「排队回执 ≠ 送达」教训：**断言新轮真实作答**（Factory 检查排队文本真的
+进了 LLM 上下文才分支应答），跨重建不变量为「会话文件里排队消息恰好一份」。
+
+| # | 场景 | 断言 |
+|---|------|------|
+| T1 | 黑洞复现（修复前红）：纯内存 enqueue → drop → 重建 | 重建后 LLM 见不到（MISSED），文档化 bug 本体 |
+| T2 | 修复后绿：入队落盘 → kill → 重建+回放 | 新轮真实作答 ACK、恰一次、文件恰一份、回放清零 |
+| T3 | 幂等：重建两次 → 只投递一次；标记后第三次重建 | follow_up_queue 不叠加、投递恰一次、历史无第二份 |
+| T4 | steer 回放路由 + 忙时排队→drain 消费回归 | steer→steering_queue、正常消费后无残留 |
+| T5 | 数据层生命周期：append→有序回放→consumed/removed 标记→重复对账幂等 | 列表收敛正确 |
+
+```bash
+cargo test --test queue_persist_harness   # 5 passed
+```
+
+已知边界：run 中途 crash 且消息已注入本轮对话但未 save → 回放重投（该轮输出本就丢失，
+重投符合恢复语义）；同毫秒同文本的两条排队消息对账合并（实际不可能发生）。
