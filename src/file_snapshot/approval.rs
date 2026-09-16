@@ -73,6 +73,14 @@ pub struct ApprovalManager {
     pending_cache: Mutex<Option<(String, u64, std::sync::Arc<Vec<PendingFile>>)>>,
 }
 
+/// `.ion/` 内部路径（S4 兜底）：扫描器已整目录排除 `.ion`，但旧 baseline
+/// tree 里可能残留升级前扫进去的 `.ion` 条目——不过滤的话它们会以 "deleted"
+/// 姿态涌进审批面板（垃圾条目）。与 scanner::DEFAULT_IGNORE 的 `.ion` 规则
+/// 保持同一语义。
+fn is_internal_path(path: &str) -> bool {
+    path == ".ion" || path.starts_with(".ion/")
+}
+
 impl ApprovalManager {
     pub fn new(
         store: std::sync::Arc<SnapshotStore>,
@@ -170,6 +178,10 @@ impl ApprovalManager {
         let mut anchor_trees: HashMap<String, tree_store::TreeEntries> = HashMap::new();
 
         for (path, new_hash) in &current_tree {
+            // S4 兜底：`.ion/` 内部路径不进审批面板（含旧 baseline 残留）
+            if is_internal_path(path) {
+                continue;
+            }
             // 状态判断：优先该文件的 approved baseline，否则 session baseline
             let baseline_tree: &tree_store::TreeEntries = if let Some(appr) = approvals.get(path)
                 && let Some(ref h) = appr.approved_tree_hash
@@ -245,6 +257,10 @@ impl ApprovalManager {
         if let Some(ref _bh) = session_baseline {
             let baseline_tree = session_baseline_tree.as_ref().unwrap_or(&empty_tree);
             for path in baseline_tree.keys() {
+                // S4 兜底：`.ion/` 内部路径的"删除"同样不进审批面板
+                if is_internal_path(path) {
+                    continue;
+                }
                 if !current_tree.contains_key(path) {
                     // 文件被删除了
                     let approval = approvals.get(path);
