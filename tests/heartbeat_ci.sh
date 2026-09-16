@@ -149,22 +149,24 @@ SERVE_PID=""
 echo ""
 
 # ── Group C: Bug1 端到端——纯工具事件流（无 text_delta）不误判死 ──
-echo "[Group C] Bug1 e2e：faux worker 只发 tool 事件（bash sleep），Busy 静默阈值 3s"
+echo "[Group C] Bug1 e2e：faux worker 只发 tool 事件（bash sleep 1s ×12），Busy 静默阈值 8s"
 echo "---------------------------------------"
-# 连续 5 个短工具调用（每个 sleep 2）：步与步之间必有 stdout 事件
-# （tool_execution_end / 下一发 tool_call 流），最大事件间隔 ≈2.1s < 3s 阈值。
-#   修复前（泵只在 text_delta 刷心跳）：首轮工具后 ~3s 无 text_delta 即判 Dead，
-#     后续步全被处决（Dead 终态，agent_end 救不回）
-#   修复后（任何事件都刷心跳）：每个工具边界都续命，5 步全跑完 → 正常 Idle
+# 连续 12 个短工具调用（每个 sleep 1）：步与步之间必有 stdout 事件
+# （tool_execution_end / 下一发 tool_call 流），最大事件间隔 ≈1.3s。
+# 阈值取 8s，双向余量都拉满（治慢机器抖动——W1 遗留：旧参数 sleep 2 ×5 / 阈值 3s，
+# 步间隔余量只有 0.9s，慢机器上单步抖过 3s 就假阳）：
+#   - 不误判：事件间隔需 >8s 才会假 Dead（≈6 倍余量）
+#   - 仍能抓 Bug1：修复前（泵只在 text_delta 刷心跳）首轮工具后即无 text_delta，
+#     8s 静默即判 Dead；总 run ≈13s > 8s（≈5s 余量），后续步仍会被处决暴露回归
 # （不能用单个长工具：bash 工具输出不产生 worker stdout 事件，sleep 期间
 #   是真静默——事件静默超阈值判死是判据本义，不是 Bug1 回归）
 SCRIPT_C="$TEST_ROOT/faux_tool_only.jsonl"
-for i in 1 2 3 4 5; do
-    echo '{"tool_call":{"name":"bash","input":{"command":"sleep 2"}}}' >> "$SCRIPT_C"
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    echo '{"tool_call":{"name":"bash","input":{"command":"sleep 1"}}}' >> "$SCRIPT_C"
 done
 
 rm -f "$SOCK"
-ION_HEARTBEAT_TICK_SECS=1 ION_HEARTBEAT_BUSY_MS=3000 \
+ION_HEARTBEAT_TICK_SECS=1 ION_HEARTBEAT_BUSY_MS=8000 \
     ION_FAUX_SCRIPT="$SCRIPT_C" \
     "$ION_BIN" serve --provider faux --model faux-test \
     > "$TEST_ROOT/host_c.log" 2>&1 &
@@ -195,10 +197,10 @@ fi
 
 if [ -n "$SID_C" ]; then
     "$ION_BIN" rpc --session "$SID_C" --method prompt --params '{"text":"run the tool"}' >/dev/null 2>&1
-    # 轮询 worker 状态直到 run 结束（Idle）或超时 20s；
-    # 修复前：工具期无 text_delta → 静默 3s 即被判 Dead（之后 agent_end 也救不回——Dead 终态）
+    # 轮询 worker 状态直到 run 结束（Idle）或超时 45s（run 总长 ≈13s + 启动/调度余量）；
+    # 修复前：工具期无 text_delta → 静默 8s 即被判 Dead（之后 agent_end 也救不回——Dead 终态）
     SAW_TOOL_BUSY=0; EVER_DEAD=0; FINAL_IDLE=0
-    for i in $(seq 1 20); do
+    for i in $(seq 1 45); do
         sleep 1
         STATUS=$("$ION_BIN" rpc --method get_overview 2>/dev/null \
             | python3 -c "

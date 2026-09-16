@@ -398,9 +398,9 @@ echo "$DATA_G" | jq -e '
 ' >/dev/null && pass "G2 Flow Summary 统计 LLM/Tool/Custom/注入" || fail "G2 Flow Summary 计数错误"
 echo "$DATA_G" | jq -e '
     .flowSummary.typeInventory.supported.entryTypes == 17 and
-    .flowSummary.typeInventory.supported.builtInCustomTypes == 25 and
+    .flowSummary.typeInventory.supported.builtInCustomTypes == 27 and
     (.flowSummary.typeInventory.supported.entryTypeNames | length) == 17 and
-    (.flowSummary.typeInventory.supported.builtInCustomTypeNames | length) == 25 and
+    (.flowSummary.typeInventory.supported.builtInCustomTypeNames | length) == 27 and
     .flowSummary.typeInventory.current.rawEntryTypes == 3 and
     .flowSummary.typeInventory.current.visibleTypes == 7 and
     .flowSummary.typeInventory.current.messageRoles == 4 and

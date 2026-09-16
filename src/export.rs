@@ -2230,10 +2230,10 @@ document.addEventListener('DOMContentLoaded', function() {
         html.insert_str(pos, ion_custom_css);
     }
 
-    // Set title
+    // Set title（session_id 来自 CLI 参数/子 session header，防御性转义）
     html = html.replace(
         "<title>Session Export</title>",
-        &format!("<title>Session {session_id}</title>"),
+        &format!("<title>Session {}</title>", escape_html_text(session_id)),
     );
 
     // 如果是 fork 子 session，在页面顶部注入来源标记
@@ -2277,14 +2277,19 @@ document.addEventListener('DOMContentLoaded', function() {
   <span>
     <strong>Fork 子 Worker Session</strong>
     &nbsp;·&nbsp;
-    spawnedBy: <code style="background:rgba(255,255,255,0.2);padding:2px 6px;border-radius:3px;">{spawned_by}</code>
+    spawnedBy: <code style="background:rgba(255,255,255,0.2);padding:2px 6px;border-radius:3px;">{}</code>
     &nbsp;·&nbsp;
-    relation: <code style="background:rgba(255,255,255,0.2);padding:2px 6px;border-radius:3px;">{relation}</code>
+    relation: <code style="background:rgba(255,255,255,0.2);padding:2px 6px;border-radius:3px;">{}</code>
     &nbsp;·&nbsp;
-    parentSession: <code style="background:rgba(255,255,255,0.2);padding:2px 6px;border-radius:3px;">{parent_session}</code>
+    parentSession: <code style="background:rgba(255,255,255,0.2);padding:2px 6px;border-radius:3px;">{}</code>
   </span>
-</div>"#
-        );
+</div>"#,
+        // 头部字段来自会话 JSONL（可能是外部分享的文件），必须转义后才能进 HTML。
+        // 治理：未转义时 `spawnedBy: "</script><script>alert(1)</script>"` 会直接执行。
+        escape_html_text(&spawned_by),
+        escape_html_text(&relation),
+        escape_html_text(&parent_session),
+    );
         // 在 <body> 后插入 banner
         if let Some(pos) = html.find("<body>") {
             html.insert_str(pos + 6, &origin_banner);
@@ -3621,8 +3626,13 @@ const SUB_HTML_LEGACY_PREFIX: &str = "fork_";
 
 /// 生成子 session 的 HTML 文件名：`<prefix><sid 前 12 字符>.html`。
 /// 截 12 字符避免文件名过长（sid 是 UUID，12 字符足够区分）。
+/// sid 来自会话 JSONL header（可能是外部文件），只保留安全字符，防路径注入。
 fn sub_html_filename(sid: &str) -> String {
-    let short = &sid[..12.min(sid.len())];
+    let short: String = sid
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .take(12)
+        .collect();
     format!("{SUB_HTML_PREFIX}{short}.html")
 }
 
@@ -5180,5 +5190,137 @@ mod tests {
         assert!(!EXPORT_TEMPLATE_JS.contains("PI_EXPORT_DIR"));
         assert!(!EXPORT_MARKED_JS.is_empty());
         assert!(!EXPORT_HIGHLIGHT_JS.is_empty());
+    }
+
+    /// 结构锁：session 数据必须以 base64 注入 `application/json` script 标签。
+    /// base64 alphabet 不含 `<`/`>`，因此条目内容里的 `</script>` 无法越狱；
+    /// 若未来改成内联 JSON，此测试会失败提醒重新审计转义链路。
+    #[test]
+    fn test_export_template_escape_chain_lock() {
+        assert!(EXPORT_TEMPLATE_HTML.contains(
+            r#"<script id="session-data" type="application/json">{{SESSION_DATA}}</script>"#
+        ));
+        // 消息/Custom 内容渲染前必须先 HTML 转义再过 markdown（safeMarkedParse）
+        assert!(EXPORT_TEMPLATE_JS.contains("function safeMarkedParse"));
+        // escapeHtml 必须覆盖 5 个实体（含引号，防属性逃逸）
+        assert!(EXPORT_TEMPLATE_JS
+            .contains(r#".replace(/"/g, '&quot;')"#));
+        assert!(EXPORT_TEMPLATE_JS.contains(r#".replace(/'/g, '&#39;')"#));
+    }
+
+    /// 子 session 文件名必须过滤路径字符（sid 来自可能外部的会话 JSONL header）。
+    #[test]
+    fn test_sub_html_filename_sanitizes_path_characters() {
+        assert_eq!(sub_html_filename("../../etc/passwd"), "sub_etcpasswd.html");
+        assert_eq!(sub_html_filename("a/b\\c d"), "sub_abcd.html");
+        assert_eq!(sub_html_filename("sess-abc1234567890123"), "sub_sess-abc1234.html");
+    }
+
+    /// XSS 负向测试：构造含 `<img src=x onerror=...>` / `</script><script>` 载荷的
+    /// 会话（消息文本、custom content、session_name、fork header 字段），导出后
+    /// 断言 HTML 中不出现任何可执行形态；fork-origin banner 的 header 字段必须
+    /// 以转义形态出现（证明转义真正生效，而不是 banner 缺失导致断言空过）。
+    #[test]
+    fn test_export_never_emits_executable_html_from_untrusted_fields() {
+        let _guard = crate::paths::env_test_lock();
+        let tmp = std::env::temp_dir().join(format!("ion-export-xss-{}", std::process::id()));
+        let sessions = tmp.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+
+        let old_home = std::env::var("HOME").ok();
+        let old_session_dir = std::env::var("ION_SESSION_DIR").ok();
+        // SAFETY: 测试持 env_test_lock 串行执行，set/remove 为良性。
+        unsafe {
+            std::env::set_var("HOME", &tmp);
+            std::env::set_var("ION_SESSION_DIR", &sessions);
+        }
+
+        // 恶意会话：header 的 fork 字段 + 消息/自定义内容全部带 XSS 载荷
+        let header = json!({
+            "type": "session",
+            "version": 3,
+            "id": "sess_xssprobe",
+            "timestamp": "2026-09-16T00:00:00Z",
+            "cwd": tmp.to_str().unwrap(),
+            "parentSession": "p\"><img src=x onerror=alert(1)>",
+            "spawnMeta": {
+                "spawnedBy": "</script><script>alert(1)</script>",
+                "relation": "child"
+            }
+        });
+        let entries = [
+            // custom_message 内容含 script 越狱载荷
+            json!({"type":"custom_message","id":"e1","parentId":null,
+                   "timestamp":"2026-09-16T00:00:01Z","customType":"xss_probe",
+                   "content":"</script><script>alert(1)</script>","display":true}),
+            // user 消息文本含 img onerror 载荷（ION Rust enum 外部标签格式）
+            json!({"type":"message","id":"e2","parentId":"e1",
+                   "timestamp":"2026-09-16T00:00:02Z",
+                   "message":{"User":{"role":"user","content":[
+                       {"Text":{"text":"<img src=x onerror=alert(1)>"}}]}}}),
+            // session_name 含 </title> 越狱载荷
+            json!({"type":"custom_message","id":"e3","parentId":"e2",
+                   "timestamp":"2026-09-16T00:00:03Z","customType":"session_name",
+                   "content":"📝 Session title: </title><script>alert(2)</script>"}),
+        ];
+        let mut jsonl = String::new();
+        jsonl.push_str(&serde_json::to_string(&header).unwrap());
+        jsonl.push('\n');
+        for e in &entries {
+            jsonl.push_str(&serde_json::to_string(e).unwrap());
+            jsonl.push('\n');
+        }
+        std::fs::write(sessions.join("sess_xssprobe.jsonl"), &jsonl).unwrap();
+
+        let out_html = tmp.join("export_xss.html");
+        let result = export_session_with_tools("sess_xssprobe", &out_html, None);
+
+        // 恢复环境（导出已完成，之后不再读 env）
+        unsafe {
+            match old_home {
+                Some(h) => std::env::set_var("HOME", h),
+                None => std::env::remove_var("HOME"),
+            }
+            match old_session_dir {
+                Some(d) => std::env::set_var("ION_SESSION_DIR", d),
+                None => std::env::remove_var("ION_SESSION_DIR"),
+            }
+        }
+
+        result.expect("export should succeed");
+        let html = std::fs::read_to_string(&out_html).unwrap();
+
+        // ── 可执行形态一律禁止 ──
+        // user 消息里的 <img onerror> 原文（转义后是 &lt;img ...，不含裸 <）
+        assert!(
+            !html.contains("<img src=x onerror"),
+            "raw <img onerror> payload must not appear executable"
+        );
+        // custom content / spawnedBy 里的 </script><script> 越狱
+        assert!(
+            !html.contains("</script><script>"),
+            "script-tag breakout payload must not appear raw"
+        );
+        // banner parentSession 的 ">\ 载荷原文
+        assert!(!html.contains("p\"><img src=x"));
+        // <title> 越狱（session_name 进 title 前必须转义）
+        assert!(!html.contains("<title></title><script>"));
+        // session 数据必须以 base64 落盘，不能内联原始 JSON
+        assert!(
+            !html.contains(r#""customType":"xss_probe""#),
+            "session payload must stay base64-encoded, never inline JSON"
+        );
+
+        // ── 转义形态必须真实存在（证明字段被渲染且被转义，防"没渲染所以没漏洞"假阳性）──
+        // banner 渲染了 fork header 字段
+        assert!(html.contains("fork-origin-banner"));
+        // spawnedBy 载荷以实体转义形态出现在 banner
+        assert!(html.contains("&lt;/script&gt;&lt;script&gt;alert(1)&lt;/script&gt;"));
+        // parentSession 载荷以实体转义形态出现在 banner
+        assert!(html.contains("&lt;img src=x onerror=alert(1)&gt;"));
+        // session_name 进 <title> 前被转义
+        assert!(html.contains("<title>&lt;/title&gt;&lt;script&gt;alert(2)&lt;/script&gt;</title>"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

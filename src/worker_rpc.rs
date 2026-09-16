@@ -7208,13 +7208,10 @@ async fn abort_bash_response(
         let pid = info.os_pid;
         let cmd = info.command.clone();
         drop(map);
-        // 发 kill 信号（用 kill 命令，避免加 libc 依赖）
-        let kill_result = std::process::Command::new("kill")
-            .arg("-TERM")
-            .arg(pid.to_string())
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
+        // 发 kill 信号：kill(2) 直接 syscall（同 process_alive 先例，避免 libc 依赖）。
+        // 之前用 std::process::Command("kill") 是 fork/exec 同步阻塞——毫秒级但
+        // 在 async 主循环里没必要，直接 syscall 一次到位。
+        let kill_result = kill_term(pid);
         serde_json::json!({
             "bid": bid,
             "pid": pid,
@@ -7228,6 +7225,24 @@ async fn abort_bash_response(
             "available": map.keys().cloned().collect::<Vec<_>>(),
         })
     }
+}
+
+/// 给目标 pid 发 SIGTERM（返回 kill(2) 是否成功）。仅 unix；非 unix 保守返回 false。
+#[cfg(unix)]
+fn kill_term(pid: u32) -> bool {
+    // SIGTERM 在 macOS/Linux 及主流 unix 取值均为 15
+    let rc = unsafe {
+        unsafe extern "C" {
+            fn kill(pid: i32, sig: i32) -> i32;
+        }
+        kill(pid as i32, 15)
+    };
+    rc == 0
+}
+
+#[cfg(not(unix))]
+fn kill_term(_pid: u32) -> bool {
+    false
 }
 
 /// review_pending 响应 data 的唯一构造点（Bug3 形状统一）。
