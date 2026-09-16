@@ -23,13 +23,15 @@
           "ui_respond.json",
           "verb_pending.json",
           "verb_review.json",
+          "approvals_pending.json",
+          "approval_respond.json",
           "list_sessions.json",
           "get_overview.json"
         ]
       }
     },
     "frames": {
-      "description": "events/ 目录全部 schema：订阅 ack / epoch 盖章帧 / 快照帧 / stale_route / ui 与 extension 流帧 / overview 推送 / rpc_response 事件 + 19 种内层事件的逐类型 schema（worker_event.json 为通用壳）",
+      "description": "events/ 目录全部 schema：订阅 ack / epoch 盖章帧 / 快照帧 / stale_route / ui 与 extension 流帧 / overview 推送 / rpc_response 事件 + 19 种内层事件的逐类型 schema（worker_event.json 为通用壳）+ 统一审批总线两事件 data 载荷 schema（approval_request/approval_resolved，与 overview.json 同为载荷级 schema，经 extension_event 帧 customType 传播）",
       "type": "array",
       "items": {
         "enum": [
@@ -60,7 +62,9 @@
           "worker_ready.json",
           "extension_event.json",
           "custom.json",
-          "child_crashed.json"
+          "child_crashed.json",
+          "approval_request.json",
+          "approval_resolved.json"
         ]
       }
     },
@@ -103,6 +107,8 @@
         "ui_respond.json",
         "verb_pending.json",
         "verb_review.json",
+        "approvals_pending.json",
+        "approval_respond.json",
         "list_sessions.json",
         "get_overview.json"
       ],
@@ -134,7 +140,9 @@
         "worker_ready.json",
         "extension_event.json",
         "custom.json",
-        "child_crashed.json"
+        "child_crashed.json",
+        "approval_request.json",
+        "approval_resolved.json"
       ],
       "innerEvents": [
         "text_delta",
