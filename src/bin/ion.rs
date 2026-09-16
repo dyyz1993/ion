@@ -6373,7 +6373,11 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
             // 功能3：本地 auto-respawn 开关（默认 false，不改变既有行为）
             let allow_local_respawn = ion::config::IonConfig::load().runtime.auto_respawn_local;
             let mut changed = false;
-            let mut heartbeat_respawns: Vec<(String, String, String, String)> = Vec::new();
+            let mut heartbeat_respawns: Vec<(
+                ion::worker_registry::RespawnPlan,
+                String,
+                String,
+            )> = Vec::new();
             for record in reg.workers.values_mut() {
                 // 判死决策统一走 heartbeat_decision_with（纯函数，worker_registry.rs）：
                 // Idle 静默 > idle_stale_ms → Stale；Busy 静默 > busy_dead_ms → Dead；
@@ -6410,14 +6414,13 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                         // SSH 僵尸修复：收集 auto-recovery 信息（循环外处理避免借用冲突）。
                         // 远程 worker 既有语义不变；本地由 runtime.auto_respawn_local
                         // 门控（默认 false → 本地永不因心跳超时重派，与旧代码一致）。
-                        if let Some((prompt, host)) = ion::worker_registry::try_auto_respawn_gated(
+                        if let Some(plan) = ion::worker_registry::try_auto_respawn_gated(
                             record,
                             None,
                             allow_local_respawn,
                         ) {
                             heartbeat_respawns.push((
-                                prompt,
-                                host,
+                                plan,
                                 record.worker_id.clone(),
                                 record.session_id.clone(),
                             ));
@@ -6429,9 +6432,10 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                 }
             }
             // ── SSH 僵尸修复：处理心跳超时收集的 auto-recovery ──
-            for (prompt, host, orig_wid, orig_sid) in heartbeat_respawns {
+            for (plan, orig_wid, orig_sid) in heartbeat_respawns {
                 tracing::info!(
-                    "[auto-recovery] heartbeat timeout → respawning on {host} (was {orig_wid})"
+                    "[auto-recovery] heartbeat timeout → respawning on {} (was {orig_wid})",
+                    plan.host
                 );
                 let reg_ar = hb_registry.clone();
                 tokio::spawn(async move {
@@ -6439,7 +6443,13 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                     //（不再固定回原病沙盒）；非池成员零开销原样返回。事件在决策后发，
                     // 携带最终 host + failover 信息（mode/from/to/poolSize）。
                     let (host, failover) =
-                        ion::worker_registry::respawn_host_failover(&host).await;
+                        ion::worker_registry::respawn_host_failover(&plan.host).await;
+                    // K4 原地重建保真度下限：failover 换节点（新节点无会话副本，
+                    // 全历史预加载必然为空）→ 回落摘要接力
+                    let plan = ion::worker_registry::finalize_respawn_plan_after_failover(
+                        plan,
+                        failover.as_ref(),
+                    );
                     {
                         let reg = reg_ar.lock();
                         let mut ev = serde_json::json!({
@@ -6451,6 +6461,8 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                         if let Some(f) = failover {
                             ev["failover"] = f;
                         }
+                        ev["inplace"] = serde_json::Value::Bool(plan.session.is_some());
+                        ev["strategy"] = serde_json::json!(plan.strategy);
                         reg.broadcast_ui_event("auto_recovered", ev, Some(&orig_sid));
                     }
                     // W6 Bug3: 重派配置继承原会话的 agent + 当前 model/provider
@@ -6463,7 +6475,18 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                         agent: inherit_agent,
                         model: inherit_model,
                         provider: inherit_provider,
-                        initial_prompt: Some(prompt),
+                        // K4 原地重建：带原 sid（worker 端 from JSONL 全历史预加载
+                        // + queued_input 回放自动生效）；降级 None = 新 sid 摘要接力（现状）
+                        session: plan.session.clone(),
+                        // 原地重建透传原 project_path：本地 cwd 续作 + remote 回流落回同一文件
+                        project_path: plan.project_path.clone(),
+                        // 原地重建按 fork-child 文件布局（<sid>.jsonl）预加载；
+                        // remote 路径本来就强制 ION_FORK_CHILD=1，这里覆盖本地路径
+                        relation: plan
+                            .session
+                            .as_ref()
+                            .map(|_| ion::worker_registry::WorkerRelation::Child),
+                        initial_prompt: Some(plan.prompt),
                         // 默认 20 turns 会让 heartbeat 重派 worker 几分钟烧完预算（与
                         // worker_registry.rs stdout-EOF 重派路径同一问题，两处必须一致）
                         max_turns: Some(200),

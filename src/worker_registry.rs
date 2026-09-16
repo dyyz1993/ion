@@ -3137,20 +3137,25 @@ impl WorkerRegistry {
             }; // reg dropped here — lock released
 
             // ── AUTO-RECOVERY：spawn 替补 worker（锁外异步） ──
-            if let Some((prompt, host)) = auto_respawn {
-                tracing::info!("[auto-recovery] respawning on {host}");
+            if let Some(plan) = auto_respawn {
+                tracing::info!("[auto-recovery] respawning on {}", plan.host);
                 let reg_ar = sub_registry.clone();
                 tokio::spawn(async move {
                     // fix4/h5-sandbox-failover：原 host 是沙盒池成员时重选健康节点
                     //（沙盒死了重派=送死）；非池成员零开销原样返回。事件在决策后发，
                     // 携带最终 host + failover 信息。
-                    let (host, failover) = respawn_host_failover(&host).await;
+                    let (host, failover) = respawn_host_failover(&plan.host).await;
+                    // K4 原地重建保真度下限：failover 换节点（新节点无会话副本，
+                    // 全历史预加载必然为空）→ 回落摘要接力
+                    let plan = finalize_respawn_plan_after_failover(plan, failover.as_ref());
                     {
                         let reg = reg_ar.lock();
                         let mut ev = serde_json::json!({"trigger": "stdout_eof", "host": host});
                         if let Some(f) = failover {
                             ev["failover"] = f;
                         }
+                        ev["inplace"] = serde_json::Value::Bool(plan.session.is_some());
+                        ev["strategy"] = serde_json::json!(plan.strategy);
                         reg.broadcast_ui_event("auto_recovered", ev, None);
                     }
                     // W6 Bug3: 重派配置继承原 record 的 agent + 会话当前 model/provider
@@ -3163,7 +3168,18 @@ impl WorkerRegistry {
                         agent: inherit_agent,
                         model: inherit_model,
                         provider: inherit_provider,
-                        initial_prompt: Some(prompt),
+                        // K4 原地重建：带原 sid（worker 端 from JSONL 全历史预加载
+                        // + queued_input 回放自动生效）；降级 None = 新 sid 摘要接力（现状）
+                        session: plan.session.clone(),
+                        // 原地重建透传原 project_path：本地 cwd 续作 + remote 回流落回同一文件
+                        project_path: plan.project_path.clone(),
+                        // 原地重建按 fork-child 文件布局（<sid>.jsonl）预加载；
+                        // remote 路径本来就强制 ION_FORK_CHILD=1，这里覆盖本地路径
+                        relation: plan
+                            .session
+                            .as_ref()
+                            .map(|_| WorkerRelation::Child),
+                        initial_prompt: Some(plan.prompt),
                         // 默认 20 turns 会让重派 worker 几分钟就烧完预算（探索期一轮一个工具调用）
                         max_turns: Some(200),
                         ..Default::default()
@@ -8446,6 +8462,267 @@ mod tests {
         let (agent, _, _) = respawn_inherit_fields("", Some(("m".into(), "p".into())));
         assert!(agent.is_none(), "empty record agent must fall back to None");
     }
+
+    // --- K4: AUTO-RECOVERY 原地重建三档决策 ---
+
+    /// K4 测试用 record。host=None 本地 / Some 远程；project_path 可指定。
+    fn k4_record(sid: &str, host: Option<&str>, project_path: &str) -> WorkerRecord {
+        WorkerRecord {
+            host: host.map(String::from),
+            session_id: sid.into(),
+            project_path: project_path.into(),
+            ..make_minimal_record("w-k4", sid)
+        }
+    }
+
+    /// K4 测试会话内容：header + 真实用户任务 + 工具调用 + 文本回复。
+    fn k4_session_jsonl() -> String {
+        [
+            r#"{"type":"session","id":"k4","agent":"build"}"#,
+            r#"{"type":"message","message":{"User":{"content":"K4TASK 修复 login 页面的空指针","role":"user"}}}"#,
+            r#"{"type":"message","message":{"Assistant":{"content":[{"ToolCall":{"name":"bash","arguments":{"command":"cargo test"}}}],"role":"assistant"}}}"#,
+            r#"{"type":"message","message":{"Assistant":{"content":[{"Text":{"text":"定位到 main.rs:42 的 unwrap，修复中"}}],"role":"assistant"}}}"#,
+        ]
+        .join("\n")
+    }
+
+    /// K4 测试隔离：ION_SESSION_DIR 指向临时目录（进程级 env + 串行锁）。
+    fn k4_env_guard(tag: &str) -> (std::sync::MutexGuard<'static, ()>, std::path::PathBuf) {
+        static K4_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        let guard = K4_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!(
+            "ion_k4_{}_{}_{}",
+            std::process::id(),
+            tag,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        unsafe { std::env::set_var("ION_SESSION_DIR", &root) };
+        (guard, root)
+    }
+
+    /// 一档：预期位置直落命中（本机 fork child / remote 回流直落同一位置）
+    /// → InPlacePrimary，本地 respawn 也成立（新 worker 按 project_path 解析必命中同一文件）。
+    #[test]
+    fn test_k4_tier1_inplace_primary_direct_hit() {
+        let (_g, root) = k4_env_guard("tier1");
+        let project = root.join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        let sid = "k4-tier1-sid";
+        let f = crate::paths::session_jsonl_path_by_id(
+            project.to_string_lossy().as_ref(),
+            sid,
+        );
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, k4_session_jsonl()).unwrap();
+
+        for respawn_local in [true, false] {
+            let s = decide_respawn_strategy(
+                &crate::paths::sessions_dir(),
+                project.to_string_lossy().as_ref(),
+                sid,
+                respawn_local,
+            )
+            .expect("direct hit with messages must decide");
+            assert_eq!(
+                s,
+                RespawnStrategy::InPlacePrimary { session_path: f.clone() },
+                "respawn_local={respawn_local}"
+            );
+        }
+
+        // 计划层断言（本地 respawn）：原 sid + 短引导 + project_path 透传
+        let record = k4_record(sid, None, project.to_string_lossy().as_ref());
+        let plan = plan_auto_respawn(&crate::paths::sessions_dir(), &record, true)
+            .expect("plan must build");
+        assert_eq!(plan.session.as_deref(), Some(sid), "must keep original sid");
+        assert_eq!(plan.strategy, "inplace_primary");
+        assert_eq!(plan.project_path.as_deref(), Some(project.to_str().unwrap()));
+        assert!(plan.prompt.contains("原地重建"), "short guidance marker");
+        assert!(plan.prompt.contains("git status"), "guidance tells to inspect git");
+        assert!(plan.prompt.contains("接力纪律"), "discipline injection preserved");
+        assert!(
+            !plan.prompt.contains("K4TASK"),
+            "inplace guidance must NOT quote the task summary (history is preloaded)"
+        );
+        assert!(plan.relay_prompt.is_some(), "inplace keeps a relay backup");
+        assert!(plan.relay_prompt.as_deref().unwrap().contains("K4TASK"));
+    }
+
+    /// 二档：Mac 侧扫描命中回流副本（project_path 是远端路径解析不到）。
+    /// 远端 respawn → InPlaceReflowScan（预加载发生在远端自己的副本，Mac 落点只是证据）；
+    /// 本机 respawn → 降级 SummaryRelay（预加载按 project_path 解析找不到扫描件）。
+    #[test]
+    fn test_k4_tier2_reflow_scan_remote_inplace_local_downgrades() {
+        let (_g, root) = k4_env_guard("tier2");
+        let sid = "k4-tier2-sid";
+        let other_dir = root.join("--deadbeef--other--");
+        std::fs::create_dir_all(&other_dir).unwrap();
+        std::fs::write(other_dir.join(format!("{sid}.jsonl")), k4_session_jsonl()).unwrap();
+        let remote_project = "/remote/work/ion-web-x"; // Mac 上不存在
+
+        // 远端 respawn：原地重建
+        let s = decide_respawn_strategy(&root, remote_project, sid, false)
+            .expect("scan hit with messages must decide");
+        match &s {
+            RespawnStrategy::InPlaceReflowScan { session_path } => {
+                assert!(session_path.ends_with(format!("{sid}.jsonl")));
+            }
+            other => panic!("expected InPlaceReflowScan, got {other:?}"),
+        }
+        let record = k4_record(sid, Some("box1"), remote_project);
+        let plan = plan_auto_respawn(&root, &record, false).expect("plan");
+        assert_eq!(plan.session.as_deref(), Some(sid));
+        assert_eq!(plan.strategy, "inplace_reflow_scan");
+
+        // 本机 respawn：保真度下限优先 → 摘要接力（新 sid + 摘要提示词）
+        let s = decide_respawn_strategy(&root, remote_project, sid, true)
+            .expect("scan hit must still offer relay for local respawn");
+        assert!(
+            matches!(s, RespawnStrategy::SummaryRelay { .. }),
+            "local respawn on scan hit must downgrade to SummaryRelay, got {s:?}"
+        );
+        let plan = plan_auto_respawn(&root, &record, true).expect("plan");
+        assert!(plan.session.is_none(), "downgrade = new sid");
+        assert_eq!(plan.strategy, "summary_relay");
+        assert!(plan.prompt.contains("K4TASK"), "summary relay quotes the task");
+        assert!(plan.prompt.contains("接力纪律"), "discipline injection preserved");
+    }
+
+    /// 三档降级之一：文件存在但 header-only（无 message）→ 不原地重建；
+    /// 摘要接力也生成失败 → None 不重派（现状行为不变）。
+    #[test]
+    fn test_k4_degrade_header_only_file_no_respawn() {
+        let (_g, root) = k4_env_guard("headeronly");
+        let project = root.join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        let sid = "k4-header-only";
+        let f = crate::paths::session_jsonl_path_by_id(
+            project.to_string_lossy().as_ref(),
+            sid,
+        );
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, r#"{"type":"session","id":"k4","agent":"build"}"#).unwrap();
+
+        let s = decide_respawn_strategy(
+            &root,
+            project.to_string_lossy().as_ref(),
+            sid,
+            true,
+        );
+        assert!(s.is_none(), "header-only file: no history to preload nor summarize, got {s:?}");
+    }
+
+    /// 三档兜底：完全找不到文件 → None 不重派（现状：resolve 失败即 None）。
+    #[test]
+    fn test_k4_tier3_no_file_returns_none_no_respawn() {
+        let (_g, root) = k4_env_guard("nofile");
+        let s = decide_respawn_strategy(&root, "/any/project", "k4-never-existed", true);
+        assert!(s.is_none(), "no file at all must not respawn (current behavior)");
+        let record = k4_record("k4-never-existed", Some("box1"), "/any/project");
+        assert!(plan_auto_respawn(&root, &record, false).is_none());
+    }
+
+    /// 原地重建的 failover 降级：pool_failover（换节点，新节点无会话副本）
+    /// → 回落摘要接力（relay 备份）；同节点/非换节点 failover 原样。
+    #[test]
+    fn test_k4_failover_node_change_downgrades_inplace_to_relay() {
+        let (_g, root) = k4_env_guard("failover");
+        let project = root.join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        let sid = "k4-failover-sid";
+        let f = crate::paths::session_jsonl_path_by_id(
+            project.to_string_lossy().as_ref(),
+            sid,
+        );
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, k4_session_jsonl()).unwrap();
+        let record = k4_record(sid, Some("box1"), project.to_string_lossy().as_ref());
+        let plan = plan_auto_respawn(&root, &record, false).expect("plan");
+        assert_eq!(plan.strategy, "inplace_primary");
+
+        // 换节点 → 降级摘要接力：新 sid、摘要提示词、不带 project_path
+        let moved = serde_json::json!({
+            "mode": "pool_failover", "from": "box1", "to": "box2", "poolSize": 3
+        });
+        let downgraded = finalize_respawn_plan_after_failover(plan.clone(), Some(&moved));
+        assert!(downgraded.session.is_none(), "node change must drop original sid");
+        assert_eq!(downgraded.strategy, "summary_relay");
+        assert!(downgraded.prompt.contains("K4TASK"), "downgraded to summary relay");
+        assert!(downgraded.project_path.is_none());
+        assert!(downgraded.relay_prompt.is_none());
+
+        // 同节点（pool_pick 选回自身 / fallback_no_healthy）→ 原样原地重建
+        let same = serde_json::json!({
+            "mode": "pool_pick", "from": "box1", "to": "box1", "poolSize": 3
+        });
+        let kept = finalize_respawn_plan_after_failover(plan.clone(), Some(&same));
+        assert_eq!(kept.session.as_deref(), Some(sid), "same node keeps inplace");
+        assert_eq!(kept.strategy, "inplace_primary");
+        let kept2 = finalize_respawn_plan_after_failover(plan.clone(), None);
+        assert_eq!(kept2.session.as_deref(), Some(sid));
+
+        // 摘要接力计划 + 换节点 → 无变化（本来就没 sid）
+        let relay_plan = RespawnPlan {
+            prompt: "relay".into(),
+            host: "box1".into(),
+            session: None,
+            project_path: None,
+            strategy: "summary_relay",
+            relay_prompt: None,
+        };
+        let unchanged = finalize_respawn_plan_after_failover(relay_plan, Some(&moved));
+        assert_eq!(unchanged.strategy, "summary_relay");
+        assert!(unchanged.session.is_none());
+    }
+
+    /// 配额与防循环：原地重建与摘要接力同池计数，每 sid 最多 3 次（第 4 次 None）。
+    #[test]
+    fn test_k4_quota_counts_inplace_rebuild() {
+        let (_g, root) = k4_env_guard("quota");
+        let project = root.join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        let sid = "k4-quota-sid";
+        let f = crate::paths::session_jsonl_path_by_id(
+            project.to_string_lossy().as_ref(),
+            sid,
+        );
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, k4_session_jsonl()).unwrap();
+        let record = k4_record(sid, Some("box1"), project.to_string_lossy().as_ref());
+
+        for i in 0..3 {
+            let plan = try_auto_respawn(&record, Some(1))
+                .unwrap_or_else(|| panic!("respawn #{i} must be allowed"));
+            assert_eq!(plan.session.as_deref(), Some(sid), "respawn #{i}");
+        }
+        assert!(
+            try_auto_respawn(&record, Some(1)).is_none(),
+            "4th respawn must be blocked by quota (inplace rebuild counts too)"
+        );
+    }
+
+    /// 短引导提示词契约：标记自动恢复 + git 勘察指引 + 接力纪律，且不复述摘要。
+    #[test]
+    fn test_k4_inplace_guidance_contract() {
+        let g = generate_inplace_guidance();
+        assert!(g.contains("自动恢复"), "must mark as auto-recovery");
+        assert!(g.contains("原地重建"), "must say in-place rebuild");
+        assert!(g.contains("git status"), "must tell to inspect git first");
+        assert!(g.contains("接力纪律"), "discipline preserved");
+        assert!(!g.contains("原始任务："), "must not quote summary sections");
+        assert!(
+            g.chars().count() < 700,
+            "guidance must stay short (no history requote), got {} chars",
+            g.chars().count()
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -8941,13 +9218,13 @@ pub fn auto_respawn_gate(record: &WorkerRecord, exit_code: Option<i32>, allow_lo
     (is_remote || allow_local) && died_unexpectedly && !record.session_id.is_empty()
 }
 
-/// `try_auto_respawn` 的可注入开关版本：门禁通过后走与旧函数同一套
-/// 会话解析/接力提示词/配额逻辑；本地 worker 仅在 allow_local=true 时放行。
+/// `try_auto_respawn` 的可注入开关版本：门禁通过后走三档决策
+///（原地重建/摘要接力），本地 worker 仅在 allow_local=true 时放行。
 pub fn try_auto_respawn_gated(
     record: &WorkerRecord,
     exit_code: Option<i32>,
     allow_local: bool,
-) -> Option<(String, String)> {
+) -> Option<RespawnPlan> {
     if !auto_respawn_gate(record, exit_code, allow_local) {
         return None;
     }
@@ -8957,18 +9234,210 @@ pub fn try_auto_respawn_gated(
 /// 既有语义（不变）：仅远程 worker 异常死亡自动重派。
 /// 本地 worker 的 auto-respawn 必须走 `try_auto_respawn_gated` +
 /// config `runtime.auto_respawn_local` 开关（默认 false，不改变现有行为）。
-pub fn try_auto_respawn(record: &WorkerRecord, exit_code: Option<i32>) -> Option<(String, String)> {
+pub fn try_auto_respawn(record: &WorkerRecord, exit_code: Option<i32>) -> Option<RespawnPlan> {
     if record.host.is_none() {
         return None;
     }
     try_auto_respawn_impl(record, exit_code)
 }
 
-/// auto-respawn 主体（门禁通过后的会话解析 + 接力提示词 + 配额），本地/远程共用。
+/// K4 重派策略三档（恢复保真度升级：同 sid 原地重建优先）。
+///
+/// - 一/二档：原 sid 原地重建——worker 启动时从会话 JSONL 全历史预加载
+///  （worker_rpc.rs `with_messages`），续作提示词只需短引导，不复述摘要。
+/// - 三档：新 sid 摘要接力（历史行为降级兜底）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum RespawnStrategy {
+    /// 一档：会话文件在预期位置直落命中——remote 回流副本恰好落在这里
+    ///（write_remote_session_payload 用同一 session_jsonl_path_by_id），
+    /// 本机 fork child 的独立会话文件也在这里。respawn worker 按 project_path
+    /// 解析预加载必然命中同一文件。
+    InPlacePrimary { session_path: std::path::PathBuf },
+    /// 二档：扫描 sessions_root 命中回流副本（会话落在了非预期目录）。
+    /// 仅 remote respawn 采用——预加载发生在远端自己的 <sid>.jsonl（同节点续作），
+    /// Mac 侧落点只当「该会话确有历史」的证据；本机 respawn 找不到这个扫描件 → 降级三档。
+    InPlaceReflowScan { session_path: std::path::PathBuf },
+    /// 三档：摘要接力（新 sid，现状行为）。文件存在但空/无消息时也走到这里，
+    /// generate_resume_prompt 失败则整层 None = 不重派（同现状）。
+    SummaryRelay { prompt: String },
+}
+
+/// 重派计划：重派点组装 WorkerCreateConfig 的依据（stdout-EOF 与 heartbeat 两处共用）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct RespawnPlan {
+    /// initial_prompt：原地重建=短引导；摘要接力=摘要提示词（均含接力纪律）
+    pub prompt: String,
+    pub host: String,
+    /// Some(sid) = 原 sid 原地重建（全历史预加载）；None = 新 sid 摘要接力
+    pub session: Option<String>,
+    /// 原地重建时透传原 project_path：本地 cwd 续作 + remote 回流落回同一文件
+    pub project_path: Option<String>,
+    /// 命中档位："inplace_primary" | "inplace_reflow_scan" | "summary_relay"（事件观察用）
+    pub strategy: &'static str,
+    /// 原地重建的降级备份（摘要接力提示词）：failover 换节点（新节点无会话副本，
+    /// 预加载必然为空）时回落摘要接力，保真度下限优先
+    pub relay_prompt: Option<String>,
+}
+
+/// 会话文件是否含有 message 条目（原地重建价值的下限判据：
+/// 至少 1 条可预加载的消息；header-only/自定义条目不算）。
+fn session_file_has_messages(path: &std::path::Path) -> bool {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    content.lines().any(|l| {
+        serde_json::from_str::<serde_json::Value>(l)
+            .map(|v| v.get("type").and_then(|t| t.as_str()) == Some("message"))
+            .unwrap_or(false)
+    })
+}
+
+/// 三档决策（纯函数，root/本地性注入，供矩阵测试）：
+///
+/// | 会话文件状态 | 本机 respawn | 远端 respawn |
+/// |-------------|-------------|-------------|
+/// | 预期位置直落命中且有消息 | InPlacePrimary | InPlacePrimary |
+/// | 扫描命中回流副本且有消息 | SummaryRelay（预加载解析不到扫描件） | InPlaceReflowScan |
+/// | 命中但空/无消息 | SummaryRelay（生成失败 → None） | 同左 |
+/// | 完全找不到 | None（不重派，现状） | None（不重派，现状） |
+pub fn decide_respawn_strategy(
+    sessions_root: &std::path::Path,
+    project_path: &str,
+    session_id: &str,
+    respawn_is_local: bool,
+) -> Option<RespawnStrategy> {
+    let primary = crate::paths::session_jsonl_path_by_id(project_path, session_id);
+    let path = resolve_session_file_with_reflow(sessions_root, project_path, session_id)?;
+    let direct_hit = path == primary;
+    if session_file_has_messages(&path) {
+        if direct_hit {
+            return Some(RespawnStrategy::InPlacePrimary { session_path: path });
+        }
+        if respawn_is_local {
+            // 本机 respawn worker 按 project_path 解析预加载，找不到扫描件
+            // → 原地重建只会得到空历史 → 保真度下限优先，降级摘要接力
+            return generate_resume_prompt(&path)
+                .map(|prompt| RespawnStrategy::SummaryRelay { prompt });
+        }
+        return Some(RespawnStrategy::InPlaceReflowScan { session_path: path });
+    }
+    // 命中但空/header-only：原地重建没有可预加载的历史 → 摘要接力兜底
+    //（generate_resume_prompt 需 ≥3 行 + 真实用户消息，失败 → None = 不重派，同现状）
+    generate_resume_prompt(&path).map(|prompt| RespawnStrategy::SummaryRelay { prompt })
+}
+
+/// 接力纪律（摘要接力与原地重建共用；前棒往往把时间耗在重复勘察上，
+/// 通用指令——先认领 git 半成品、直接动手，别从头再读一遍代码库）。
+const RELAY_DISCIPLINE: &str = "## 接力纪律（内核注入）\n\
+    1. 先 `git status --short` + `git log --oneline -3`：有前棒半成品就直接补完并 commit，不要重新勘察。\n\
+    2. 树干净则按前棒的最后动作继续，优先动手改文件，避免大范围重复读码。\n\
+    3. 每完成一小块立即 commit——你随时可能被重派，commit 是唯一的遗产。";
+
+fn append_relay_discipline(prompt: String) -> String {
+    format!("{prompt}\n\n---\n{RELAY_DISCIPLINE}")
+}
+
+/// 原地重建的续作引导（短，不复述摘要——完整历史已由 worker 预加载）。
+pub fn generate_inplace_guidance() -> String {
+    format!(
+        "【自动恢复：原 Worker 意外中断，本会话已按原会话 ID 原地重建——上方完整对话历史就是中断前的全部进度】\n\
+         请从断点继续任务：先查看 git 现状，有半成品直接补完，不要重新勘察或复述历史。\n\n\
+         ---\n{RELAY_DISCIPLINE}\n\n（自动恢复·原地重建，最多 3 次）"
+    )
+}
+
+/// 三档决策 → 重派计划。原地重建带 relay 备份（failover 换节点降级用）。
+pub fn build_respawn_plan(strategy: RespawnStrategy, record: &WorkerRecord) -> RespawnPlan {
+    let host = record.host.clone().unwrap_or_default();
+    match strategy {
+        RespawnStrategy::SummaryRelay { prompt } => RespawnPlan {
+            prompt: append_relay_discipline(prompt),
+            host,
+            session: None,
+            project_path: None,
+            strategy: "summary_relay",
+            relay_prompt: None,
+        },
+        RespawnStrategy::InPlacePrimary { ref session_path } | RespawnStrategy::InPlaceReflowScan { ref session_path } => {
+            let tier = if matches!(strategy, RespawnStrategy::InPlacePrimary { .. }) {
+                "inplace_primary"
+            } else {
+                "inplace_reflow_scan"
+            };
+            RespawnPlan {
+                prompt: generate_inplace_guidance(),
+                host,
+                session: Some(record.session_id.clone()),
+                project_path: if record.project_path.is_empty() {
+                    None
+                } else {
+                    Some(record.project_path.clone())
+                },
+                strategy: tier,
+                relay_prompt: generate_resume_prompt(&session_path).map(append_relay_discipline),
+            }
+        }
+    }
+}
+
+/// 三档决策 + 计划组装（root 注入供测试）。respawn_is_local 由 record.host 推导
+/// 由调用方传入（gated 路径的 allow_local 语义在本函数之外已把关）。
+pub fn plan_auto_respawn(
+    sessions_root: &std::path::Path,
+    record: &WorkerRecord,
+    respawn_is_local: bool,
+) -> Option<RespawnPlan> {
+    let strategy = decide_respawn_strategy(
+        sessions_root,
+        &record.project_path,
+        &record.session_id,
+        respawn_is_local,
+    )?;
+    Some(build_respawn_plan(strategy, record))
+}
+
+/// failover 后的最终计划：原地重建 + 换节点（pool_failover：to != 原 host，
+/// 新沙盒节点没有会话副本，预加载必然为空）→ 回落摘要接力。
+/// 同节点续作（pool_pick 选回自身）/ 全死回落 / 非 pool 成员（failover=None）原样。
+pub fn finalize_respawn_plan_after_failover(
+    mut plan: RespawnPlan,
+    failover: Option<&serde_json::Value>,
+) -> RespawnPlan {
+    let moved = failover
+        .and_then(|f| f.get("mode"))
+        .and_then(|m| m.as_str())
+        .map(|m| m == "pool_failover")
+        .unwrap_or(false);
+    if !moved || plan.session.is_none() {
+        return plan;
+    }
+    match plan.relay_prompt.take() {
+        Some(relay) => {
+            tracing::warn!(
+                "[auto-recovery] inplace rebuild downgraded to summary relay: sandbox failover moved to a different node (no session copy there)"
+            );
+            RespawnPlan {
+                prompt: relay,
+                session: None,
+                project_path: None,
+                strategy: "summary_relay",
+                relay_prompt: None,
+                ..plan
+            }
+        }
+        // 无备份可用（文件无真实用户消息可摘要）→ 维持原地重建，尽力而为
+        None => plan,
+    }
+}
+
+/// auto-respawn 主体（门禁通过后的三档决策 + 配额），本地/远程共用。
+/// K4 升级：会话文件可解析且有内容 → 原 sid 原地重建（全历史预加载 + 短引导）；
+/// 否则降级摘要接力（现状）；文件不存在 → None 不重派（现状）。
+/// 配额照旧：原地重建与摘要接力同池计数，每 sid 最多 3 次。
 fn try_auto_respawn_impl(
     record: &WorkerRecord,
     exit_code: Option<i32>,
-) -> Option<(String, String)> {
+) -> Option<RespawnPlan> {
     let is_remote = record.host.is_some();
     let died_unexpectedly = exit_code != Some(0);
     tracing::info!(
@@ -8988,27 +9457,18 @@ fn try_auto_respawn_impl(
     if !died_unexpectedly || respawns >= 3 || record.session_id.is_empty() {
         return None;
     }
-    // 客户端模式：record.project_path 是远端路径，回流副本在 Manager 侧——两处都找
-    let sessions_root = crate::paths::sessions_dir();
-    let path = resolve_session_file_with_reflow(
-        &sessions_root,
-        &record.project_path,
-        &record.session_id,
-    )?;
-    let prompt = generate_resume_prompt(&path)?;
-    // 短命循环对策：前棒往往把时间耗在重复勘察上（读完就死，下一棒再读一遍）。
-    // 续作提示词追加通用指令——先认领 git 半成品、直接动手，别从头再读一遍代码库。
-    let prompt = format!(
-        "{prompt}\n\n---\n## 接力纪律（内核注入）\n\
-         1. 先 `git status --short` + `git log --oneline -3`：有前棒半成品就直接补完并 commit，不要重新勘察。\n\
-         2. 树干净则按前棒的最后动作继续，优先动手改文件，避免大范围重复读码。\n\
-         3. 每完成一小块立即 commit——你随时可能被重派，commit 是唯一的遗产。"
-    );
+    let plan = plan_auto_respawn(&crate::paths::sessions_dir(), record, !is_remote)?;
     auto_respawn_counts()
         .lock()
         .unwrap()
         .insert(record.session_id.clone(), respawns + 1);
-    Some((prompt, record.host.clone().unwrap_or_default()))
+    tracing::info!(
+        "[auto-recovery] plan: strategy={} session={} project_path={:?}",
+        plan.strategy,
+        plan.session.as_deref().map(|s| &s[..s.len().min(12)]).unwrap_or("(new)"),
+        plan.project_path
+    );
+    Some(plan)
 }
 
 fn auto_respawn_counts() -> &'static std::sync::Mutex<std::collections::HashMap<String, u32>> {

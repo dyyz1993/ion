@@ -450,3 +450,109 @@ cargo test --test queue_persist_harness   # 5 passed
 
 已知边界：run 中途 crash 且消息已注入本轮对话但未 save → 回放重投（该轮输出本就丢失，
 重投符合恢复语义）；同毫秒同文本的两条排队消息对账合并（实际不可能发生）。
+
+---
+
+## 9. AUTO-RECOVERY 原地重建（K4：恢复保真度升级，已实现）
+
+> **状态：已实现** — 重派决策三档化：会话文件可解析 → **同 sid 原地重建**（worker 端
+> 全历史预加载 + queued_input 回放自动生效），否则降级摘要接力（§8 前的旧行为）。
+> 单元 7 + harness 3（`tests/inplace_rebuild_harness.rs`）。
+
+### 9.1 问题：摘要接力丢上下文细节
+
+旧 AUTO-RECOVERY 重派 = **新 sid + 摘要接力**（`generate_resume_prompt`：原始任务
+300 字符 + 最近 6 轮），中断前的工具调用序列、文件内容、多轮推理细节全部丢失。
+而「同 sid ensure_worker → 全历史预加载」的路径本就存在（worker 启动时从会话 JSONL
+`with_messages` 加载完整消息/model/审批，queued_input 回放也随之生效），只是重派没用它。
+
+### 9.2 三档决策（`decide_respawn_strategy`，纯函数可注入 root）
+
+| 档 | 会话文件状态 | 本机 respawn | 远端 respawn | 行为 |
+|----|-------------|-------------|-------------|------|
+| 一 | 预期位置直落命中且有消息（`session_jsonl_path_by_id(project_path, sid)`——remote 回流副本恰好落在这里，本机 fork child 独立文件也在这里） | InPlacePrimary | InPlacePrimary | **原 sid 原地重建**：新 worker 按 project_path 解析预加载必命中同一文件 |
+| 二 | 扫描 sessions_root 命中回流副本（落点目录非预期） | **降级三档**（新 worker 预加载按 project_path 解析，找不到扫描件，原地重建只会得到空历史） | InPlaceReflowScan（预加载发生在远端自己的 `<sid>.jsonl`，Mac 侧落点只是「确有历史」的证据） | 二档远端=原地重建；二档本机=摘要接力 |
+| 三 | 命中但空/header-only，或完全找不到 | SummaryRelay（生成失败 → **None 不重派**）/ None | 同左 | 现状行为不变 |
+
+预加载可达性是档位判定的核心：**新 worker 必须能自己解析到那份文件**，否则原地重建
+反而是保真度损失。一档直落位置与 `write_remote_session_payload`（M3 会话回流落盘）
+完全一致，因此远端回流场景天然命中一档。
+
+### 9.3 RespawnPlan 与重派点接线
+
+`try_auto_respawn` / `try_auto_respawn_gated` 返回 `RespawnPlan`：
+
+| 字段 | 原地重建 | 摘要接力（降级） |
+|------|---------|----------------|
+| `session` | `Some(原 sid)` | `None`（新 sid，现状） |
+| `project_path` | `Some(record.project_path)`（本地 cwd 续作 + remote 回流落回同一文件） | `None`（与旧行为一致） |
+| `relation` | `Some(Child)`（fork-child 文件布局 `<sid>.jsonl`；remote 路径本来就强制 ION_FORK_CHILD=1） | `None` |
+| `prompt` | 短引导（§9.4） | 摘要提示词 + 接力纪律（现状，逐字保留） |
+| `relay_prompt` | 摘要接力备份（failover 换节点降级用） | — |
+
+两处重派点（stdout-EOF / heartbeat）组装 `WorkerCreateConfig` 时带上
+`session` / `project_path` / `relation`；fix4 的全部能力保留：agent/model 继承
+（`respawn_inherit_*`）、沙盒故障转移（`respawn_host_failover`）、max_turns=200、
+接力纪律注入、配额每 sid 3 次（原地重建同池计次）。`auto_recovered` 事件新增
+`inplace`（bool）与 `strategy`（inplace_primary / inplace_reflow_scan / summary_relay）。
+
+### 9.4 续作引导提示词（原地重建）
+
+不复述摘要（历史都在上下文里），只做现场勘察引导 + 接力纪律：
+
+```
+【自动恢复：原 Worker 意外中断，本会话已按原会话 ID 原地重建——上方完整对话历史就是中断前的全部进度】
+请从断点继续任务：先查看 git 现状，有半成品直接补完，不要重新勘察或复述历史。
+
+---
+## 接力纪律（内核注入）
+1. 先 `git status --short` + `git log --oneline -3`：有前棒半成品就直接补完并 commit，不要重新勘察。
+2. 树干净则按前棒的最后动作继续，优先动手改文件，避免大范围重复读码。
+3. 每完成一小块立即 commit——你随时可能被重派，commit 是唯一的遗产。
+
+（自动恢复·原地重建，最多 3 次）
+```
+
+### 9.5 failover 换节点的保真度下限（`finalize_respawn_plan_after_failover`）
+
+原地重建 + `pool_failover`（**换节点**：新沙盒没有该会话的远端副本，全历史预加载必然
+为空）→ 自动降级摘要接力（用 `relay_prompt` 备份，保真度下限优先）。同节点续作
+（`pool_pick` 选回自身）、全死回落（`fallback_no_healthy`）、非池成员（failover=None）
+均维持原地重建。`relay_prompt` 为 None（文件无真实用户消息可摘要）时维持原地重建尽力而为。
+
+### 9.6 队列回放收益
+
+原地重建 = 同 sid 重启 worker → §8 的 queued_input 回放在重建时**自动生效**：
+crash 前排队的 steer/followUp 不再依赖摘要接力捎带，直接由 worker 启动回放投递
+（harness T1 断言：引导轮之后的排队消费轮真实作答 `QUEUE_DELIVERED`）。
+
+### 9.7 验证
+
+**单元（worker_registry.rs `#[cfg(test)]`，7 条）**：
+
+| # | 场景 | 断言 |
+|---|------|------|
+| T1 | 一档直落命中（本机/远端 ×2） | InPlacePrimary；plan 保留原 sid/project_path；短引导不引用任务文本；带 relay 备份 |
+| T2 | 二档扫描命中：远端 / 本机 | 远端=InPlaceReflowScan（原 sid）；本机=降级 SummaryRelay（新 sid + 摘要含原始任务） |
+| T3 | header-only 文件 | None 不重派（现状） |
+| T4 | 完全无文件 | None 不重派（现状） |
+| T5 | failover 换节点降级 | pool_failover → 新 sid + 摘要；pool_pick 同节点/None → 维持原地重建 |
+| T6 | 配额 | 原地重建同池计次，第 4 次 None |
+| T7 | 短引导契约 | 含自动恢复/原地重建/git status/接力纪律，<700 字符，无「原始任务：」摘要段 |
+
+**harness（`tests/inplace_rebuild_harness.rs`，FauxProvider Factory，3 条）**：
+
+| # | 场景 | 断言 |
+|---|------|------|
+| T1 | 全链路：agent 跑到一半落盘 → 排队落盘 → crash → 真实 `try_auto_respawn` 决策 → fork-child 语义重建 → 引导开新轮 | plan=原地重建（原 sid/strategy/project_path）；预加载条数=落盘条数；引导轮工厂见到**完整历史**（任务+中断前回复）；排队轮工厂见到排队文本（`QUEUE_DELIVERED`）；消息数=预加载+引导轮+排队轮；save+消费标记后排队消息在文件恰一份 |
+| T2 | 降级：无文件 / header-only | 两者均 None 不重派；对照组（同位置写入真实内容）→ 原地重建决策出现 |
+| T3 | 回流扫描 + 本机 respawn 降级接力链 | plan=SummaryRelay（新 sid + 提示词含原始任务 + 接力纪律）；新 sid 空白重建后任务经摘要提示词达意（`RELAYED_OK`） |
+
+```bash
+cargo test --lib k4_                          # 7 passed
+cargo test --test inplace_rebuild_harness     # 3 passed
+```
+
+已知边界：远端 respawn 落在非原节点时依赖 §9.5 降级（远端文件存在性无法从 Mac 侧
+廉价探测）；本机 main worker（共享 session.jsonl 布局）的一档直落未纳入（本地
+auto-respawn 默认关，保持现状）。
