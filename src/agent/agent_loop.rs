@@ -367,12 +367,17 @@ impl Agent {
         let _ = self.pause_tx.send(false);
     }
     /// 硬停止当前 Agent 循环（对齐 pi abort）。
-    /// 设 stopped=true + 唤醒 check_pause → 返回 AgentError::Aborted → 内循环 break。
+    /// 设 stopped=true → check_pause 轮询到即返回 AgentError::Aborted → 内循环 break。
     /// 同时 cancel HTTP 请求 token（真正关 TCP 连接，不等 200ms 轮询）。
+    ///
+    /// ⚠️ 不碰 pause watch channel：check_pause 轮询 stopped（入口 + 每 100ms），
+    /// 无需借 pause 唤醒；而 send(true) 会把 pause 永久置真（无 resume 调用方），
+    /// 下一轮 run 的 check_pause 将卡死在 `while *pause_rx.borrow()` 轮询——
+    /// 即 P0「abort 后同 worker 下一轮 run 永久挂起（僵尸 run）」的根因。
     pub fn stop(&self) {
         self.stopped
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        let _ = self.pause_tx.send(true);
+        let _ = self.pause_tx.send(false);
         if let Ok(mut guard) = self.http_cancel.lock()
             && let Some(c) = guard.take()
         {
@@ -947,6 +952,11 @@ impl Agent {
         self.extensions.set_current_origin(&self.input_origin);
         self.stopped
             .store(false, std::sync::atomic::Ordering::SeqCst);
+        // run 边界清理：新 run 必须从"未暂停"状态开始。abort/interrupt 路径
+        // （stop()/worker 内联 handle）可能残留 pause=true 且全代码库无 resume
+        // 调用方——不清零则 check_pause 的 `while *pause_rx.borrow()` 永久轮询
+        // （僵尸 run 根因，tests/abort_hang_harness.rs）。
+        let _ = self.pause_tx.send(false);
         // turn_index 是 agent loop 内部计数器（每次 run 从 0 开始，用于 max_turns 限制）
         // 快照用独立的全局唯一 turnId（ts_xxxxxx），不依赖 turn_index
         self.turn_index = 0;
@@ -2927,9 +2937,87 @@ mod tests {
         agent.push_message(user_msg("again"));
         assert_eq!(agent.current_message_count(), 3);
 
-        // with_messages also reflects on the count.
+        // with_messages also reflects the count.
         let agent2 = build_test_agent().with_messages(vec![user_msg("a"), user_msg("b")]);
         assert_eq!(agent2.current_message_count(), 2);
+    }
+
+    /// P0 回归（僵尸 run）：abort(stop) 不得把 pause watch channel 置真残留。
+    /// 原因：全代码库无 resume() 调用方，pause=true 一旦残留，下一轮 run 的
+    /// check_pause 会卡死在 `while *pause_rx.borrow()` 100ms 轮询——
+    /// agent_start 后无任何 LLM 事件、无 agent_end（tests/abort_hang_harness.rs 全链复现）。
+    #[tokio::test]
+    async fn stop_must_not_leave_pause_poisoned_for_next_run() {
+        let mut agent = build_test_agent();
+
+        // 模拟：run 1 被 abort（stop），run 2 开始时 run_with_images 会复位 stopped。
+        agent.stop();
+        agent
+            .stopped
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+
+        // 新 run 的第一次 check_pause 必须立刻通过（pause 残留则会永久挂起）。
+        // 用 timeout 把"永久挂起"转成 2s 内的失败信号。
+        let checked = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            agent.check_pause(),
+        )
+        .await;
+        assert!(
+            checked.is_ok(),
+            "check_pause 在 abort+复位后挂起：stop() 残留了 pause=true（僵尸 run 根因回归）"
+        );
+    }
+
+    /// P0 回归（僵尸 run）第二层：abort(stop) 之后下一轮 run 必须限时完成。
+    /// 进程内全链复现（FauxProvider）：run 1 → stop() 残留 → run 2 不得挂在
+    /// check_pause 的 pause 轮询。旧实现下 run 2 永久挂起，timeout 抓住。
+    #[tokio::test]
+    async fn run_after_abort_completes_in_process() {
+        let mut registry = ApiRegistry::new();
+        let faux = ion_provider::faux::register_faux(&mut registry);
+        faux.set_responses(vec![
+            ion_provider::faux::FauxResponseStep::Static(
+                ion_provider::faux::faux_assistant_message(
+                    ion_provider::faux::FauxContent::Text("first-ok".into()),
+                    ion_provider::faux::FauxMessageOptions::default(),
+                ),
+            ),
+            ion_provider::faux::FauxResponseStep::Static(
+                ion_provider::faux::faux_assistant_message(
+                    ion_provider::faux::FauxContent::Text("second-ok".into()),
+                    ion_provider::faux::FauxMessageOptions::default(),
+                ),
+            ),
+        ]);
+        let config = AgentConfig {
+            max_retries: 0,
+            ..Default::default()
+        };
+        let mut agent = Agent::new(
+            Arc::new(registry),
+            faux_model(),
+            None,
+            ToolRegistry::new(),
+            config,
+        );
+
+        // run 1 正常完成
+        agent
+            .run("first")
+            .await
+            .expect("run 1 should complete with faux provider");
+
+        // abort：stop() 置 stopped（下一轮 run 复位）——旧实现同时把 pause
+        // watch channel 置真且无人复位。
+        agent.stop();
+
+        // run 2：必须限时完成。旧实现：check_pause 卡在 `while *pause_rx.borrow()`
+        // 永久轮询 → timeout 在 3s 内把"永久挂起"转成失败信号。
+        let second = tokio::time::timeout(std::time::Duration::from_secs(3), agent.run("second"))
+            .await
+            .expect("abort 后下一轮 run 挂起（僵尸 run 回归）");
+        assert!(second.is_ok(), "run 2 应正常完成: {second:?}");
     }
 }
 

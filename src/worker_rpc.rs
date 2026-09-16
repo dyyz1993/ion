@@ -2343,10 +2343,12 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                                                                         }));
                                                                     }
                                                                     // abort → 通过外部句柄中断(不用 agent.stop(),避免 borrow 冲突)
-                                                                    // 设 stopped=true(AtomicBool)+ 发 pause 信号唤醒 check_pause
+                                                                    // 设 stopped=true。⚠️ 不发 pause=true：pause watch channel
+                                                                    // 无 resume 调用方，置真会残留到下一轮 run 让 check_pause
+                                                                    // 永久轮询（僵尸 run 根因）——反而主动清零。
                                                                     "abort" => {
                                                                         stopped_handle.store(true, std::sync::atomic::Ordering::SeqCst);
-                                                                        let _ = pause_tx_clone.send(true);
+                                                                        let _ = pause_tx_clone.send(false);
                                                                         output_response(&bg_id, "abort", &serde_json::Value::Null);
                                                                     }
                                                                     // steer/follow_up → 缓存到外部 queue,run 结束后 drain 进 agent
@@ -2406,7 +2408,8 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                                                                         match pbehavior {
                                                                             "interrupt" => {
                                                                                 stopped_handle.store(true, std::sync::atomic::Ordering::SeqCst);
-                                                                                let _ = pause_tx_clone.send(true);
+                                                                                // 同 abort：清 pause 残留，不置真（防下一轮 check_pause 卡死）
+                                                                                let _ = pause_tx_clone.send(false);
                                                                                 output_response(&bg_id, "prompt", &serde_json::json!({"status":"interrupted"}));
                                                                             }
                                                                             behavior => {
