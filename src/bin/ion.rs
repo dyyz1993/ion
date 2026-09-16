@@ -501,7 +501,7 @@ fn route_approval_response(
         "decision": decision.as_str(),
         "nativeRequestId": entry.native_request_id(),
     }))
-
+}
 
 // M2 统一审批总线：approval_respond 路由执行（合并对齐点）
 //
@@ -6848,7 +6848,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                             wid,
                             session_id,
                             ct,
-                            &data,
+                            &data.clone(),
                         );
                         let mut event =
                             ion::event_bus::ExtensionEvent::new(extension, ct).with_data(data);
