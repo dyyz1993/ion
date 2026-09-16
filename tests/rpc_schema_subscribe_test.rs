@@ -538,10 +538,8 @@ fn approval_bus_schemas_validate() {
     assert!(!evr.is_valid(&json!({"id":"x","decision":"approve","by":"user"})));
     assert!(!evr.is_valid(&json!({"kind":"ui_ask","decision":"approve"})));
 
-    // TODO(M1-merge): 动态层——隔离 host 走真 RPC（approvals_pending/approval_respond
-    // 尚未在 master 实现，合并 M1 后在本测试补 raw socket 全链路校验，
-    // 对齐 live_host_protocol_frames_match_schemas 的模式；CI 骨架见
-    // tests/approval_bus_ci.sh Group D（[M1-PENDING] 标记的预留断言块）。
+    // 动态层（approval_bus_rpc_frames_match_schemas）：隔离 host 真实响应帧
+    // 过本 schema 契约；端到端闭环见 tests/approval_bus_ci.sh（三合一）。
 }
 
 #[test]
@@ -1041,6 +1039,61 @@ fn live_host_protocol_frames_match_schemas() {
 }
 
 /// 在 kill 前查当前该 session 的 worker id（重派后 wid 已变）。
+/// 统一审批总线动态层：隔离 host 真实 RPC 响应帧过 M3 固化 schema。
+/// （approvals_pending 空表形状 + approval_respond 四种错误变体；
+///   非空条目与应答闭环由 tests/approval_bus_ci.sh 覆盖真实来源。）
+#[test]
+fn approval_bus_rpc_frames_match_schemas() {
+    let host = HostGuard::start();
+    let ap_resp = sub_validator("approvals_pending.json", "response");
+    let ar_nf = sub_validator("approval_respond.json", "responseNotFound");
+    let ar_miss = sub_validator("approval_respond.json", "responseMissingParam");
+    let ar_bad = sub_validator("approval_respond.json", "responseBadDecision");
+
+    // ── approvals_pending：空表真实帧（data.pending 契约名 + total/requests 兼容）──
+    let frames = host.rpc(
+        r#"{"id":"ap1","method":"approvals_pending"}"#,
+        2,
+        Duration::from_secs(5),
+    );
+    assert_eq!(frames.len(), 1, "approvals_pending 应恰回一帧: {frames:?}");
+    validate_or_panic(&ap_resp, &frames[0], "approvals_pending.response");
+    assert_eq!(frames[0]["data"]["pending"], json!([]), "空表 pending=[]");
+    assert_eq!(frames[0]["data"]["total"], 0, "空表 total=0");
+
+    // ── approval_respond：错误矩阵真实帧过 schema ──
+    let nf = host.rpc(
+        r#"{"id":"ar1","method":"approval_respond","params":{"id":"apr_nope","decision":"approve"}}"#,
+        2,
+        Duration::from_secs(5),
+    );
+    assert_eq!(nf.len(), 1, "not found 应恰回一帧: {nf:?}");
+    validate_or_panic(&ar_nf, &nf[0], "approval_respond.responseNotFound");
+
+    let miss = host.rpc(
+        r#"{"id":"ar2","method":"approval_respond","params":{"id":"apr_x"}}"#,
+        2,
+        Duration::from_secs(5),
+    );
+    validate_or_panic(&ar_miss, &miss[0], "approval_respond.responseMissingParam");
+    assert_eq!(miss[0]["error"], json!("missing params.decision"));
+
+    let bad = host.rpc(
+        r#"{"id":"ar3","method":"approval_respond","params":{"id":"apr_x","decision":"yes"}}"#,
+        2,
+        Duration::from_secs(5),
+    );
+    validate_or_panic(&ar_bad, &bad[0], "approval_respond.responseBadDecision");
+
+    let miss_id = host.rpc(
+        r#"{"id":"ar4","method":"approval_respond","params":{"decision":"approve"}}"#,
+        2,
+        Duration::from_secs(5),
+    );
+    validate_or_panic(&ar_miss, &miss_id[0], "approval_respond.responseMissingParam(id)");
+    assert_eq!(miss_id[0]["error"], json!("missing params.id"));
+}
+
 fn current_worker_of(host: &HostGuard, sid: &str) -> String {
     let ls = host.rpc(r#"{"id":"wq","method":"list_workers"}"#, 2, Duration::from_secs(5));
     for w in ls[0]["data"]["workers"].as_array().expect("workers") {

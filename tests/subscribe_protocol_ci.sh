@@ -179,7 +179,12 @@ with open(out_path, "w") as f:
 s.close()
 PYEOF
 G2_PID=$!
-sleep 1.5
+# 等 ack 到达再杀（重负载下 python 启动可能慢于脚本的 kill——先确认订阅已建立，
+# 否则 subscribe 会撞进 router 的重绑等待窗口，收到 "router dropped" 错误帧而非 stale_route）
+for i in $(seq 1 20); do
+    grep -q '"type":"subscribed"' "$SUB_LOG" 2>/dev/null && break
+    sleep 0.5
+done
 # 杀掉 worker（精确 RPC，非 pkill）→ router 重绑：epoch 推进 → 旧订阅收 stale_route
 KILL_OUT=$(rpc kill_worker "{\"workerId\":\"$WID\"}")
 if printf '%s' "$KILL_OUT" | jq -e '.success == true' > /dev/null 2>&1; then pass "G2.1 kill_worker 精确击杀 $WID"; else fail "G2.1 kill_worker"; fi
