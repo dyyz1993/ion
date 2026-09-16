@@ -173,7 +173,17 @@ pub struct RemoteWorkerHost {
     /// `SshHostKeyFirstSeen` 警告事件（data 含 host+指纹），提示用户尽快 pin。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_key_fingerprint: Option<String>,
-}
+    /// 沙盒档案·审批策略（SANDBOX_POOL.md §3.3 Phase 2）：无人值守沙盒的审批
+    /// 自动放行。空/"default" = 正常人工审批；"auto_approve" = host 审批泵在
+    /// ApprovalRequest 事件上自动 `review_approve_all`（治审批停摆：协调方没盯
+    /// 审批队列 → worker 超时退场）。运行时可用 `sandbox_policy` RPC 覆盖（内存态）。
+    #[serde(default)]
+    pub approval_policy: String,
+    /// 沙盒档案·环境层事实（SANDBOX_POOL.md §3.3 三层模型）：派发时自动注入
+    /// initial_prompt 前缀的工具链/PATH/版本提示（如 "cargo 在 ~/.cargo/bin"）。
+    /// 修沙盒优先（ln -sf 进 /usr/local/bin），这里只留兜底事实。
+    #[serde(default)]
+    pub notes: Vec<String>,}
 
 /// 动词授权（remote_workers.<name>.grants）。全部默认空 = 全拒。
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]

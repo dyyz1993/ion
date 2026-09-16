@@ -700,6 +700,12 @@ pub struct PreparedSpawn {
     pub agent_name: String,
     /// 远程执行端名（Some = 经 SSH 拉起的远端 worker，见 REMOTE_WORKER.md）
     pub host: Option<String>,
+    /// 沙盒档案·环境层前缀（SANDBOX_POOL.md §3.3 Phase 2）：host 命中沙盒档案
+    /// 且 notes 非空时生成，注册时前缀注入 initial_prompt。
+    pub profile_prompt: Option<String>,
+    /// 沙盒档案·审批策略（"auto_approve" / None=default）：注册时写进
+    /// record.approval_policy，审批泵按生效策略消费。
+    pub approval_policy: Option<String>,
 }
 
 /// Find the ion binary path (for spawning child workers).
@@ -770,6 +776,13 @@ pub struct WorkerRegistry {
     /// `send_to_session` to auto-start workers (which needs the Arc to pass to
     /// `create_worker`). Weak avoids a reference cycle.
     self_ref: std::sync::Weak<Mutex<WorkerRegistry>>,
+    /// 沙盒审批策略运行时覆盖（SANDBOX_POOL.md §3.3 Phase 2，内存态不落盘）。
+    /// key = worker_id 或沙盒 host 名；value = "auto_approve" / "default"。
+    /// 优先级：worker 覆盖 > host 覆盖 > 出生档案（record.approval_policy）。
+    /// `sandbox_policy` RPC 写入；host 重启即失（按存储原则：宁可丢也不建新文件）。
+    pub sandbox_policy_overrides: HashMap<String, String>,
+    /// 审批泵每 worker 上次 fire 时间（冷却去重，见 sandbox_pool::PUMP_COOLDOWN_MS）
+    pump_last_fire: HashMap<String, u64>,
 }
 
 pub struct WorkerRecord {
@@ -785,6 +798,9 @@ pub struct WorkerRecord {
     pub children: Vec<String>,
     /// 远程执行端名（None = 本地；Some = 经 SSH 拉起的远端 worker）
     pub host: Option<String>,
+    /// 出生档案·审批策略（SANDBOX_POOL.md §3.3）：spawn 时从沙盒档案带来
+    ///（"auto_approve" / None=default）。运行时覆盖见 registry.sandbox_policy_overrides。
+    pub approval_policy: Option<String>,
     /// 异步委派完成通知：结束一轮真实工作（agent_end）时通知父 worker。
     /// 仅 spawn_worker(wait=false) 且有 parent 的子 worker 为 true——
     /// 同步等待（wait=true）的父已通过 await 拿到结果，再通知就重复。
@@ -919,6 +935,8 @@ impl WorkerRegistry {
             mcp_manager: None,
             event_bus: None,
             self_ref: std::sync::Weak::new(),
+            sandbox_policy_overrides: HashMap::new(),
+            pump_last_fire: HashMap::new(),
         }
     }
 
@@ -964,6 +982,8 @@ impl WorkerRegistry {
             mcp_manager: None,
             event_bus: None,
             self_ref: std::sync::Weak::new(),
+            sandbox_policy_overrides: HashMap::new(),
+            pump_last_fire: HashMap::new(),
         }
     }
 
@@ -1482,6 +1502,23 @@ impl WorkerRegistry {
                 .as_ref()
                 .map(|(n, _)| n.clone())
                 .or_else(|| config.host.clone()),
+            // 沙盒档案环境层：host 命中沙盒（auto 选点或显式指定）时从档案生成
+            profile_prompt: remote_host
+                .as_ref()
+                .map(|(_, host_cfg)| {
+                    crate::sandbox_pool::profile_prompt(
+                        &crate::sandbox_pool::SandboxProfile::from_host(host_cfg),
+                    )
+                })
+                .unwrap_or(None),
+            // 沙盒档案审批策略：仅 auto_approve 落值（default 记 None，省内存）
+            approval_policy: remote_host
+                .as_ref()
+                .map(|(_, host_cfg)| {
+                    crate::sandbox_pool::ApprovalPolicy::parse(&host_cfg.approval_policy)
+                })
+                .filter(|p| *p == crate::sandbox_pool::ApprovalPolicy::AutoApprove)
+                .map(|p| p.as_str().to_string()),
         })
     }
 
@@ -1780,6 +1817,8 @@ impl WorkerRegistry {
             parent: config.parent.clone(),
             children: Vec::new(),
             host: config.host.clone(),
+            // 旧组合路径不支持沙盒档案（无 remote spawn），恒 None
+            approval_policy: None,
             // 异步委派（wait=false）且有父 → agent_end 时通知父（同步父已 await 到结果）
             notify_parent: config.parent.is_some() && config.wait == Some(false),
             started_at: now_ms(),
@@ -2026,6 +2065,8 @@ impl WorkerRegistry {
                             // 同步代码段内——block 结束 reg 必然 drop，不会跨下面的 bus.lock().await。
                             // 异步委派完成通知目标：agent_end 时填 (parent_wid, child_wid)
                             let mut notify_target: Option<(String, String)> = None;
+                            // SANDBOX_POOL Phase 2 审批泵：短锁内判定命中 → 锁外 spawn 放行
+                            let mut pump_fire_session: Option<String> = None;
                             let (bus_clone, session_id_for_bus, need_overview_broadcast) = {
                                 let mut reg = sub_registry.lock();
                                 // 拿 EventBus 句柄（如果有），用于把 worker 事件广播到全局订阅者。
@@ -2131,6 +2172,18 @@ impl WorkerRegistry {
                                                 record.model = v.to_string();
                                             }
                                         }
+                                    } else if ev
+                                        .and_then(|e| e.get("customType"))
+                                        .and_then(|v| v.as_str())
+                                        == Some("ApprovalRequest")
+                                    {
+                                        // SANDBOX_POOL Phase 2 审批泵：auto_approve 沙盒的
+                                        // ApprovalRequest 自动放行——治审批停摆（无人值守沙盒
+                                        // worker 等批准 → 超时退场）。判定在短锁内（纯内存），
+                                        // review_approve_all 动作在锁外 spawn task 执行。
+                                        if let Some(sid) = reg.pump_arm(&sub_wid, now_ms()) {
+                                            pump_fire_session = Some(sid);
+                                        }
                                     }
                                 }
                                 // reg 在 block 结束时自动 drop（parking_lot guard 不是 Send，
@@ -2143,6 +2196,14 @@ impl WorkerRegistry {
                                 tokio::spawn(async move {
                                     let mut r = rc.lock();
                                     r.broadcast_overview();
+                                });
+                            }
+                            // 审批泵放行（锁外 spawn；send_async 自管锁）
+                            if let Some(pump_sid) = pump_fire_session {
+                                let rc = Arc::clone(&sub_registry);
+                                let pw = sub_wid.clone();
+                                tokio::spawn(async move {
+                                    WorkerRegistry::sandbox_pump_resolve(&rc, &pw, &pump_sid).await;
                                 });
                             }
                             // 异步委派完成通知：读子 worker 的最后回复，以 prompt 注入父
@@ -2600,6 +2661,8 @@ impl WorkerRegistry {
             parent: config.parent.clone(),
             children: Vec::new(),
             host: spawn.host.clone(),
+            // 沙盒档案·审批策略（SANDBOX_POOL.md §3.3）：出生即定，审批泵消费
+            approval_policy: spawn.approval_policy.clone(),
             // 异步委派（wait=false）且有父 → agent_end 时通知父（同步父已 await 到结果）
             notify_parent: config.parent.is_some() && config.wait == Some(false),
             started_at: now_ms(),
@@ -2797,6 +2860,8 @@ impl WorkerRegistry {
                             // ⚠️ 用独立 block 把 reg 作用域限制在同步代码段（parking_lot guard 不是 Send）。
                             // 异步委派完成通知目标（泵2）：(parent_wid, child_wid, 末条输出预览)
                             let mut notify_target: Option<(String, String, String)> = None;
+                            // SANDBOX_POOL Phase 2 审批泵（泵2 同泵1）：短锁判定，锁外放行
+                            let mut pump_fire_session: Option<String> = None;
                             let (bus_clone2, session_id_for_bus2, need_overview_broadcast) = {
                                 let mut reg = sub_registry.lock();
                                 let bus_clone2 = reg.event_bus.clone();
@@ -2902,6 +2967,16 @@ impl WorkerRegistry {
                                         ) {
                                             record.model = v.to_string();
                                         }
+                                    } else if ev
+                                        .and_then(|e| e.get("customType"))
+                                        .and_then(|v| v.as_str())
+                                        == Some("ApprovalRequest")
+                                    {
+                                        // SANDBOX_POOL Phase 2 审批泵（泵2）：auto_approve
+                                        // 沙盒的 ApprovalRequest 自动放行（同泵1）
+                                        if let Some(sid) = reg.pump_arm(&sub_wid, now_ms()) {
+                                            pump_fire_session = Some(sid);
+                                        }
                                     }
                                 }
                                 (bus_clone2, session_id_for_bus2, need_overview_broadcast)
@@ -2911,6 +2986,14 @@ impl WorkerRegistry {
                                 tokio::spawn(async move {
                                     let mut r = rc.lock();
                                     r.broadcast_overview();
+                                });
+                            }
+                            // 审批泵放行（锁外 spawn；send_async 自管锁）
+                            if let Some(pump_sid) = pump_fire_session {
+                                let rc = Arc::clone(&sub_registry);
+                                let pw = sub_wid.clone();
+                                tokio::spawn(async move {
+                                    WorkerRegistry::sandbox_pump_resolve(&rc, &pw, &pump_sid).await;
                                 });
                             }
                             // 异步委派完成通知（泵2，逻辑同泵1）
@@ -3218,7 +3301,15 @@ impl WorkerRegistry {
         // ⚠️ register_prepared_worker 是 create_worker 的 split 版本（parking_lot 重构后
         // cmd_host / cmd_serve 用 prepare + register 两阶段）。initial_prompt 注入逻辑必须
         // 在这里也有一份，否则 --host 模式下 worker 启动了但永远收不到 prompt（Idle 到超时）。
-        let mut effective_prompt = config.initial_prompt.clone();
+        // 沙盒档案环境层（SANDBOX_POOL.md §3.3 Phase 2）：沙盒 notes 事实前缀注入——
+        // 先环境层，后任务层（三层模型顺序）。
+        let mut effective_prompt = match &spawn.profile_prompt {
+            Some(prefix) => Some(format!(
+                "{prefix}\n{}",
+                config.initial_prompt.clone().unwrap_or_default()
+            )),
+            None => config.initial_prompt.clone(),
+        };
         let is_peer = matches!(config.relation, Some(WorkerRelation::Peer));
         if is_peer {
             let creator_id = config
@@ -3964,6 +4055,100 @@ impl WorkerRegistry {
                     reg.cleanup_pending(worker_id, &req_id);
                 }
                 Err("timeout waiting for response".into())
+            }
+        }
+    }
+
+    // ── 沙盒审批策略 + 审批泵（SANDBOX_POOL.md §3.3 Phase 2）──
+
+    /// 设置运行时审批策略覆盖（内存态不落盘；`sandbox_policy` RPC 用）。
+    /// key = worker_id 或沙盒 host 名；policy 仅接受 "auto_approve" / "default"
+    ///（与 parse 不同，set 走严格校验——写路径要给明确错误，不静默回落）。
+    pub fn set_sandbox_policy(&mut self, key: &str, policy: &str) -> Result<(), String> {
+        if key.is_empty() {
+            return Err("missing 'worker' or 'host' key".into());
+        }
+        let normalized = policy.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "auto_approve" | "auto-approve" | "autoapprove" | "default" => {}
+            "" => return Err("missing 'policy' (auto_approve | default)".into()),
+            other => {
+                return Err(format!(
+                    "unknown policy '{other}' (expected auto_approve | default)"
+                ))
+            }
+        }
+        let parsed = crate::sandbox_pool::ApprovalPolicy::parse(&normalized);
+        self.sandbox_policy_overrides
+            .insert(key.to_string(), parsed.as_str().to_string());
+        Ok(())
+    }
+
+    /// 查运行时覆盖（None = 无覆盖）。
+    pub fn get_sandbox_policy(&self, key: &str) -> Option<String> {
+        self.sandbox_policy_overrides.get(key).cloned()
+    }
+
+    /// worker 的生效审批策略：worker 覆盖 > host 覆盖 > 出生档案（record.approval_policy）。
+    /// 短锁纯内存——config 沙盒档案在 spawn 时已写进 record，这里不做文件 IO。
+    pub fn effective_approval_policy(
+        &self,
+        worker_id: &str,
+    ) -> crate::sandbox_pool::ApprovalPolicy {
+        let (ovr_worker, host, born) = match self.workers.get(worker_id) {
+            Some(r) => (
+                self.sandbox_policy_overrides.get(worker_id).cloned(),
+                r.host.clone(),
+                r.approval_policy.clone(),
+            ),
+            None => (None, None, None),
+        };
+        let raw = ovr_worker
+            .or_else(|| {
+                host.as_deref().and_then(|h| self.sandbox_policy_overrides.get(h).cloned())
+            })
+            .or(born);
+        crate::sandbox_pool::ApprovalPolicy::parse(raw.as_deref().unwrap_or(""))
+    }
+
+    /// 审批泵判定 + 记录 fire（短锁纯内存）。返回 Some(session_id) = 应 fire。
+    /// 仅在 ApprovalRequest 事件上调用；冷却窗（2s）内重复请求直接吞掉。
+    pub fn pump_arm(&mut self, worker_id: &str, now_ms: i64) -> Option<String> {
+        let policy = self.effective_approval_policy(worker_id);
+        let last = self.pump_last_fire.get(worker_id).copied();
+        let now_u = now_ms.max(0) as u64;
+        if !crate::sandbox_pool::pump_should_fire(policy, last, now_u) {
+            return None;
+        }
+        self.pump_last_fire.insert(worker_id.to_string(), now_u);
+        self.workers.get(worker_id).map(|r| r.session_id.clone())
+    }
+
+    /// 审批泵 fire（reader loop spawn task 调用）：给 worker 发
+    /// `review_approve_all` + 广播 `SandboxAutoApproved` 事件（subscribe 可见）。
+    /// 治审批停摆：无人值守沙盒 worker 的审批不再等人。
+    pub async fn sandbox_pump_resolve(
+        registry: &Arc<Mutex<Self>>,
+        worker_id: &str,
+        session_id: &str,
+    ) {
+        match Self::send_async(registry, worker_id, "review_approve_all", serde_json::json!({}))
+            .await
+        {
+            Ok(resp) => {
+                let resolved = resp.get("data").cloned().unwrap_or_else(|| resp.clone());
+                tracing::info!("[sandbox-pump] auto-approved pending files for {worker_id}");
+                let ev = serde_json::json!({
+                    "workerId": worker_id,
+                    "sessionId": session_id,
+                    "resolved": resolved,
+                    "trigger": "ApprovalRequest",
+                });
+                let reg = registry.lock();
+                reg.broadcast_ui_event("SandboxAutoApproved", ev, Some(session_id));
+            }
+            Err(e) => {
+                tracing::warn!("[sandbox-pump] resolve failed for {worker_id}: {e}");
             }
         }
     }
@@ -6673,6 +6858,8 @@ mod tests {
             refresh_dest: None,
             grants: None,
             host_key_fingerprint: None,
+            approval_policy: String::new(),
+            notes: Vec::new(),
         }
     }
 
@@ -7201,6 +7388,7 @@ mod tests {
                     parent: None,
                     children: vec![],
                     host: None,
+            approval_policy: None,
                     notify_parent: false,
                     started_at: 0,
                     last_heartbeat: 0,
@@ -7316,6 +7504,7 @@ mod tests {
                     parent: None,
                     children: vec![],
                     host: None,
+            approval_policy: None,
                     notify_parent: false,
                     started_at: 0,
                     last_heartbeat: 0,
@@ -7486,7 +7675,8 @@ mod tests {
             channels: vec![],
             parent: None,
             children: vec![],
-            host: None, // 本地 worker
+            host: None,
+            approval_policy: None, // 本地 worker
             notify_parent: false,
             started_at: 0,
             last_heartbeat: 0,
@@ -7543,6 +7733,7 @@ mod tests {
             parent: None,
             children: vec![],
             host: None,
+            approval_policy: None,
             notify_parent: false,
             started_at: 0,
             last_heartbeat: 0,
@@ -7622,6 +7813,7 @@ mod tests {
                 parent: None,
                 children: Vec::new(),
                 host: None,
+            approval_policy: None,
                 notify_parent: false,
                 started_at: 0,
                 last_heartbeat: 0,

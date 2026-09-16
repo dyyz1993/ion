@@ -70,6 +70,21 @@
                       "null"
                     ],
                     "description": "最近探测 unix 秒"
+                  },
+                  "approvalPolicy": {
+                    "type": "string",
+                    "enum": [
+                      "default",
+                      "auto_approve"
+                    ],
+                    "description": "生效审批策略：host 运行时覆盖 > config 沙盒档案（SANDBOX_POOL.md §3.3 Phase 2）"
+                  },
+                  "notes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "沙盒档案·环境层事实（notes），派发时自动注入 initial_prompt 前缀"
                   }
                 },
                 "required": [

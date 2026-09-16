@@ -279,6 +279,102 @@ pub fn failover_decision(pool: &SandboxPool, original_host: &str) -> FailoverDec
     }
 }
 
+// ---------------------------------------------------------------------------
+// 沙盒档案 + 审批泵（SANDBOX_POOL.md §3.3 Phase 2 / Phase 1.5）
+// ---------------------------------------------------------------------------
+
+/// 无人值守审批策略（沙盒档案 `approval_policy` 字段）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalPolicy {
+    /// 人工审批（缺省）
+    #[default]
+    Default,
+    /// 审批泵自动放行：ApprovalRequest → 自动 `review_approve_all`
+    AutoApprove,
+}
+
+impl ApprovalPolicy {
+    /// 解析配置串（空/未知值 → Default，宽容解析不炸配置加载）。
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "auto_approve" | "auto-approve" | "autoapprove" => Self::AutoApprove,
+            _ => Self::Default,
+        }
+    }
+
+    /// 序列化为配置串（list_sandboxes / sandbox_policy RPC 用）。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::AutoApprove => "auto_approve",
+        }
+    }
+}
+
+/// 沙盒档案（三层模型的环境层）：审批策略 + 环境事实。
+/// 来源：`remote_workers.<name>` 的 `approval_policy` / `notes` 字段；
+/// probe 产出（版本等）后续并入这里，派发时消费。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SandboxProfile {
+    pub approval_policy: ApprovalPolicy,
+    pub notes: Vec<String>,
+}
+
+impl SandboxProfile {
+    /// 从沙盒配置（remote_workers.<name> 条目）提取档案。
+    pub fn from_host(h: &crate::config::RemoteWorkerHost) -> Self {
+        Self {
+            approval_policy: ApprovalPolicy::parse(&h.approval_policy),
+            notes: h.notes.clone(),
+        }
+    }
+}
+
+impl SandboxPool {
+    /// 取一台沙盒的档案（未配置 → Default 空档案）。
+    pub fn profile(&self, name: &str) -> SandboxProfile {
+        self.hosts.get(name).map(|h| SandboxProfile {
+            approval_policy: ApprovalPolicy::parse(&h.approval_policy),
+            notes: h.notes.clone(),
+        }).unwrap_or_default()
+    }
+}
+
+/// 环境层 initial_prompt 前缀（派发时注入；档案无内容 → None 不注入）。
+/// 只承载 notes 事实——审批策略走机制（审批泵），不进提示词。
+pub fn profile_prompt(profile: &SandboxProfile) -> Option<String> {
+    if profile.notes.is_empty() {
+        return None;
+    }
+    let mut out = String::from("## 沙盒环境提示（沙盒档案自动注入，非任务内容）\n");
+    for n in &profile.notes {
+        out.push_str("- ");
+        out.push_str(n.trim_end());
+        out.push('\n');
+    }
+    Some(out)
+}
+
+/// 审批泵冷却窗口（毫秒）：同 worker 两次自动放行的最小间隔。
+/// ApprovalRequest 在 gate check 重复触发时防刷（review_approve_all 幂等，但别刷屏）。
+pub const PUMP_COOLDOWN_MS: u64 = 2_000;
+
+/// 审批泵 fire 判定（纯函数）：策略为 auto_approve 且距上次 fire 超过冷却窗。
+pub fn pump_should_fire(
+    policy: ApprovalPolicy,
+    last_fire_ms: Option<u64>,
+    now_ms: u64,
+) -> bool {
+    if policy != ApprovalPolicy::AutoApprove {
+        return false;
+    }
+    match last_fire_ms {
+        Some(t) => now_ms.saturating_sub(t) >= PUMP_COOLDOWN_MS,
+        None => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -478,5 +574,99 @@ mod tests {
             SandboxHealth::VersionMismatch
         };
         assert_eq!(s.health, SandboxHealth::VersionMismatch);
+    }
+
+    // ── 沙盒档案 + 审批泵（SANDBOX_POOL.md §3.3 Phase 2）──
+
+    fn host_with_policy(policy: &str, notes: Vec<String>) -> RemoteWorkerHost {
+        RemoteWorkerHost {
+            hostname: "h".into(),
+            approval_policy: policy.into(),
+            notes,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn approval_policy_parse_is_lenient() {
+        assert_eq!(ApprovalPolicy::parse(""), ApprovalPolicy::Default);
+        assert_eq!(ApprovalPolicy::parse("default"), ApprovalPolicy::Default);
+        assert_eq!(
+            ApprovalPolicy::parse("auto_approve"),
+            ApprovalPolicy::AutoApprove
+        );
+        // 宽容：大小写/连字符变体也认；未知值回落 Default（不炸配置加载）
+        assert_eq!(
+            ApprovalPolicy::parse("Auto-Approve"),
+            ApprovalPolicy::AutoApprove
+        );
+        assert_eq!(ApprovalPolicy::parse("whatever"), ApprovalPolicy::Default);
+        assert_eq!(ApprovalPolicy::default(), ApprovalPolicy::Default);
+    }
+
+    #[test]
+    fn profile_reads_config_fields() {
+        let mut m = HashMap::new();
+        m.insert(
+            "unattended".to_string(),
+            host_with_policy("auto_approve", vec!["cargo 在 ~/.cargo/bin".into()]),
+        );
+        m.insert("manual".to_string(), host_with_policy("", vec![]));
+        let pool = SandboxPool::from_config(&cfg_with(m));
+
+        let p = pool.profile("unattended");
+        assert_eq!(p.approval_policy, ApprovalPolicy::AutoApprove);
+        assert_eq!(p.notes.len(), 1);
+        // 未配置 / 不存在的沙盒 → Default 空档案（不 panic）
+        assert_eq!(pool.profile("manual").approval_policy, ApprovalPolicy::Default);
+        assert_eq!(pool.profile("nope"), SandboxProfile::default());
+    }
+
+    #[test]
+    fn profile_prompt_only_for_notes() {
+        assert_eq!(profile_prompt(&SandboxProfile::default()), None);
+        let p = SandboxProfile {
+            approval_policy: ApprovalPolicy::AutoApprove,
+            notes: vec!["node 在 /usr/local/bin".into()],
+        };
+        let prompt = profile_prompt(&p).expect("notes 非空应有前缀");
+        assert!(prompt.contains("沙盒环境提示"));
+        assert!(prompt.contains("node 在 /usr/local/bin"));
+        // 审批策略不进提示词（走机制泵，不走提示词）
+        assert!(!prompt.contains("auto_approve"));
+    }
+
+    #[test]
+    fn pump_fires_only_for_auto_approve() {
+        assert!(pump_should_fire(ApprovalPolicy::AutoApprove, None, 1_000));
+        // 人工审批永不 fire
+        assert!(!pump_should_fire(ApprovalPolicy::Default, None, 1_000));
+    }
+
+    #[test]
+    fn pump_respects_cooldown_window() {
+        // 冷却窗内（<2s）不重复 fire；窗外再放行
+        assert!(!pump_should_fire(
+            ApprovalPolicy::AutoApprove,
+            Some(10_000),
+            10_000 + PUMP_COOLDOWN_MS - 1
+        ));
+        assert!(pump_should_fire(
+            ApprovalPolicy::AutoApprove,
+            Some(10_000),
+            10_000 + PUMP_COOLDOWN_MS
+        ));
+    }
+
+    #[test]
+    fn env_injected_profile_flows_through() {
+        // env 注入（ION_REMOTE_WORKERS）与 config 同构：档案字段一并生效。
+        // from_config 读 env 走 std::env::var——这里只验证 hosts map 直构路径。
+        let mut pool = SandboxPool::default();
+        pool.hosts.insert(
+            "ci".to_string(),
+            host_with_policy("auto_approve", vec![]),
+        );
+        assert_eq!(pool.profile("ci").approval_policy, ApprovalPolicy::AutoApprove);
     }
 }
