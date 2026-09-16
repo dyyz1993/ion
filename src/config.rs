@@ -164,6 +164,15 @@ pub struct RemoteWorkerHost {
     /// host_read/host_write/host_fetch 工具经 Manager 执行 + 审计。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grants: Option<RemoteWorkerGrants>,
+    /// SSH host key 指纹 pin（安全加固 C3，TOFU 防线）：`SHA256:` + base64
+    /// （ssh-keygen -l 标准形态，如 `SHA256:DM98oAaAK8j1rpG9dgnQ8x/uG+wMfmk45KRxE1ZzJQg`）。
+    /// 配置后 spawn/refresh 前先 keyscan 拉取远端 host key → SHA256 指纹比对 →
+    /// 匹配才写入临时 known_hosts 并以 `StrictHostKeyChecking=yes` 连接（精确
+    /// pin：MITM 无法伪造指纹匹配的 key）；不匹配直接拒绝 spawn（fail-closed）。
+    /// 未配置：保持 `accept-new`（TOFU），每个 host 进程内对同一目标首次连接发
+    /// `SshHostKeyFirstSeen` 警告事件（data 含 host+指纹），提示用户尽快 pin。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_key_fingerprint: Option<String>,
 }
 
 /// 动词授权（remote_workers.<name>.grants）。全部默认空 = 全拒。
