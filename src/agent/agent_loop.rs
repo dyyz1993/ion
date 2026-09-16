@@ -2291,6 +2291,49 @@ impl Agent {
                         continue;
                     }
 
+                    // ── 流中断（provider 层 EOF 无 finish_reason → Error 事件）→ 可重试 ──
+                    // openai/cloudflare/mistral 等 provider 在 SSE 无 finish_reason 就断
+                    // （代理断连/上游重启）时发 Error 事件，error_message 统一为
+                    // "stream ended unexpectedly"。此前该 Ok 路径不重试——直接返回
+                    // inner_loop → 非溢出 Error 一律终止整个 run → worker 阵亡 →
+                    // AUTO-RECOVERY 重派抽签（zai 长流死亡率根因，2026-09-16 实证）。
+                    // 现在视同空补全：走 attempt/预算/退避通路重试，整段回答重来。
+                    // 只认 EOF 签名字面量，其他 in-stream 错误（配额/鉴权语义）保持
+                    // 原路径不重试（其降级语义归 Err 路径 tier fallback 管）。
+                    if matches!(final_reason, StopReason::Error)
+                        && collected.iter().any(|e| matches!(e,
+                            StreamEvent::Error { message, .. }
+                            if message.error_message.as_deref()
+                                == Some("stream ended unexpectedly")))
+                    {
+                        let retry_cfg = self.effective_retry_config();
+                        if attempt >= retry_cfg.max_retries {
+                            self.extensions
+                                .on_auto_retry_end(false, attempt + 1)
+                                .await?;
+                            return Err(AgentError::Provider(format!(
+                                "[mid-stream] stream ended unexpectedly after {} attempts",
+                                attempt + 1
+                            )));
+                        }
+                        let delay = crate::retry::backoff_duration(attempt, &retry_cfg);
+                        tracing::warn!(
+                            "[mid-stream] attempt {}/{} stream ended unexpectedly \
+                             — retrying in {:?}",
+                            attempt + 1,
+                            retry_cfg.max_retries + 1,
+                            delay
+                        );
+                        self.extensions
+                            .on_auto_retry_start(attempt + 1, retry_cfg.max_retries + 1)
+                            .await?;
+                        last_error = Some(ion_provider::error::ProviderError::Stream(
+                            "stream ended unexpectedly".into(),
+                        ));
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+
                     return Ok((final_reason, collected));
                 }
                 Err(e) => {
