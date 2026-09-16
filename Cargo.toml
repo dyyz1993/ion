@@ -7,6 +7,9 @@ description = "ION CLI — Agent orchestration and AI agent loop"
 [workspace]
 members = []
 
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }

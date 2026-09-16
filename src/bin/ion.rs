@@ -602,6 +602,11 @@ impl SessionRouter {
         if map.get(&self.sid).map(|(id, _)| *id) == Some(self.id) {
             map.remove(&self.sid);
         }
+        drop(map);
+        // 退出与订阅的竞态兜底：排队中的 Subscribe 不随 struct 丢弃——
+        // 重走路由入口（拉起新 router 接手），客户端无感拿到新 epoch 订阅
+        // 而非 "session router dropped the subscribe request" 硬错误。
+        let _ = redispatch_queued_subscribes(&mut self.cmd_rx, &self.sid, &self.reg);
     }
 
     /// 新订阅：确保已挂接 → 注册客户端 → ack（含 epoch）→ snapshot → replay → 实时增量
@@ -703,6 +708,30 @@ type RouterTable = HashMap<String, (u64, tokio::sync::mpsc::UnboundedSender<Rout
 static ROUTERS: OnceLock<Mutex<RouterTable>> = OnceLock::new();
 fn routers() -> &'static Mutex<RouterTable> {
     ROUTERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// router 退出时：drain 命令队列，把排队中的 Subscribe 重派给路由入口
+/// （新 router 懒创建接手）。返回重派条数（测试可观测）。
+fn redispatch_queued_subscribes(
+    cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<RouterCmd>,
+    sid: &str,
+    reg: &Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>>,
+) -> usize {
+    let mut n = 0;
+    while let Ok(cmd) = cmd_rx.try_recv() {
+        match cmd {
+            RouterCmd::Subscribe { replay, reply } => {
+                let reg = Arc::clone(reg);
+                let sid = sid.to_string();
+                tokio::spawn(async move {
+                    let r = subscribe_session_routed(&reg, &sid, replay).await;
+                    let _ = reply.send(r);
+                });
+                n += 1;
+            }
+        }
+    }
+    n
 }
 
 /// subscribe(session) 的路由入口：复用或创建该 session 的 router，
@@ -11539,4 +11568,37 @@ fn old_verb_review_path_syncs_bus_mirror() {
     assert!(ApprovalBus::global().pending().is_empty(), "旧通路同步收口");
     bus_test_teardown();
 }
+}
+
+#[cfg(test)]
+mod router_exit_redispatch_tests {
+    use super::*;
+
+    /// 复现（修前红）：router 退出时排队的 Subscribe 的 oneshot 随 struct 被
+    /// drop——客户端拿到 "session router dropped the subscribe request" 硬错误。
+    /// 修后：排队订阅重派给新 router，拿到真实回复（无 worker 场景下是 attach
+    /// 失败的可诊断错误 Ok(Err(..))），绝不再是 drop 型 Err(RecvError)。
+    #[tokio::test(start_paused = true)]
+    async fn router_exit_redispatches_queued_subscribes_not_drops() {
+        let reg: Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>> =
+            Arc::new(parking_lot::Mutex::new(
+                ion::worker_registry::WorkerRegistry::new(),
+            ));
+        let (tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (ra, mut rra) = tokio::sync::oneshot::channel();
+        let (rb, mut rrb) = tokio::sync::oneshot::channel();
+        tx.send(RouterCmd::Subscribe { replay: 0, reply: ra }).unwrap();
+        tx.send(RouterCmd::Subscribe { replay: 3, reply: rb }).unwrap();
+        drop(tx);
+
+        let n = redispatch_queued_subscribes(&mut cmd_rx, "sess_redispatch_test", &reg);
+        assert_eq!(n, 2, "两条排队订阅都应被重派");
+
+        for (i, rr) in [&mut rra, &mut rrb].into_iter().enumerate() {
+            match tokio::time::timeout(std::time::Duration::from_secs(600), rr).await {
+                Ok(Ok(_)) => {} // Ok(Err(原因)) 也算——关键是没被 drop
+                other => panic!("排队订阅 #{} 被丢弃（drop 型回复）: {:?}", i + 1, other),
+            }
+        }
+    }
 }
