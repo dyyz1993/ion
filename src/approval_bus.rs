@@ -91,7 +91,8 @@ pub struct ApprovalEntry {
     pub kind: ApprovalKind,
     /// 关联会话（可为空串：来源未提供时）
     pub session_id: String,
-    /// 关联 worker（可空）
+    /// 关联 worker（可空；不落盘序列化时省略——schema workerId 为 string）
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub worker_id: Option<String>,
     /// 人读摘要（UI 列表直接渲染）
     pub summary: String,
@@ -99,7 +100,8 @@ pub struct ApprovalEntry {
     pub payload: serde_json::Value,
     /// 注册时间（Unix ms）
     pub raised_at_ms: u64,
-    /// 过期时间（Unix ms；None = 不过期）
+    /// 过期时间（Unix ms；None = 不过期，序列化省略——schema expiresAtMs 为 integer）
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at_ms: Option<u64>,
     /// 幂等键（来源侧稳定标识；不序列化）
     #[serde(skip)]
@@ -121,6 +123,28 @@ pub struct RegisterOutcome {
     pub id: String,
     pub newly_registered: bool,
     pub entry: ApprovalEntry,
+}
+
+/// 审批决定者（ApprovalResolved 事件的 `by` 字段，对齐
+/// schemas/rpc/subscribe/events/approval_resolved.json）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApprovalActor {
+    /// 审批策略自动放行（approval pump）
+    Pump,
+    /// 人工 RPC（approval_respond / verb_review / ui_respond / ask_respond）
+    User,
+    /// 过期 / 会话清理等系统收尾
+    System,
+}
+
+impl ApprovalActor {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ApprovalActor::Pump => "pump",
+            ApprovalActor::User => "user",
+            ApprovalActor::System => "system",
+        }
+    }
 }
 
 /// 非决定性移除的原因（决定性移除走 `Resolved`）
@@ -154,6 +178,8 @@ pub enum ApprovalChange {
         entry: ApprovalEntry,
         decision: ApprovalDecision,
         note: Option<String>,
+        /// 决定者（事件 `by` 字段；旧调用方默认 User）
+        actor: ApprovalActor,
     },
     /// 非决定性移除（重置 / 来源消失 / 过期）
     Removed {
@@ -359,13 +385,24 @@ impl ApprovalBus {
         list
     }
 
-    /// 落地审批决定：移除条目并广播 `Resolved`。
+    /// 落地审批决定：移除条目并广播 `Resolved`（by=user）。
     /// 语义上"决定路由回来源执行"由调用方（host 出口）在调本方法之前完成；
     /// 本方法只负责统一表的收口。
     pub fn resolve(
         &self,
         id: &str,
         decision: ApprovalDecision,
+        note: Option<&str>,
+    ) -> Result<ApprovalEntry, ResolveError> {
+        self.resolve_as(id, decision, ApprovalActor::User, note)
+    }
+
+    /// `resolve` 的完整版：带决定者（pump 自动放行 / system 超时收尾走这里）。
+    pub fn resolve_as(
+        &self,
+        id: &str,
+        decision: ApprovalDecision,
+        actor: ApprovalActor,
         note: Option<&str>,
     ) -> Result<ApprovalEntry, ResolveError> {
         let now = now_ms();
@@ -388,6 +425,7 @@ impl ApprovalBus {
                     entry: entry.clone(),
                     decision,
                     note: note.map(str::to_string),
+                    actor,
                 });
                 Ok(entry)
             }
@@ -437,6 +475,17 @@ impl ApprovalBus {
         decision: ApprovalDecision,
         note: Option<&str>,
     ) -> Option<ApprovalEntry> {
+        self.mark_resolved_matching_as(pred, decision, ApprovalActor::User, note)
+    }
+
+    /// `mark_resolved_matching` 的完整版：带决定者（超时收口走 System）。
+    pub fn mark_resolved_matching_as(
+        &self,
+        pred: impl Fn(&ApprovalEntry) -> bool,
+        decision: ApprovalDecision,
+        actor: ApprovalActor,
+        note: Option<&str>,
+    ) -> Option<ApprovalEntry> {
         let mut inner = self.inner.lock().unwrap();
         let hit: Option<String> = inner
             .entries
@@ -453,6 +502,7 @@ impl ApprovalBus {
                 entry: entry.clone(),
                 decision,
                 note: note.map(str::to_string),
+                actor,
             });
             Some(entry)
         } else {
@@ -756,7 +806,9 @@ mod tests {
 
     #[test]
     fn global_bus_roundtrip() {
-        // 全局总线基本可用（不与其它测试共享状态：clear 后再注册）
+        // 全局总线基本可用（不与其它测试共享状态：clear 后再注册）。
+        // TEST_SINK_LOCK：与 approval_sink / worker_registry 的全局总线测试互斥
+        let _g = crate::approval_sink::TEST_SINK_LOCK.lock().unwrap();
         let g = ApprovalBus::global();
         g.clear();
         let out = g.register(
@@ -771,6 +823,38 @@ mod tests {
         assert!(g.get(&out.id).is_some());
         g.clear();
         assert!(g.pending().is_empty());
+    }
+
+    #[test]
+    fn resolve_as_carries_actor_and_optional_fields_omit() {
+        let b = bus();
+        let fired = Arc::new(Mutex::new(Vec::new()));
+        let sink = fired.clone();
+        b.on_change(Arc::new(move |ch| {
+            if let ApprovalChange::Resolved { actor, .. } = ch {
+                sink.lock().unwrap().push(actor);
+            }
+        }));
+        let out = b.register(
+            ApprovalKind::UiAsk,
+            "s",
+            None,
+            "x",
+            serde_json::json!({"nativeRequestId": "req_1"}),
+            "ask:req_1",
+            None,
+        );
+        // 无 worker / 无过期 → 序列化省略两字段（对齐 approvals_pending schema）
+        let v = serde_json::to_value(&out.entry).unwrap();
+        assert!(v.get("workerId").is_none(), "workerId=None 省略");
+        assert!(v.get("expiresAtMs").is_none(), "expiresAtMs=None 省略");
+        b.resolve_as(&out.id, ApprovalDecision::Approve, ApprovalActor::Pump, Some("policy"))
+            .expect("resolve_as ok");
+        assert_eq!(
+            fired.lock().unwrap().as_slice(),
+            &[ApprovalActor::Pump],
+            "Resolved 事件携带 actor（by=pump）"
+        );
     }
 
     #[test]

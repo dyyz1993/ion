@@ -1,32 +1,37 @@
-//! ApprovalSink — 统一审批总线的**来源侧窄接口**（M2 定义，供 M1 合并对齐）。
+//! ApprovalSink — 统一审批总线的**来源侧窄接口**。
 //!
 //! ## 背景
 //! ION 有三套互不相识的审批来源：
 //! 1. **ui_ask**：worker 进程内 `SecuredRuntime::resolve_ask`（CommandGuard 中危/
 //!    PermissionEngine Ask 规则触发），pending 在 worker 进程内 `runtime::pending_ui()`，
-//!    事件经 worker stdout → host pump → EventBus 广播。J8 缺口：host 不登记 →
-//!    `ui_respond` 报 "request not found or already expired"。
+//!    事件经 worker stdout → host pump → 登记总线。应答经 `ask_respond` 命令回流
+//!    worker 放行（J8 缺口闭环）。
 //! 2. **remote_verb**：`worker_registry::verb_approvals_global()` 全局表
-//!    （verb_pending/verb_review 一套自有 API）。
+//!    （verb_pending/verb_review 一套自有 API）；verb_gate ask_on_deny 时直登总线。
 //! 3. **file_snapshot**：worker 内核 `file_snapshot::approval::ApprovalManager`
 //!    （review_pending/review_approve worker 级 RPC），事件 ApprovalRequest/
 //!    ApprovalResolved 经 worker stdout 上报。
 //!
-//! M1 正在并行实现统一总线（`src/approval_bus.rs` + host RPC approvals_pending/
-//! approval_respond）。本文件是 M2 来源侧接入的**隔离层**：三来源只调这里的
-//! `register/resolve/resolve_kind_for_worker/pending`，默认 NoopSink（master
-//! 现状零行为变化）。合并时协调者把全局 sink 换成 M1 的真实现（或让 M1 的
-//! ApprovalBus implement 本 trait），来源侧逻辑与测试不用动。
+//! ## 单一数据源（集成后终态）
+//! 生产 sink 是 [`BusBackedSink`]——所有登记/消除转发进
+//! `approval_bus::ApprovalBus::global()`（统一审批总线，host 唯一表）。
+//! host 侧镜像监听（`bin/ion.rs mirror_ui_event_to_bus`）与 pump 登记路径
+//! （[`try_register_from_worker_event`]）双路写同一张表，靠 dedupe key 对齐
+//! 幂等去重：pump 登记先于 EventBus 广播 → 带 worker/session 的条目胜出。
+//! `NoopSink` 仅在未安装时兜底；`RecordingSink` 保留为测试替身（lib 单测用）。
 //!
-//! ## 合并对齐契约（给协调者）
-//! - `ApprovalSink::register(entry)`：新审批出现（幂等：同 id 重复注册刷新条目）
+//! ## 合并对齐契约
+//! - `ApprovalSink::register(entry)`：新审批出现（BusBackedSink → bus.register，
+//!   dedupe 语义对齐镜像路径：`ask:` / `verb:` / `fs:` 前缀）
 //! - `ApprovalSink::resolve(id, decision)`：审批完成（allow/deny/approve/reject/timeout）
 //! - `ApprovalSink::resolve_kind_for_worker(worker_id, kind, decision)`：按来源批量
-//!   消除（file_snapshot 的 ApprovalRequest 是"当前 pending 全集快照"，新请求应
-//!   替换同 worker 同 kind 的旧条目）
-//! - `ApprovalSink::pending()`：host RPC approvals_pending 的数据源
-//! - `respond_route(entry, decision)`：approval_respond 的路由决策——决定 host
-//!   把决定转发到哪（worker 命令 / verb_review），M1 的 RPC 直接调用
+//!   消除（file_snapshot 的 "superseded" 在 BusBackedSink 是 no-op——dedupe 签名兜）
+//! - `ApprovalSink::resolve_file_paths(worker, session, paths, decision)`：per-path 精收
+//! - `ApprovalSink::pending()`：bus 快照（native id 视图）
+//! - `respond_route(entry, decision)`：应答路由决策（纯函数）——worker ui_ask→
+//!   ask_respond / remote_verb→verb_review / file_snapshot→review_approve_all|reject_all；
+//!   host 级 ui_ask oneshot 分支在 `WorkerRegistry::execute_unified_approval`
+//!   （worker_registry.rs，RPC `approval_respond` 与审批泵共用）
 
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -91,6 +96,17 @@ pub trait ApprovalSink: Send + Sync {
     fn resolve(&self, id: &str, decision: &str);
     /// 按 worker + kind 批量消除（file_snapshot 快照替换语义用）
     fn resolve_kind_for_worker(&self, worker_id: &str, kind: ApprovalKind, decision: &str);
+    /// file_snapshot 的 per-path 精收（ApprovalResolved 带 path 时）。
+    /// 缺省实现退化为 worker+kind 粗收（RecordingSink 等测试替身用）。
+    fn resolve_file_paths(
+        &self,
+        worker_id: &str,
+        _session_id: &str,
+        _paths: &[String],
+        decision: &str,
+    ) {
+        self.resolve_kind_for_worker(worker_id, ApprovalKind::FileSnapshot, decision);
+    }
     /// 当前 pending 条目（approvals_pending 数据源）
     fn pending(&self) -> Vec<ApprovalEntry>;
 }
@@ -108,7 +124,7 @@ impl ApprovalSink for NoopSink {
 }
 
 /// 测试/CI 观察用实现：登记与消除全部留痕，pending 可查询。
-/// host 侧 CI（approval_bus_ci.sh）通过 `_m2_approvals_pending` 临时 RPC 读它。
+/// CI 已改走正式 RPC approvals_pending（BusBackedSink 为生产实现）。
 pub struct RecordingSink {
     entries: RwLock<Vec<ApprovalEntry>>,
     /// (id, decision) 审计轨迹
@@ -162,6 +178,286 @@ impl ApprovalSink for RecordingSink {
 
     fn pending(&self) -> Vec<ApprovalEntry> {
         self.entries.read().unwrap().clone()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BusBackedSink — 生产实现：转发到 ApprovalBus::global()（单一数据源）
+// ---------------------------------------------------------------------------
+
+/// 生产 sink：所有登记/消除转发进统一审批总线（`ApprovalBus::global()`）。
+///
+/// 与 host 侧镜像监听（`bin/ion.rs mirror_ui_event_to_bus`）双路写同一张表，
+/// 靠 **dedupe key 对齐** 幂等去重（pump 登记先于 EventBus 广播 → 带worker/
+/// session 信息的条目胜出；镜像路径随后 dedupe 命中不产生第二条）：
+///
+/// | kind         | dedupe key                    | TTL    |
+/// |--------------|-------------------------------|--------|
+/// | ui_ask       | `ask:<native request_id>`     | 120s   |
+/// | remote_verb  | `verb:<native requestId>`     | 300s   |
+/// | file_snapshot| `fs:<path:status 签名>`        | 无     |
+///
+/// file_snapshot 采用总线规范语义（同文件集幂等；**不做** worker 级快照替换）——
+/// per-path resolved / reset 负责收口，见 APPROVAL_BUS.md §1。
+pub struct BusBackedSink;
+
+impl BusBackedSink {
+    fn to_bus_kind(kind: ApprovalKind) -> crate::approval_bus::ApprovalKind {
+        match kind {
+            ApprovalKind::UiAsk => crate::approval_bus::ApprovalKind::UiAsk,
+            ApprovalKind::RemoteVerb => crate::approval_bus::ApprovalKind::RemoteVerb,
+            ApprovalKind::FileSnapshot => crate::approval_bus::ApprovalKind::FileSnapshot,
+        }
+    }
+
+    fn from_bus_kind(kind: crate::approval_bus::ApprovalKind) -> ApprovalKind {
+        match kind {
+            crate::approval_bus::ApprovalKind::UiAsk => ApprovalKind::UiAsk,
+            crate::approval_bus::ApprovalKind::RemoteVerb => ApprovalKind::RemoteVerb,
+            crate::approval_bus::ApprovalKind::FileSnapshot => ApprovalKind::FileSnapshot,
+        }
+    }
+
+    /// file_snapshot dedupe 签名（与镜像路径同一算法：path:status 串联）
+    fn file_sig(payload: &serde_json::Value) -> String {
+        let files = payload
+            .get("files")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        if files.is_empty() {
+            // 无文件列表（异常载荷）：退化为 requestId 维度
+            return payload
+                .get("requestId")
+                .or_else(|| payload.get("request_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("?")
+                .to_string();
+        }
+        files
+            .iter()
+            .map(|f| {
+                format!(
+                    "{}:{}",
+                    f.get("path").and_then(|v| v.as_str()).unwrap_or("?"),
+                    f.get("status").and_then(|v| v.as_str()).unwrap_or("?")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("|")
+    }
+
+    /// 摘要（与镜像路径同格式：Ask: title — message / host_call verb: target / N file(s)）
+    fn summary(entry: &ApprovalEntry) -> String {
+        match entry.kind {
+            ApprovalKind::UiAsk => {
+                let title = entry
+                    .payload
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let message = entry
+                    .payload
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if message.is_empty() {
+                    format!("Ask: {title}")
+                } else {
+                    format!("Ask: {title} — {message}")
+                }
+            }
+            ApprovalKind::RemoteVerb => {
+                let verb = entry
+                    .payload
+                    .get("verb")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                match entry
+                    .payload
+                    .get("args")
+                    .and_then(|a| a.get("path").or_else(|| a.get("url")))
+                    .and_then(|v| v.as_str())
+                {
+                    Some(target) => format!("host_call {verb}: {target}"),
+                    None => format!("host_call {verb}"),
+                }
+            }
+            ApprovalKind::FileSnapshot => {
+                let total = entry
+                    .payload
+                    .get("total")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let paths: Vec<String> = entry
+                    .payload
+                    .get("files")
+                    .and_then(|v| v.as_array())
+                    .map(|fs| {
+                        fs.iter()
+                            .filter_map(|f| f.get("path").and_then(|v| v.as_str()))
+                            .take(3)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let more = total.saturating_sub(paths.len() as u64);
+                let mut s = format!("{total} file(s) pending review: {}", paths.join(", "));
+                if more > 0 {
+                    s.push_str(&format!(" (+{more} more)"));
+                }
+                s
+            }
+        }
+    }
+
+    /// 归一 payload：注入 `nativeRequestId`（路由回源所需；镜像路径同款约定）
+    fn normalized_payload(entry: &ApprovalEntry) -> serde_json::Value {
+        let mut p = entry.payload.clone();
+        if let Some(obj) = p.as_object_mut() {
+            obj.insert(
+                "nativeRequestId".to_string(),
+                serde_json::Value::String(entry.id.clone()),
+            );
+        }
+        p
+    }
+
+    /// decision 字符串 → (总线决定, 决定者)
+    fn classify_decision(decision: &str) -> (crate::approval_bus::ApprovalDecision, crate::approval_bus::ApprovalActor) {
+        match decision.trim().to_lowercase().as_str() {
+            "timeout" => (
+                crate::approval_bus::ApprovalDecision::Reject,
+                crate::approval_bus::ApprovalActor::System,
+            ),
+            "allow" | "approve" | "approved" | "yes" | "true" | "accept" | "ok" => (
+                crate::approval_bus::ApprovalDecision::Approve,
+                crate::approval_bus::ApprovalActor::User,
+            ),
+            _ => (
+                crate::approval_bus::ApprovalDecision::Reject,
+                crate::approval_bus::ApprovalActor::User,
+            ),
+        }
+    }
+
+    /// 按 apr_ id 或 native id 定位总线条目
+    fn find_bus_entry(
+        bus: &crate::approval_bus::ApprovalBus,
+        id: &str,
+    ) -> Option<crate::approval_bus::ApprovalEntry> {
+        bus.pending()
+            .into_iter()
+            .find(|e| e.id == id || e.native_request_id() == Some(id))
+    }
+}
+
+impl ApprovalSink for BusBackedSink {
+    fn register(&self, entry: ApprovalEntry) {
+        let bus = crate::approval_bus::ApprovalBus::global();
+        let (dedupe, ttl) = match entry.kind {
+            ApprovalKind::UiAsk => (format!("ask:{}", entry.id), Some(120_000u64)),
+            ApprovalKind::RemoteVerb => (format!("verb:{}", entry.id), Some(300_000)),
+            ApprovalKind::FileSnapshot => (format!("fs:{}", Self::file_sig(&entry.payload)), None),
+        };
+        let worker = if entry.worker_id.is_empty() {
+            None
+        } else {
+            Some(entry.worker_id.as_str())
+        };
+        let kind = Self::to_bus_kind(entry.kind);
+        let summary = Self::summary(&entry);
+        let payload = Self::normalized_payload(&entry);
+        bus.register(kind, &entry.session_id, worker, &summary, payload, &dedupe, ttl);
+    }
+
+    fn resolve(&self, id: &str, decision: &str) {
+        let bus = crate::approval_bus::ApprovalBus::global();
+        let Some(entry) = Self::find_bus_entry(bus, id) else {
+            return; // 从未登记/已被收口：静默（幂等）
+        };
+        let (dec, actor) = Self::classify_decision(decision);
+        let _ = bus.resolve_as(&entry.id, dec, actor, Some(decision));
+    }
+
+    fn resolve_kind_for_worker(&self, worker_id: &str, kind: ApprovalKind, decision: &str) {
+        // file_snapshot + "superseded"（新 ApprovalRequest 顶旧）：总线规范语义
+        // 靠 dedupe 签名幂等，不做 worker 级清场（避免同集重发条目抖动）
+        if kind == ApprovalKind::FileSnapshot && decision == "superseded" {
+            return;
+        }
+        let bus = crate::approval_bus::ApprovalBus::global();
+        let bus_kind = Self::to_bus_kind(kind);
+        let (dec, actor) = Self::classify_decision(decision);
+        bus.mark_resolved_matching_as(
+            |e| e.kind == bus_kind && e.worker_id.as_deref() == Some(worker_id),
+            dec,
+            actor,
+            Some(decision),
+        );
+    }
+
+    fn resolve_file_paths(
+        &self,
+        worker_id: &str,
+        session_id: &str,
+        paths: &[String],
+        decision: &str,
+    ) {
+        let bus = crate::approval_bus::ApprovalBus::global();
+        let (dec, actor) = Self::classify_decision(decision);
+        let worker = worker_id.to_string();
+        if paths.is_empty() {
+            // 无 path 的 ApprovalResolved：worker+session 维度粗收
+            let session = session_id.to_string();
+            bus.mark_resolved_matching_as(
+                |e| {
+                    e.kind == crate::approval_bus::ApprovalKind::FileSnapshot
+                        && (e.worker_id.as_deref() == Some(worker.as_str())
+                            || (!session.is_empty() && e.session_id == session))
+                },
+                dec,
+                actor,
+                Some(decision),
+            );
+        } else {
+            // per-path 精收：移除 payload.files 含任一 path 的条目（对齐镜像路径）
+            let owned: Vec<String> = paths.to_vec();
+            bus.mark_resolved_matching_as(
+                move |e| {
+                    e.kind == crate::approval_bus::ApprovalKind::FileSnapshot
+                        && e.worker_id.as_deref() == Some(worker.as_str())
+                        && e.payload.get("files").and_then(|v| v.as_array()).is_some_and(
+                            |fs| {
+                                fs.iter().any(|f| {
+                                    f.get("path")
+                                        .and_then(|v| v.as_str())
+                                        .is_some_and(|p| owned.contains(&p.to_string()))
+                                })
+                            },
+                        )
+                },
+                dec,
+                actor,
+                Some(decision),
+            );
+        }
+    }
+
+    fn pending(&self) -> Vec<ApprovalEntry> {
+        crate::approval_bus::ApprovalBus::global()
+            .pending()
+            .into_iter()
+            .map(|e| ApprovalEntry {
+                // 对外保留 native id（req_/vapp_/appr_）——来源侧与泵按 native 寻址
+                id: e.native_request_id().unwrap_or(e.id.as_str()).to_string(),
+                kind: Self::from_bus_kind(e.kind),
+                worker_id: e.worker_id.unwrap_or_default(),
+                session_id: e.session_id,
+                payload: e.payload,
+                created_at_ms: e.raised_at_ms,
+            })
+            .collect()
     }
 }
 
@@ -264,9 +560,19 @@ pub fn try_register_from_worker_event(
             });
         }
         "ApprovalResolved" => {
-            // file-snapshot 的 ApprovalResolved 不带 requestId（带 path/decision）——
-            // 按 worker+kind 消除；剩余 pending 会由下一条 ApprovalRequest 重建
-            s.resolve_kind_for_worker(worker_id, ApprovalKind::FileSnapshot, "resolved");
+            // file-snapshot 的 ApprovalResolved 带 path/decision（不带 requestId）：
+            // per-path 精收（BusBackedSink 对齐总线规范语义；RecordingSink 退化为粗收）。
+            // 剩余 pending 由下一条 ApprovalRequest 重建（快照语义）
+            let decision = data
+                .get("decision")
+                .and_then(|v| v.as_str())
+                .unwrap_or("resolved");
+            let paths: Vec<String> = data
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(|p| vec![p.to_string()])
+                .unwrap_or_default();
+            s.resolve_file_paths(worker_id, session_id, &paths, decision);
         }
         _ => {}
     }
@@ -582,5 +888,162 @@ mod tests {
         assert_eq!(j["sessionId"], "sess_wJ");
         assert!(j.get("payload").is_some());
         assert!(j.get("createdAtMs").is_some());
+    }
+
+    // ── BusBackedSink：单一数据源转发 + 双登记路径幂等 ──
+
+    fn bus_sink_setup() -> std::sync::MutexGuard<'static, ()> {
+        let g = TEST_SINK_LOCK.lock().unwrap();
+        crate::approval_bus::ApprovalBus::global().clear();
+        g
+    }
+
+    fn bus_sink_teardown() {
+        crate::approval_bus::ApprovalBus::global().clear();
+        set_sink(Arc::new(NoopSink));
+    }
+
+    /// 双登记路径去重：sink 登记（带 worker/session）与镜像登记（无 worker）同
+    /// dedupe key → 单条目，且带 worker 信息的先到者胜出
+    #[test]
+    fn bus_backed_sink_dual_registration_dedupes() {
+        let _g = bus_sink_setup();
+        let s: Arc<dyn ApprovalSink> = Arc::new(BusBackedSink);
+        // 路径 1（pump → sink，先到）：带 worker/session
+        s.register(ApprovalEntry {
+            id: "req_d1".into(),
+            kind: ApprovalKind::UiAsk,
+            worker_id: "w1".into(),
+            session_id: "sess_w1".into(),
+            payload: serde_json::json!({"request_id": "req_d1", "title": "t", "message": "m"}),
+            created_at_ms: 1,
+        });
+        // 路径 2（EventBus 镜像，后到）：同 request_id，无 worker——dedupe 命中
+        let bus = crate::approval_bus::ApprovalBus::global();
+        let before = bus.pending();
+        assert_eq!(before.len(), 1);
+        // 直接以镜像 register 形状写 bus（dedupe ask:req_d1）
+        bus.register(
+            crate::approval_bus::ApprovalKind::UiAsk,
+            "",
+            None,
+            "Ask: t — m",
+            serde_json::json!({"nativeRequestId": "req_d1", "title": "t", "message": "m"}),
+            "ask:req_d1",
+            Some(120_000),
+        );
+        let after = bus.pending();
+        assert_eq!(after.len(), 1, "双路径同 key 去重，不产生第二条");
+        assert_eq!(after[0].worker_id.as_deref(), Some("w1"), "先到的 worker 信息保留");
+        assert_eq!(after[0].session_id, "sess_w1");
+        assert_eq!(after[0].native_request_id(), Some("req_d1"));
+        bus_sink_teardown();
+    }
+
+    /// 三来源映射：kind/summary/payload(nativeRequestId)/TTL/dedupe 语义
+    #[test]
+    fn bus_backed_sink_maps_three_kinds() {
+        let _g = bus_sink_setup();
+        let s: Arc<dyn ApprovalSink> = Arc::new(BusBackedSink);
+        s.register(ApprovalEntry {
+            id: "vapp_7".into(),
+            kind: ApprovalKind::RemoteVerb,
+            worker_id: "w2".into(),
+            session_id: "sess_w2".into(),
+            payload: serde_json::json!({"verb": "http.fetch", "args": {"url": "https://x"}}),
+            created_at_ms: 1,
+        });
+        s.register(ApprovalEntry {
+            id: "appr_9".into(),
+            kind: ApprovalKind::FileSnapshot,
+            worker_id: "w3".into(),
+            session_id: "sess_w3".into(),
+            payload: serde_json::json!({
+                "requestId": "appr_9", "total": 1,
+                "files": [{"path": "a.rs", "status": "pending", "diffStat": "+1"}]
+            }),
+            created_at_ms: 1,
+        });
+        let bus = crate::approval_bus::ApprovalBus::global();
+        let list = bus.pending();
+        assert_eq!(list.len(), 2);
+        let verb = list.iter().find(|e| e.kind == crate::approval_bus::ApprovalKind::RemoteVerb).unwrap();
+        assert_eq!(verb.native_request_id(), Some("vapp_7"));
+        assert!(verb.summary.contains("http.fetch"), "summary: {}", verb.summary);
+        assert!(verb.expires_at_ms.is_some(), "verb TTL 300s 对齐等待窗");
+        let fs = list.iter().find(|e| e.kind == crate::approval_bus::ApprovalKind::FileSnapshot).unwrap();
+        assert!(fs.summary.contains("a.rs"));
+        assert!(fs.expires_at_ms.is_none(), "file_snapshot 持续型无 TTL");
+        // file_snapshot 同文件集重发（requestId 不同）→ dedupe 签名幂等
+        s.register(ApprovalEntry {
+            id: "appr_10".into(),
+            kind: ApprovalKind::FileSnapshot,
+            worker_id: "w3".into(),
+            session_id: "sess_w3".into(),
+            payload: serde_json::json!({
+                "requestId": "appr_10", "total": 1,
+                "files": [{"path": "a.rs", "status": "pending", "diffStat": "+1"}]
+            }),
+            created_at_ms: 2,
+        });
+        assert_eq!(bus.pending().len(), 2, "同集幂等不新增");
+        bus_sink_teardown();
+    }
+
+    /// resolve（native id 寻址）+ superseded no-op + per-path 精收
+    #[test]
+    fn bus_backed_sink_resolve_semantics() {
+        let _g = bus_sink_setup();
+        let s: Arc<dyn ApprovalSink> = Arc::new(BusBackedSink);
+        s.register(ApprovalEntry {
+            id: "req_r1".into(),
+            kind: ApprovalKind::UiAsk,
+            worker_id: "w1".into(),
+            session_id: "s1".into(),
+            payload: serde_json::json!({"request_id": "req_r1", "title": "t", "message": "m"}),
+            created_at_ms: 1,
+        });
+        // native id resolve（verb_gate 超时路径用）
+        s.resolve("req_r1", "timeout");
+        assert!(crate::approval_bus::ApprovalBus::global().pending().is_empty());
+
+        // file_snapshot：superseded no-op（dedupe 兜）；per-path resolved 收口
+        s.register(ApprovalEntry {
+            id: "appr_20".into(),
+            kind: ApprovalKind::FileSnapshot,
+            worker_id: "w9".into(),
+            session_id: "s9".into(),
+            payload: serde_json::json!({
+                "requestId": "appr_20", "total": 2,
+                "files": [{"path": "x.rs", "status": "pending"}, {"path": "y.rs", "status": "pending"}]
+            }),
+            created_at_ms: 1,
+        });
+        s.resolve_kind_for_worker("w9", ApprovalKind::FileSnapshot, "superseded");
+        assert_eq!(crate::approval_bus::ApprovalBus::global().pending().len(), 1, "superseded 不清场");
+        s.resolve_file_paths("w9", "s9", &["x.rs".to_string()], "approved");
+        assert!(crate::approval_bus::ApprovalBus::global().pending().is_empty(), "per-path 收口整条");
+        bus_sink_teardown();
+    }
+
+    /// pending() 返回 native id 视图（泵/来源侧按 native 寻址）
+    #[test]
+    fn bus_backed_sink_pending_is_native_id_view() {
+        let _g = bus_sink_setup();
+        let s: Arc<dyn ApprovalSink> = Arc::new(BusBackedSink);
+        s.register(ApprovalEntry {
+            id: "req_p1".into(),
+            kind: ApprovalKind::UiAsk,
+            worker_id: "w1".into(),
+            session_id: "s1".into(),
+            payload: serde_json::json!({"request_id": "req_p1", "title": "t", "message": "m"}),
+            created_at_ms: 5,
+        });
+        let p = s.pending();
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].id, "req_p1", "native id（非 apr_ 前缀）");
+        assert_eq!(p[0].worker_id, "w1");
+        assert!(p[0].created_at_ms > 0, "created_at_ms 取总线 raisedAtMs（注册时刻）");
+        bus_sink_teardown();
     }
 }

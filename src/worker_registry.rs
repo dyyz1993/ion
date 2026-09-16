@@ -4198,18 +4198,106 @@ impl WorkerRegistry {
         }
     }
 
-    /// 统一审批应答薄调用点（🔴 M1 合并对接处，隔离策略）。
+    /// 统一审批应答（`approval_respond` RPC 与审批泵共用的唯一执行入口）。
     ///
-    /// 语义：向统一审批总线的 host 表条目投递 decision（approve/reject）。
-    /// master 现状（M1 未合并）：总线不存在 → 记日志返回 false（泵跳过，
-    /// 不发 ApprovalResolved——没有真实应答就没有 resolved 事件）。
-    /// 协调者合并 M1 后：把函数体接到 host 侧统一审批表 + 应答投递
-    /// （approval_respond RPC 的内部函数）。对接形状约定：
-    ///   1. host 表按 (kind, entry_id) 定位条目（表由 M1 approvals_pending 维护）
-    ///   2. kind=ui_ask      → ui_respond 通道（approve→"allow"，reject→"deny"）
-    ///      kind=remote_verb → verb_review {requestId: entry_id, approve: decision=="approve"}
-    ///   3. 成功 → 条目出表 + 广播 ApprovalResolved
-    ///      （data 形状见 schemas/rpc/subscribe/events/approval_resolved.json）
+    /// 单一路由矩阵（APPROVAL_BUS.md 终态）：
+    /// | kind          | host 进程 pending_ui 命中 | 否则（按条目 worker 路由）        |
+    /// |---------------|---------------------------|-----------------------------------|
+    /// | ui_ask        | oneshot 通路（=ui_respond）| send ask_respond 给来源 worker    |
+    /// | remote_verb   | —（verb 表在 host）       | verb_review(native, approve)      |
+    /// | file_snapshot | —（审批在 worker）        | send review_approve_all/reject_all|
+    ///
+    /// `request_id` 接受统一 id（`apr_`）或来源 native id（`req_`/`vapp_`/`appr_`，
+    /// 泵按事件 native id 寻址）。成功后条目出表 + 广播 ApprovalResolved（by=actor）。
+    pub async fn execute_unified_approval(
+        registry: &Arc<Mutex<Self>>,
+        request_id: &str,
+        decision: &str,
+        actor: crate::approval_bus::ApprovalActor,
+        note: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        let approve = crate::approval_sink::normalize_decision(decision)?;
+        let bus = crate::approval_bus::ApprovalBus::global();
+        let entry = bus
+            .pending()
+            .into_iter()
+            .find(|e| e.id == request_id || e.native_request_id() == Some(request_id))
+            .ok_or_else(|| {
+                format!(
+                    "approval not found: {request_id} (unknown, already resolved, or source removed)"
+                )
+            })?;
+
+        // ui_ask 优先走 host 进程 oneshot（host 级 Ask，等价 ui_respond 旧通路）
+        if entry.kind == crate::approval_bus::ApprovalKind::UiAsk {
+            let native = entry.native_request_id().unwrap_or_default().to_string();
+            let taken = crate::runtime::pending_ui()
+                .lock()
+                .unwrap()
+                .remove(&native);
+            if let Some(tx) = taken {
+                let resp = if approve { "allow" } else { "deny" }.to_string();
+                let _ = tx.send(resp);
+                // AskResolved 由 Ask 发起方（runtime::resolve_ask 收到 oneshot 后）广播，
+                // 这里只收口总线（避免重复广播）
+                let entry = bus
+                    .resolve_as(&entry.id, approval_decision_of(approve), actor, note)
+                    .map_err(|e| e.message())?;
+                return Ok(approval_response_payload(&entry, approve, &bus));
+            }
+        }
+
+        // 其余分支：respond_route 纯函数决策（worker 命令 / verb_review）
+        let sink_entry = bus_entry_to_sink(&entry);
+        let route = crate::approval_sink::respond_route(&sink_entry, decision)?;
+        match route {
+            crate::approval_sink::RespondRoute::WorkerCommand {
+                worker_id,
+                method,
+                params,
+            } => {
+                if worker_id.is_empty() {
+                    return Err(approval_worker_missing_error(&entry));
+                }
+                // ⚠️ parking_lot：send_async 自管锁（prepare/await 分离），不能持锁调
+                crate::worker_registry::WorkerRegistry::send_async(
+                    registry, &worker_id, method, params,
+                )
+                .await?;
+            }
+            crate::approval_sink::RespondRoute::VerbReview {
+                request_id: verb_id,
+                approve: verb_approve,
+            } => {
+                // 直取 verb 表（不走 verb_review：其内置 sink().resolve 会先以
+                // by=user 收口总线，泵路径的 by=pump 语义会被吞掉）
+                let req = verb_approvals_global().lock().unwrap().remove(&verb_id);
+                match req {
+                    Some(mut r) => {
+                        if let Some(tx) = r.tx.take() {
+                            let _ = tx.send(verb_approve);
+                        }
+                    }
+                    None => {
+                        return Err(format!(
+                            "verb approval not found: {verb_id} (already resolved?)"
+                        ));
+                    }
+                }
+            }
+        }
+        let entry = bus
+            .resolve_as(&entry.id, approval_decision_of(approve), actor, note)
+            .map_err(|e| e.message())?;
+        Ok(approval_response_payload(&entry, approve, &bus))
+    }
+
+    /// 统一审批应答薄调用点（审批泵自动放行路径）。
+    ///
+    /// 语义：按 (kind, native entry_id) 经 `execute_unified_approval` 投递决定。
+    /// 已知竞态：泵在 worker reader loop 里先于 serve pump 的总线登记 spawn——
+    /// 首投 "approval not found" 时短退避重试（登记在同一批 stdout 事件里，
+    /// 毫秒级完成）。成功 → 条目出表 + ApprovalResolved(by=pump)。
     #[allow(clippy::too_many_arguments)]
     async fn auto_respond(
         registry: &Arc<Mutex<Self>>,
@@ -4220,15 +4308,43 @@ impl WorkerRegistry {
         decision: &str,
         reason: &str,
     ) -> bool {
-        // TODO(M1-merge): 接统一审批总线 host 表应答（approval_respond 内部函数）。
-        let _ = (registry, session_id, decision, reason);
-        tracing::info!(
-            "[approval-pump] auto_respond: unified approval bus not available yet \
-             (M1 pending); skip {} entry '{}' for worker {}",
-            kind.as_str(),
-            entry_id,
-            worker_id
-        );
+        const RETRIES: usize = 3;
+        for attempt in 0..RETRIES {
+            match Self::execute_unified_approval(
+                registry,
+                entry_id,
+                decision,
+                crate::approval_bus::ApprovalActor::Pump,
+                Some(reason),
+            )
+            .await
+            {
+                Ok(_) => {
+                    tracing::info!(
+                        "[approval-pump] auto-responded {} entry '{}' for worker {} \
+                         (reason: {reason})",
+                        kind.as_str(),
+                        entry_id,
+                        worker_id
+                    );
+                    let _ = session_id;
+                    return true;
+                }
+                Err(e) if e.starts_with("approval not found") && attempt + 1 < RETRIES => {
+                    // serve pump 总线登记竞态：稍候重试
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "[approval-pump] auto_respond failed for {} entry '{}' (worker {}): {e}",
+                        kind.as_str(),
+                        entry_id,
+                        worker_id
+                    );
+                    return false;
+                }
+            }
+        }
         false
     }
 
@@ -4248,6 +4364,22 @@ impl WorkerRegistry {
             Ok(resp) => {
                 let resolved = resp.get("data").cloned().unwrap_or_else(|| resp.clone());
                 tracing::info!("[sandbox-pump] auto-approved pending files for {worker_id}");
+                // 统一总线同步收口（by=pump）：不等 per-path ApprovalResolved 回流
+                // （那条路会按 user 归因收口——泵放行的决定必须记 pump）
+                {
+                    let wid = worker_id.to_string();
+                    let native = entry_id.to_string();
+                    crate::approval_bus::ApprovalBus::global().mark_resolved_matching_as(
+                        |e| {
+                            e.kind == crate::approval_bus::ApprovalKind::FileSnapshot
+                                && (e.native_request_id() == Some(native.as_str())
+                                    || e.worker_id.as_deref() == Some(wid.as_str()))
+                        },
+                        crate::approval_bus::ApprovalDecision::Approve,
+                        crate::approval_bus::ApprovalActor::Pump,
+                        Some("approval_policy auto_approve (pump)"),
+                    );
+                }
                 let ev = serde_json::json!({
                     "workerId": worker_id,
                     "sessionId": session_id,
@@ -9244,6 +9376,256 @@ mod tests {
         );
         crate::approval_sink::set_sink(std::sync::Arc::new(crate::approval_sink::NoopSink));
     }
+
+    // ── 统一审批应答（execute_unified_approval）：单一路由矩阵（lib 级）──────
+    // RPC `approval_respond` 与审批泵（auto_respond）共用此入口；测试直接构造
+    // 总线条目 + 真实 host 侧全局表（pending_ui / verb_approvals）。
+
+    fn unified_setup() -> std::sync::MutexGuard<'static, ()> {
+        let g = crate::approval_sink::TEST_SINK_LOCK.lock().unwrap();
+        crate::approval_bus::ApprovalBus::global().clear();
+        g
+    }
+
+    fn unified_teardown() {
+        crate::approval_bus::ApprovalBus::global().clear();
+        crate::runtime::pending_ui().lock().unwrap().clear();
+    }
+
+    fn unified_registry() -> std::sync::Arc<parking_lot::Mutex<WorkerRegistry>> {
+        std::sync::Arc::new(parking_lot::Mutex::new(WorkerRegistry::new()))
+    }
+
+    #[tokio::test]
+    async fn unified_ui_ask_host_oneshot_closes_loop() {
+        let _g = unified_setup();
+        let registry = unified_registry();
+        let bus = crate::approval_bus::ApprovalBus::global();
+        bus.register(
+            crate::approval_bus::ApprovalKind::UiAsk,
+            "sess_e1",
+            None,
+            "Ask: t — m",
+            serde_json::json!({"nativeRequestId": "req_e1", "title": "t", "message": "m"}),
+            "ask:req_e1",
+            None,
+        );
+        let (tx, mut rx) = tokio::sync::oneshot::channel::<String>();
+        crate::runtime::pending_ui()
+            .lock()
+            .unwrap()
+            .insert("req_e1".to_string(), tx);
+        // 用 native id 寻址（泵路径同款）；apr_ id 在另一 case 覆盖
+        let out = WorkerRegistry::execute_unified_approval(
+            &registry,
+            "req_e1",
+            "approve",
+            crate::approval_bus::ApprovalActor::User,
+            Some("ci"),
+        )
+        .await
+        .expect("ui_ask approve ok");
+        assert_eq!(out["kind"], "ui_ask");
+        assert_eq!(out["decision"], "approve");
+        assert_eq!(out["remaining"], 0);
+        assert!(out["id"].as_str().unwrap().starts_with("apr_"));
+        assert_eq!(rx.try_recv().unwrap(), "allow", "oneshot 收到 allow（=ui_respond）");
+        assert!(bus.pending().is_empty(), "条目出表");
+
+        // reject → deny
+        bus.register(
+            crate::approval_bus::ApprovalKind::UiAsk,
+            "sess_e1",
+            None,
+            "Ask: t",
+            serde_json::json!({"nativeRequestId": "req_e2"}),
+            "ask:req_e2",
+            None,
+        );
+        let (tx2, mut rx2) = tokio::sync::oneshot::channel::<String>();
+        crate::runtime::pending_ui()
+            .lock()
+            .unwrap()
+            .insert("req_e2".to_string(), tx2);
+        let apr_id = bus.pending()[0].id.clone();
+        let out2 = WorkerRegistry::execute_unified_approval(
+            &registry,
+            &apr_id,
+            "reject",
+            crate::approval_bus::ApprovalActor::User,
+            None,
+        )
+        .await
+        .expect("ui_ask reject ok");
+        assert_eq!(out2["decision"], "reject");
+        assert_eq!(rx2.try_recv().unwrap(), "deny");
+        assert!(bus.pending().is_empty());
+        unified_teardown();
+    }
+
+    #[tokio::test]
+    async fn unified_ui_ask_missing_sender_and_worker_errors() {
+        let _g = unified_setup();
+        let registry = unified_registry();
+        let bus = crate::approval_bus::ApprovalBus::global();
+        bus.register(
+            crate::approval_bus::ApprovalKind::UiAsk,
+            "s",
+            None,
+            "Ask: t",
+            serde_json::json!({"nativeRequestId": "req_gone"}),
+            "ask:req_gone",
+            None,
+        );
+        // 不放 oneshot（模拟已过期/被取走），且条目无 worker → 可诊断错误
+        let err = WorkerRegistry::execute_unified_approval(
+            &registry,
+            "req_gone",
+            "approve",
+            crate::approval_bus::ApprovalActor::User,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("ui ask request not found or already expired"), "{err}");
+        assert_eq!(bus.pending().len(), 1, "失败不应答 → 条目保留");
+        unified_teardown();
+    }
+
+    #[tokio::test]
+    async fn unified_remote_verb_via_real_table() {
+        let _g = unified_setup();
+        let registry = unified_registry();
+        let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+        verb_approvals_global().lock().unwrap().insert(
+            "vapp_e9".into(),
+            VerbApprovalReq {
+                worker_session: "sess_e9".into(),
+                project_path: "/tmp".into(),
+                grants: crate::config::RemoteWorkerGrants::default(),
+                verb: "fs.read".into(),
+                args: serde_json::json!({"path": "/tmp/a"}),
+                tx: Some(tx),
+                created_at: 1,
+            },
+        );
+        crate::approval_bus::ApprovalBus::global().register(
+            crate::approval_bus::ApprovalKind::RemoteVerb,
+            "sess_e9",
+            Some("wkr_e9"),
+            "host_call fs.read: /tmp/a",
+            serde_json::json!({
+                "nativeRequestId": "vapp_e9",
+                "verb": "fs.read",
+                "args": {"path": "/tmp/a"}
+            }),
+            "verb:vapp_e9",
+            None,
+        );
+        // 泵路径（by=pump）+ native id 寻址
+        let out = WorkerRegistry::execute_unified_approval(
+            &registry,
+            "vapp_e9",
+            "approve",
+            crate::approval_bus::ApprovalActor::Pump,
+            Some("approval_policy auto (pump)"),
+        )
+        .await
+        .expect("verb approve ok");
+        assert_eq!(out["kind"], "remote_verb");
+        assert!(rx.await.unwrap_or(false), "决定投递给等待中的 verb 任务");
+        assert!(crate::approval_bus::ApprovalBus::global().pending().is_empty());
+        // 已收口：二次应答 → not found
+        let err = WorkerRegistry::execute_unified_approval(
+            &registry,
+            "vapp_e9",
+            "approve",
+            crate::approval_bus::ApprovalActor::User,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("approval not found"), "{err}");
+        // verb 表底层已失效 → 新条目应答报 verb not found
+        crate::approval_bus::ApprovalBus::global().register(
+            crate::approval_bus::ApprovalKind::RemoteVerb,
+            "sess_e9",
+            None,
+            "host_call fs.read",
+            serde_json::json!({"nativeRequestId": "vapp_e10", "verb": "fs.read"}),
+            "verb:vapp_e10",
+            None,
+        );
+        let err2 = WorkerRegistry::execute_unified_approval(
+            &registry,
+            "vapp_e10",
+            "approve",
+            crate::approval_bus::ApprovalActor::User,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(err2.contains("verb approval not found"), "{err2}");
+        unified_teardown();
+    }
+
+    #[tokio::test]
+    async fn unified_file_snapshot_without_worker_errors_with_guidance() {
+        let _g = unified_setup();
+        let registry = unified_registry();
+        let bus = crate::approval_bus::ApprovalBus::global();
+        bus.register(
+            crate::approval_bus::ApprovalKind::FileSnapshot,
+            "",
+            None,
+            "1 file(s) pending review: x.rs",
+            serde_json::json!({
+                "nativeRequestId": "appr_e20", "total": 1,
+                "files": [{"path": "x.rs", "status": "pending"}]
+            }),
+            "fs:x.rs:pending",
+            None,
+        );
+        let err = WorkerRegistry::execute_unified_approval(
+            &registry,
+            "appr_e20",
+            "approve",
+            crate::approval_bus::ApprovalActor::User,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("review_approve"), "指引旧通路: {err}");
+        assert_eq!(bus.pending().len(), 1, "失败保留条目");
+        unified_teardown();
+    }
+
+    #[tokio::test]
+    async fn unified_unknown_id_and_invalid_decision() {
+        let _g = unified_setup();
+        let registry = unified_registry();
+        let err = WorkerRegistry::execute_unified_approval(
+            &registry,
+            "apr_nope",
+            "approve",
+            crate::approval_bus::ApprovalActor::User,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("approval not found: apr_nope"), "{err}");
+        let err2 = WorkerRegistry::execute_unified_approval(
+            &registry,
+            "apr_x",
+            "banana",
+            crate::approval_bus::ApprovalActor::User,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(err2.starts_with("invalid decision"), "{err2}");
+        unified_teardown();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -9493,6 +9875,71 @@ fn verb_approvals_global()
         std::sync::Mutex<std::collections::HashMap<String, VerbApprovalReq>>,
     > = std::sync::OnceLock::new();
     V.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+// ---------------------------------------------------------------------------
+// 统一审批应答（execute_unified_approval）的内部 helpers
+// ---------------------------------------------------------------------------
+
+fn approval_decision_of(approve: bool) -> crate::approval_bus::ApprovalDecision {
+    if approve {
+        crate::approval_bus::ApprovalDecision::Approve
+    } else {
+        crate::approval_bus::ApprovalDecision::Reject
+    }
+}
+
+/// approval_respond 成功响应载荷（对齐 schemas/rpc/subscribe/approval_respond.json
+/// 的 responseSuccess：{id, kind, decision, remaining}，additionalProperties=false）
+fn approval_response_payload(
+    entry: &crate::approval_bus::ApprovalEntry,
+    approve: bool,
+    bus: &crate::approval_bus::ApprovalBus,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": entry.id,
+        "kind": entry.kind.as_str(),
+        "decision": approval_decision_of(approve).as_str(),
+        "remaining": bus.pending().len(),
+    })
+}
+
+/// 总线条目 → sink 条目（respond_route 纯函数决策的输入形状）
+fn bus_entry_to_sink(entry: &crate::approval_bus::ApprovalEntry) -> crate::approval_sink::ApprovalEntry {
+    crate::approval_sink::ApprovalEntry {
+        id: entry
+            .native_request_id()
+            .unwrap_or(entry.id.as_str())
+            .to_string(),
+        kind: match entry.kind {
+            crate::approval_bus::ApprovalKind::UiAsk => crate::approval_sink::ApprovalKind::UiAsk,
+            crate::approval_bus::ApprovalKind::RemoteVerb => {
+                crate::approval_sink::ApprovalKind::RemoteVerb
+            }
+            crate::approval_bus::ApprovalKind::FileSnapshot => {
+                crate::approval_sink::ApprovalKind::FileSnapshot
+            }
+        },
+        worker_id: entry.worker_id.clone().unwrap_or_default(),
+        session_id: entry.session_id.clone(),
+        payload: entry.payload.clone(),
+        created_at_ms: entry.raised_at_ms,
+    }
+}
+
+/// 条目无 worker 时的可诊断错误（按 kind 给指引）
+fn approval_worker_missing_error(entry: &crate::approval_bus::ApprovalEntry) -> String {
+    match entry.kind {
+        crate::approval_bus::ApprovalKind::FileSnapshot => format!(
+            "file_snapshot approval has no live worker (session {:?}); resolve via \
+             review_approve / review_reject RPC on the session",
+            entry.session_id
+        ),
+        _ => format!(
+            "ui ask request not found or already expired: {}",
+            entry.native_request_id().unwrap_or_default()
+        ),
+    }
 }
 
 /// 审批 RPC 后端：approve/reject 一条 pending verb 请求。返回 false = id 不存在。
