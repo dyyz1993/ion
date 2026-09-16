@@ -197,8 +197,19 @@ pub(crate) fn parse_keyscan_line(line: &str) -> Option<(String, String, String)>
 /// 把 key 材料改写成以 `hostname` 为 host 字段的 known_hosts 行。
 /// keyscan 不读 ~/.ssh/config：别名配置下 ssh 按**命令行原样主机名**匹配
 /// known_hosts，所以条目 host 字段必须重写为配置里的 hostname。
-pub(crate) fn known_hosts_line(hostname: &str, keytype: &str, key_b64: &str) -> String {
-    format!("{hostname} {keytype} {key_b64}")
+/// 非默认端口：OpenSSH 按 `[hostname]:port` 形态匹配（ssh(1) FILES 约定），
+/// 裸 hostname 条目对 `ssh -p <port>` 不可见 → pin 形同虚设。端口 22/未配
+/// 置写裸 hostname（与 OpenSSH 默认匹配一致）。
+pub(crate) fn known_hosts_line(
+    hostname: &str,
+    keytype: &str,
+    key_b64: &str,
+    port: Option<u16>,
+) -> String {
+    match port {
+        Some(p) if p != 22 => format!("[{hostname}]:{p} {keytype} {key_b64}"),
+        _ => format!("{hostname} {keytype} {key_b64}"),
+    }
 }
 
 /// 从 keyscan 输出行中挑出指纹匹配的行并写入临时 known_hosts（0600）。
@@ -207,6 +218,7 @@ pub(crate) fn known_hosts_line(hostname: &str, keytype: &str, key_b64: &str) -> 
 pub(crate) fn write_pinned_known_hosts(
     dest_key: &str,
     hostname: &str,
+    port: Option<u16>,
     keyscan_lines: &[&str],
     expected_fp: &str,
 ) -> Result<(std::path::PathBuf, String), String> {
@@ -220,7 +232,7 @@ pub(crate) fn write_pinned_known_hosts(
         if let Some(fp) = compute_key_fingerprint(&key_b64)
             && fp == expected_fp
         {
-            matched.push(known_hosts_line(hostname, &keytype, &key_b64));
+            matched.push(known_hosts_line(hostname, &keytype, &key_b64, port));
             matched_fp = fp;
         }
     }
@@ -349,7 +361,7 @@ pub(crate) async fn resolve_host_key_policy(
                 }
             }
             let lines = ssh_keyscan(hostname, port).await?;
-            let (path, got_fp) = write_pinned_known_hosts(dest_key, hostname, &lines.iter().map(String::as_str).collect::<Vec<_>>(), fp)?;
+            let (path, got_fp) = write_pinned_known_hosts(dest_key, hostname, port, &lines.iter().map(String::as_str).collect::<Vec<_>>(), fp)?;
             pin_cache().lock().insert(dest_key.to_string(), path.clone());
             tracing::info!("[ssh-tofu] host key pinned: {dest_key} -> {}", path.display());
             broadcast_host_event_raw(
@@ -1397,12 +1409,20 @@ impl WorkerRegistry {
             // 远程执行端：ssh <dest> 'cd …; export …; exec ion --mode rpc …'
             // stdio 管道语义与本地完全一致 → 注册/事件泵/死亡检测零改动
             // host key 策略（C3 TOFU 加固）：pin 失败/指纹不匹配 → 拒绝 spawn
+            // dest_key 带端口限定：同 hostname 不同 port 的两个 remote worker
+            // 不得共用 pin 缓存/文件（known_hosts 条目按 [host]:port 匹配）
+            let dest_key = match host_cfg.port {
+                Some(p) if p != 22 => {
+                    format!("{}:{}", host_cfg.hostname.trim(), p)
+                }
+                _ => host_cfg.hostname.trim().to_string(),
+            };
             let key_policy = resolve_host_key_policy(
-                host_cfg.hostname.trim(),
+                &dest_key,
                 host_cfg.hostname.trim(),
                 host_cfg.port,
                 host_cfg.host_key_fingerprint.as_deref(),
-                &format!("worker:{}", host_cfg.hostname.trim()),
+                &format!("worker:{dest_key}"),
             )
             .await?;
             let argv = build_remote_worker_argv(host_cfg, &cmd_args, &child_envs, &key_policy);
@@ -6788,8 +6808,24 @@ mod tests {
     fn test_known_hosts_line_rewrites_host_field() {
         // keyscan 不读 ssh config：条目 host 字段必须重写为命令行主机名
         assert_eq!(
-            known_hosts_line("win38", "ssh-ed25519", TEST_KEY_B64),
+            known_hosts_line("win38", "ssh-ed25519", TEST_KEY_B64, None),
             format!("win38 ssh-ed25519 {TEST_KEY_B64}")
+        );
+        // 端口 22 = OpenSSH 默认 → 裸 hostname
+        assert_eq!(
+            known_hosts_line("win38", "ssh-ed25519", TEST_KEY_B64, Some(22)),
+            format!("win38 ssh-ed25519 {TEST_KEY_B64}")
+        );
+    }
+
+    #[test]
+    fn test_known_hosts_line_wraps_non_default_port() {
+        // OpenSSH 对非默认端口按 `[host]:port` 匹配 known_hosts（ssh(1) FILES）；
+        // 裸 hostname 条目对 `ssh -p 2222` 不可见 → pin 形同虚设。
+        // 本断言形态经 ssh-keygen -F "[host]:port" 实测验证。
+        assert_eq!(
+            known_hosts_line("10.0.0.8", "ssh-ed25519", TEST_KEY_B64, Some(2222)),
+            format!("[10.0.0.8]:2222 ssh-ed25519 {TEST_KEY_B64}")
         );
     }
 
@@ -6803,7 +6839,7 @@ mod tests {
             "# comment".to_string(),
         ];
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
-        let (path, fp) = write_pinned_known_hosts("t-filter", "win38", &refs, TEST_FP)
+        let (path, fp) = write_pinned_known_hosts("t-filter", "win38", None, &refs, TEST_FP)
             .expect("pin should write");
         assert_eq!(fp, TEST_FP);
         let content = std::fs::read_to_string(&path).unwrap();
@@ -6816,19 +6852,37 @@ mod tests {
     }
 
     #[test]
+    fn test_write_pinned_known_hosts_non_default_port_entry() {
+        // 非 22 端口：条目 host 字段必须是 [host]:port 形态（ssh -p 匹配约定）
+        let lines = vec![format!("realhost ssh-ed25519 {TEST_KEY_B64}")];
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let (path, fp) =
+            write_pinned_known_hosts("t-port2222", "10.0.0.8", Some(2222), &refs, TEST_FP)
+                .expect("pin should write");
+        assert_eq!(fp, TEST_FP);
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            content.trim(),
+            format!("[10.0.0.8]:2222 ssh-ed25519 {TEST_KEY_B64}"),
+            "非默认端口条目必须是 [host]:port 形态"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn test_write_pinned_known_hosts_rejects_mismatch() {
         // 没有任何 key 匹配配置指纹 → 拒绝（MITM/换机防线）
         let other_key = "AAAAC3NzaC1lZDI1NTE5AAAAIHZzQ0h6RVZiY0ZqUXJlUXZmb29iYXIgYmF6IGNhbA";
         let lines = vec![format!("realhost ssh-ed25519 {other_key}")];
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
         let err =
-            write_pinned_known_hosts("t-mismatch", "win38", &refs, TEST_FP).unwrap_err();
+            write_pinned_known_hosts("t-mismatch", "win38", None, &refs, TEST_FP).unwrap_err();
         assert!(err.contains("指纹不匹配"), "err = {err}");
         // 指纹格式本身非法 → 拒绝（fail-closed，不退化 TOFU）
         let lines_ok = vec![format!("realhost ssh-ed25519 {TEST_KEY_B64}")];
         let refs_ok: Vec<&str> = lines_ok.iter().map(String::as_str).collect();
         assert!(
-            write_pinned_known_hosts("t-badfp", "win38", &refs_ok, "SHA256:bad").is_err(),
+            write_pinned_known_hosts("t-badfp", "win38", None, &refs_ok, "SHA256:bad").is_err(),
             "非法指纹格式必须被拒"
         );
     }
