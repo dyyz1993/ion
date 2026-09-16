@@ -289,6 +289,7 @@ fn k4_dead_record(sid: &str, cwd: &str) -> WorkerRecord {
         model: "faux-test".into(),
         agent: "build".into(),
         status: WorkerStatus::Dead,
+        approval_policy: None,
         channels: vec![],
         parent: None,
         children: vec![],
