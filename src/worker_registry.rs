@@ -4710,10 +4710,23 @@ impl WorkerRegistry {
                                 }),
                                 Some(&sid),
                             );
+                            // M2 来源 2：同步登记进统一审批总线（kind=remote_verb）。
+                            // 旧 verb_pending/verb_review API 语义不变——总线只是多登记一份，
+                            // approval_respond 路由到 VerbReview（worker_registry::verb_review）。
+                            crate::approval_sink::sink().register(
+                                crate::approval_sink::verb_entry(
+                                    &req_id,
+                                    &sid,
+                                    &from_worker,
+                                    verb,
+                                    &args,
+                                ),
+                            );
                             let reg_arc = registry_arc.clone();
                             let wid = from_worker.clone();
                             let verb_o = verb.to_string();
                             let args_o = args.clone();
+                            let req_id_o = req_id.clone();
                             tokio::spawn(async move {
                                 let approved = match tokio::time::timeout(
                                     std::time::Duration::from_secs(300),
@@ -4722,7 +4735,14 @@ impl WorkerRegistry {
                                 .await
                                 {
                                     Ok(Ok(v)) => v,
-                                    _ => false, // 超时/通道关闭 = 拒绝
+                                    _ => {
+                                        // 超时/通道关闭 = 拒绝——同步消除总线条目
+                                        crate::approval_sink::sink().resolve(
+                                            &req_id_o,
+                                            "timeout",
+                                        );
+                                        false
+                                    }
                                 };
                                 let (ok2, data_or_err2) = if approved {
                                     match verb_o.as_str() {
@@ -9171,6 +9191,11 @@ pub fn verb_review(request_id: &str, approve: bool) -> bool {
     let Some(mut req) = verb_approvals_global().lock().unwrap().remove(request_id) else {
         return false;
     };
+    // M2 来源 2：应答同步消除统一审批总线条目（旧 API 语义不变）
+    crate::approval_sink::sink().resolve(
+        request_id,
+        if approve { "approved" } else { "rejected" },
+    );
     if let Some(tx) = req.tx.take() {
         let _ = tx.send(approve);
     }

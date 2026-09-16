@@ -156,6 +156,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     let initial_agent = initial_agent;
 
     let sid = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    // M2 来源 1：标记 worker RPC 模式——SecuredRuntime::resolve_ask 的 Ask 事件
+    // 经 stdout 上报 host（host 登记统一审批表，approval_respond 经 ask_respond 回流）
+    crate::runtime::set_worker_rpc_mode(true);
     // M3 会话回流：镜像归属必须在任何 session I/O（ensure_session_header 等）之前注册，
     // 否则首个 header 镜像带空 sid 出去，Manager 兜底落错文件名。
     crate::session_jsonl::set_mirror_session(&sid);
@@ -2272,6 +2275,13 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                                                                     "review_pending" => {
                                                                         let result = review_pending_data(approval_mgr.as_deref());
                                                                         output_response(&bg_id, "review_pending", &result);
+                                                                    }
+                                                                    // M2 来源 1：ask_respond 必须在 agent.run 期间可达——
+                                                                    // Ask 恰恰发生在工具执行中（run 未返回）；不在这里放行，
+                                                                    // approval_respond 永远打不进正在等待的 resolve_ask。
+                                                                    // 只碰 runtime::pending_ui（全局表），不碰 agent。
+                                                                    "ask_respond" => {
+                                                                        handle_ask_respond(&bg_id, &bg_params);
                                                                     }
                                                                     // 单文件 diff（与 review_pending 同源，复用其缓存）
                                                                     "review_file_diff" => {
@@ -5005,6 +5015,10 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     );
                 }
             }
+            // ── Ask 应答回流（M2 来源 1）──
+            "ask_respond" => {
+                handle_ask_respond(&id, &params);
+            }
             // ── 审批 RPC（review_pending / approve / reject / approve_all / reject_all / approvals）──
             "review_pending" => {
                 if let Some(ref mgr) = approval_mgr {
@@ -7186,6 +7200,58 @@ fn output_response(id: &str, command: &str, data: &serde_json::Value) {
 fn output_error_response(id: &str, command: &str, error: &str) {
     output(&ion_protocol::worker_response::error(id, command, error));
     emit_rpc_response_event(id, command, false, Some(error));
+}
+
+/// `ask_respond` 命令的统一处理（M2 来源 1；空闲主循环与 agent.run 期间的
+/// bg 通道共用——Ask 恰恰发生在 run 中，只有空闲臂时 approval 永远打不进去）。
+///
+/// 从 runtime::pending_ui 取走 oneshot sender，把 allow/deny 递给正在
+/// resolve_ask 等待的工具执行；错误语义对齐 host ui_respond
+/// （"request not found or already expired"）。
+fn handle_ask_respond(id: &str, params: &serde_json::Value) {
+    let request_id = params
+        .get("request_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let response = params
+        .get("response")
+        .and_then(|v| v.as_str())
+        .unwrap_or("deny")
+        .to_string();
+    if request_id.is_empty() {
+        output_response(
+            id,
+            "ask_respond",
+            &serde_json::json!({"error": "missing 'request_id'"}),
+        );
+        return;
+    }
+    let sender = { crate::runtime::pending_ui().lock().unwrap().remove(&request_id) };
+    match sender {
+        Some(tx) => {
+            let delivered = tx.send(response.clone()).is_ok();
+            output_response(
+                id,
+                "ask_respond",
+                &serde_json::json!({
+                    "request_id": request_id,
+                    "response": response,
+                    "delivered": delivered,
+                }),
+            );
+        }
+        None => {
+            output_response(
+                id,
+                "ask_respond",
+                &serde_json::json!({
+                    "error": "request not found or already expired",
+                    "request_id": request_id,
+                }),
+            );
+        }
+    }
 }
 
 /// abort_bash 响应 data 的唯一构造点（从主循环抽出，便于单测）。
