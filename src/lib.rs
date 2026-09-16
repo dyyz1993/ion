@@ -36,6 +36,7 @@
 
 pub mod agent;
 pub mod agent_config;
+pub mod approval_bus;
 pub mod auth;
 pub mod auto_session_title;
 pub mod backend_registry;
