@@ -138,6 +138,8 @@ async fn execute_approval_respond(
     request_id: &str,
     decision: &str,
 ) -> Result<serde_json::Value, String> {
+    // decision 校验先行（非法输入优先于 not found 报错，便于调用方区分）
+    ion::approval_sink::normalize_decision(decision)?;
     let entry = ion::approval_sink::sink()
         .pending()
         .into_iter()

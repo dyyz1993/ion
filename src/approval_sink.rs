@@ -367,6 +367,11 @@ pub fn verb_entry(
     }
 }
 
+/// 测试串行锁（仅测试构建可见）：会替换全局 sink 的测试必须先持有
+/// （防并行测试中途换掉 sink）。worker_registry 等其它模块的 sink 相关测试也用它。
+#[cfg(test)]
+pub(crate) static TEST_SINK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,6 +389,7 @@ mod tests {
 
     #[test]
     fn noop_sink_is_default_and_silent() {
+        let _g = TEST_SINK_LOCK.lock().unwrap();
         // 未安装时 sink() 返回 no-op：register/resolve 不 panic、pending 为空
         let s = sink();
         s.register(entry(ApprovalKind::UiAsk, "req_x", "w1"));
@@ -393,6 +399,7 @@ mod tests {
 
     #[test]
     fn recording_sink_register_idempotent_and_resolve() {
+        let _g = TEST_SINK_LOCK.lock().unwrap();
         set_sink(Arc::new(RecordingSink::new()));
         let s = sink();
         s.register(entry(ApprovalKind::UiAsk, "req_1", "w1"));
@@ -406,6 +413,7 @@ mod tests {
 
     #[test]
     fn recording_sink_resolve_kind_for_worker_scopes() {
+        let _g = TEST_SINK_LOCK.lock().unwrap();
         set_sink(Arc::new(RecordingSink::new()));
         let s = sink();
         s.register(entry(ApprovalKind::FileSnapshot, "appr_1", "w1"));
@@ -422,6 +430,7 @@ mod tests {
 
     #[test]
     fn try_register_ask_and_resolved() {
+        let _g = TEST_SINK_LOCK.lock().unwrap();
         set_sink(Arc::new(RecordingSink::new()));
         let s = sink();
         try_register_from_worker_event(
@@ -447,6 +456,7 @@ mod tests {
 
     #[test]
     fn try_register_file_snapshot_snapshot_replacement() {
+        let _g = TEST_SINK_LOCK.lock().unwrap();
         set_sink(Arc::new(RecordingSink::new()));
         let s = sink();
         try_register_from_worker_event(
@@ -477,6 +487,7 @@ mod tests {
 
     #[test]
     fn try_register_ignores_unrelated_events() {
+        let _g = TEST_SINK_LOCK.lock().unwrap();
         set_sink(Arc::new(RecordingSink::new()));
         let s = sink();
         try_register_from_worker_event("w1", "s1", "memory_saved", &serde_json::json!({}));
