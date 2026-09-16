@@ -23,8 +23,11 @@ use std::path::{Path, PathBuf};
 // JSONL header 行重建回索引。三条纪律：
 //   1. 只补缺不删多（删除仍归 GC，避免与 GC 竞态）
 //   2. 尊重墓碑（removed_sessions 里的 id 不重建——防幽灵复活机制不被绕过）
-//   3. header-only：只读每个文件的第一行，不全量解析（2000+ 文件时差异集
-//      通常为空，未命中索引的文件才付一次 read_line 的代价）
+//   3. 廉价统计：未命中索引的候选文件本来就要读 header，再各做一次全量
+//      FileIndex 扫描补 message/turn 统计（2000+ 文件时差异集通常为空，
+//      只对缺失的那几个付这个代价，不放大扫描成本）——否则重建条目永远
+//      顶着 0 统计，list_all_sessions 的 lazy heal（message_count==0 &&
+//      turn_count>0）也救不回（H2 遗留）
 // ---------------------------------------------------------------------------
 
 /// 逆向对账结果（可观察：serve 启动日志 / 未来可挂 get_index_health）。
@@ -40,6 +43,42 @@ pub struct ReconcileReport {
     pub unreadable: usize,
 }
 
+/// 对账候选文件的廉价统计（方案 a：只对索引缺失的文件各做一次）。
+#[derive(Default, Clone, Copy, Debug)]
+struct RebuiltStats {
+    message_count: u32,
+    turn_count: u32,
+    user_prompt_count: u32,
+}
+
+/// 从 JSONL 全量扫描派生统计。口径与 list_all_sessions 的 lazy heal 一致：
+/// - message_count = FileIndex.live_total（live 视点 + visibility 过滤后的
+///   message 条数，与 heal 用的 FileIndex 同一计算器，不是裸行数）
+/// - turn_count = user 消息条数（与 increment_turn_stats 的 user_prompts
+///   同义：turn_count 与真实用户输入一一对应），user_prompt_count 同值
+/// 读不了（IO 错误）→ 统计留 0，行为与旧版对账一致。
+fn stats_from_file(path: &Path) -> RebuiltStats {
+    let Ok(idx) = crate::file_index::FileIndex::build(path) else {
+        return RebuiltStats::default();
+    };
+    let turn_count = idx
+        .metas
+        .iter()
+        .filter(|m| {
+            m.get("type").and_then(|v| v.as_str()) == Some("message")
+                && m.get("message")
+                    .and_then(|v| v.get("role"))
+                    .and_then(|v| v.as_str())
+                    == Some("user")
+        })
+        .count() as u32;
+    RebuiltStats {
+        message_count: idx.live_total as u32,
+        turn_count,
+        user_prompt_count: turn_count,
+    }
+}
+
 /// 逆向对账：扫 `sessions_dir`（含各 cwd 子目录与根下平铺文件）的 *.jsonl，
 /// 对索引缺失的会话读 header 行重建最小 SessionMeta 并写事务落盘。
 ///
@@ -51,7 +90,7 @@ pub fn reconcile_missing(sessions_dir: &Path) -> ReconcileReport {
     let known: std::collections::HashSet<&str> =
         index.sessions.keys().map(|s| s.as_str()).collect();
 
-    let mut candidates: Vec<(crate::session_jsonl::SessionHeader, i64)> = Vec::new();
+    let mut candidates: Vec<(crate::session_jsonl::SessionHeader, i64, RebuiltStats)> = Vec::new();
     for (path, stem) in iter_jsonl_files(sessions_dir) {
         report.disk_files += 1;
         // 性能：文件名即 sid（<sid>.jsonl）且已在索引 → 连 header 都不用读。
@@ -67,7 +106,9 @@ pub fn reconcile_missing(sessions_dir: &Path) -> ReconcileReport {
                 if known.contains(h.id.as_str()) {
                     continue;
                 }
-                candidates.push((h, mtime_ms));
+                // 只对索引缺失的候选文件做一次廉价统计（见模块头注释 3）
+                let stats = stats_from_file(&path);
+                candidates.push((h, mtime_ms, stats));
             }
             None => {
                 report.unreadable += 1;
@@ -81,7 +122,7 @@ pub fn reconcile_missing(sessions_dir: &Path) -> ReconcileReport {
     }
 
     SessionIndex::write_txn(|idx| {
-        for (h, mtime_ms) in &candidates {
+        for (h, mtime_ms, stats) in &candidates {
             // 墓碑守卫：被 session_remove/GC 显式删除的 sid 不重建
             if idx.removed_sessions.contains(&h.id) {
                 report.skipped_tombstoned += 1;
@@ -91,7 +132,7 @@ pub fn reconcile_missing(sessions_dir: &Path) -> ReconcileReport {
             if idx.sessions.contains_key(&h.id) {
                 continue;
             }
-            let meta = meta_from_header(h, *mtime_ms);
+            let meta = meta_from_header(h, *mtime_ms, *stats);
             idx.sessions.insert(h.id.clone(), meta);
             report.rebuilt += 1;
         }
@@ -138,10 +179,15 @@ fn iter_jsonl_files(sessions_dir: &Path) -> Vec<(PathBuf, Option<String>)> {
     out
 }
 
-/// 从 JSONL header 行派生最小 SessionMeta。header 里没有的字段留空/default
-/// （name/branch/统计全 0）——对账只承诺"会话可见可定位"，统计类字段由
-/// 后续正常使用路径（patch_meta / list_all_sessions heal）逐步补全。
-fn meta_from_header(h: &crate::session_jsonl::SessionHeader, mtime_ms: i64) -> SessionMeta {
+/// 从 JSONL header 行 + 廉价统计派生最小 SessionMeta。header 里没有的字段
+/// 留空/default（name/branch 等）；统计字段（message/turn/user_prompt）由
+/// stats_from_file 一次补齐——对账承诺"会话可见可定位 + 统计非幽灵 0"，
+/// token 类增量统计仍由后续正常使用路径逐步累加。
+fn meta_from_header(
+    h: &crate::session_jsonl::SessionHeader,
+    mtime_ms: i64,
+    stats: RebuiltStats,
+) -> SessionMeta {
     let created = parse_iso_ms(&h.timestamp).unwrap_or(mtime_ms);
     let project_name = std::path::Path::new(&h.cwd)
         .file_name()
@@ -164,12 +210,12 @@ fn meta_from_header(h: &crate::session_jsonl::SessionHeader, mtime_ms: i64) -> S
         token_output: 0,
         token_cache_read: 0,
         token_cache_write: 0,
-        user_prompt_count: 0,
+        user_prompt_count: stats.user_prompt_count,
         llm_request_count: 0,
         total_duration_ms: 0,
         compress_count: 0,
-        message_count: 0,
-        turn_count: 0,
+        message_count: stats.message_count,
+        turn_count: stats.turn_count,
         created_at: created,
         updated_at: mtime_ms.max(created),
         error_count: 0,

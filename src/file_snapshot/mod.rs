@@ -544,6 +544,79 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// S4 回归：项目 `.ion/` 内部文件不得混进审批 pending。
+    ///
+    /// cwd 下的 `.ion/`（ION 自身配置/缓存/monitors/extensions 状态）会随扫描
+    /// 进 baseline tree；ION 或 agent 改写这些内部文件时，审批面板出现垃圾
+    /// 条目。修复两层：扫描器整目录排除 `.ion`（根因）+ compute_pending
+    /// 兜底过滤（旧 baseline tree 里可能残留升级前的 `.ion` 条目，防止它们
+    /// 以 "deleted" 姿态涌进 pending）。
+    #[tokio::test]
+    async fn pending_excludes_ion_internal_files() {
+        let _guard = crate::paths::env_test_lock();
+        let root = std::env::temp_dir().join(format!(
+            "ion_s4_ion_pending_{}_{}",
+            std::process::id(),
+            crate::session_jsonl::generate_id()
+        ));
+        let cwd = root.join("work");
+        let session_path = root.join("session.jsonl");
+        std::fs::create_dir_all(cwd.join(".ion/cache")).unwrap();
+        // 内部文件 + 正常源文件都在 baseline 之前就存在
+        std::fs::write(cwd.join(".ion/cache/state.json"), "{\"v\":1}").unwrap();
+        std::fs::write(cwd.join("app.rs"), "fn a(){}").unwrap();
+        crate::session_jsonl::set_session_file_override(Some(session_path.clone()));
+        let cwd_str = cwd.to_string_lossy().to_string();
+        crate::session_jsonl::ensure_session_header(&cwd_str, "sess_s4");
+        crate::session_jsonl::append_raw_entry(
+            &cwd_str,
+            &serde_json::json!({
+                "type":"message", "id":"msg_1", "parentId":"sess_s4",
+                "timestamp":crate::session_jsonl::timestamp_iso(),
+                "message":{"role":"assistant","content":"x"}
+            }),
+        );
+
+        let (extension, store) = FileSnapshotExtension::new_pair_with_cwd(&cwd_str);
+        let storage = crate::storage_context::StorageContext::new(&cwd_str, "test", &cwd_str);
+        let mgr = crate::file_snapshot::ApprovalManager::new(store.clone(), storage);
+
+        let start_ctx = SessionContext {
+            reason: "test".into(),
+            session_id: Some("sess_s4".into()),
+        };
+        let mut turn_ctx = TurnContext {
+            turn_index: 0,
+            messages: vec![],
+            has_tool_calls: false,
+            stop_reason: None,
+            session_id: Some("sess_s4".into()),
+            session_cwd: Some(cwd_str.clone()),
+        };
+
+        // session start 建 baseline → 两个文件都被修改 → turn_end 提交 tree
+        extension.on_session_start(&start_ctx).await.unwrap();
+        extension.on_turn_start(&mut turn_ctx).await.unwrap();
+        std::fs::write(cwd.join(".ion/cache/state.json"), "{\"v\":2}").unwrap();
+        std::fs::write(cwd.join("app.rs"), "fn b(){}").unwrap();
+        extension.on_turn_end(&turn_ctx).await.unwrap();
+
+        let pending = mgr.compute_pending();
+        assert!(
+            pending.iter().any(|p| p.path == "app.rs"),
+            "正常源文件的修改必须进 pending: {pending:?}"
+        );
+        assert!(
+            !pending
+                .iter()
+                .any(|p| p.path == ".ion" || p.path.starts_with(".ion/")),
+            ".ion/ 内部文件不得混进审批 pending: {pending:?}"
+        );
+
+        crate::session_jsonl::set_session_file_override(None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// gen_turn_id should be 15 chars: "ts_" (3) + 12 hex chars.
     #[test]
     fn gen_turn_id_length() {

@@ -112,6 +112,12 @@ fn scan_recursive(
 const DEFAULT_IGNORE: &[&str] = &[
     // VCS
     ".git",
+    // ION 自身目录（S4）：项目 `.ion/` 是配置/缓存/运行时状态（settings、
+    // monitors、extensions、classify-output 等），不是被追踪的源码面。
+    // 整目录排除，防止内部状态文件混进快照 tree / 审批 pending。
+    // （agent 对 `.ion/` 的合法写入仍受 write 工具的路径权限审批管，只是
+    // 不进 file_snapshot 的 diff/审批面板；.ion/monitors 本就 auto-approve。）
+    ".ion",
     // 语言生态产物目录
     "node_modules",
     "target",
@@ -250,6 +256,35 @@ mod tests {
         let result = scan_dir_fast(tmp.to_string_lossy().as_ref());
         assert!(result.files.contains_key("main.rs"));
         assert!(!result.files.contains_key("target/out"), "target/ 应被忽略");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn scan_excludes_ion_internal_dir() {
+        // S4 回归：项目 `.ion/` 是 ION 自身的配置/缓存/运行时状态目录
+        //（settings、monitors、extensions、classify-output 等），不属于被
+        // 追踪的源码面。整目录排除（同 .git/node_modules 先例），防止内部
+        // 状态文件混进快照 tree / 审批 pending。
+        let tmp = std::env::temp_dir().join(format!("fs_scan_ion_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join(".ion/cache")).unwrap();
+        std::fs::create_dir_all(tmp.join("src")).unwrap();
+        std::fs::write(tmp.join(".ion/cache/state.json"), "{}").unwrap();
+        std::fs::write(tmp.join(".ion/settings.json"), "{}").unwrap();
+        std::fs::write(tmp.join("src/main.rs"), "fn main(){}").unwrap();
+
+        let result = scan_dir_fast(tmp.to_string_lossy().as_ref());
+        assert!(
+            result.files.contains_key("src/main.rs"),
+            "正常源文件必须被扫到"
+        );
+        assert!(
+            !result.files.keys().any(|p| p == ".ion" || p.starts_with(".ion/")),
+            ".ion/ 内部文件不应被扫描: {:?}",
+            result.files.keys().collect::<Vec<_>>()
+        );
+        assert!(!result.truncated);
 
         std::fs::remove_dir_all(&tmp).ok();
     }
