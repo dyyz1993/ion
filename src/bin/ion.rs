@@ -501,6 +501,62 @@ fn route_approval_response(
         "decision": decision.as_str(),
         "nativeRequestId": entry.native_request_id(),
     }))
+
+
+// M2 统一审批总线：approval_respond 路由执行（合并对齐点）
+//
+// M1 的 host RPC `approval_respond` 直接调用本函数；M2 临时测试 RPC
+// `_m2_approval_respond` 也走这里。路由决策在 lib（approval_sink::respond_route）：
+// - ui_ask        → send_to_worker(ask_respond)——worker 从 runtime::pending_ui 放行
+// - remote_verb   → worker_registry::verb_review（host 进程内）
+// - file_snapshot → send_to_worker(review_approve_all / review_reject_all)
+// ---------------------------------------------------------------------------
+async fn execute_approval_respond(
+    registry: &Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>>,
+    request_id: &str,
+    decision: &str,
+) -> Result<serde_json::Value, String> {
+    // decision 校验先行（非法输入优先于 not found 报错，便于调用方区分）
+    ion::approval_sink::normalize_decision(decision)?;
+    let entry = ion::approval_sink::sink()
+        .pending()
+        .into_iter()
+        .find(|e| e.id == request_id)
+        .ok_or_else(|| format!("approval not found: {request_id}"))?;
+    let kind = entry.kind.as_str().to_string();
+    let route = ion::approval_sink::respond_route(&entry, decision)?;
+    let out = match route {
+        ion::approval_sink::RespondRoute::WorkerCommand {
+            worker_id,
+            method,
+            params,
+        } => {
+            // ⚠️ parking_lot：send_async 自管锁（prepare/await 分离），不能持锁调
+            ion::worker_registry::WorkerRegistry::send_async(
+                registry,
+                &worker_id,
+                method,
+                params,
+            )
+            .await?
+        }
+        ion::approval_sink::RespondRoute::VerbReview { request_id, approve } => {
+            if ion::worker_registry::verb_review(&request_id, approve) {
+                serde_json::json!({
+                    "requestId": request_id,
+                    "approved": approve,
+                    "via": "verb_review",
+                })
+            } else {
+                return Err(format!("verb approval not found: {request_id}"));
+            }
+        }
+    };
+    // 应答投递成功 → 消除总线条目（ui_ask 的 AskResolved 事件泵会再兜底消除，幂等）
+    ion::approval_sink::sink().resolve(request_id, decision);
+    let mut out = out;
+    out["kind"] = serde_json::json!(kind);
+    Ok(out)
 }
 
 /// per-session epoch 栅栏表（host 级全局：router 退出重建后 epoch 不回退）
@@ -6022,6 +6078,13 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
     let event_bus = Arc::new(tokio::sync::Mutex::new(
         ion::event_bus::ExtensionEventBus::new(),
     ));
+    // M2 过渡：serve 启动即装 RecordingSink 作为统一审批总线的临时实现——
+    // 三来源（worker Ask / verb / file-snapshot）登记 + `_m2_approvals_pending`
+    // 可查 + `_m2_approval_respond` 可答，J8 缺口（Ask 事件可见但 ui_respond 找不到）
+    // 在 M1 合并前即闭环。合并时 M1 的 ApprovalBus 经 set_sink 换入即可。
+    ion::approval_sink::set_sink(std::sync::Arc::new(
+        ion::approval_sink::RecordingSink::new(),
+    ));
 
     // ── 注册单例扩展（host 级，只在 serve 模式）──
     {
@@ -6776,7 +6839,20 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                             .unwrap_or("unknown");
                         let ct = ev.get("customType").and_then(|v| v.as_str()).unwrap_or("");
                         let data = ev.get("data").cloned().unwrap_or_default();
-                        // 审批类事件路由到 ui（让 subscribe --ui / 审批总线监听器收到）
+                        let ev_session = ev.get("session").and_then(|v| v.as_str());
+                        // M2 三来源接入：审批类事件（worker Ask / file-snapshot
+                        // ApprovalRequest/Resolved）转发时顺手登记进统一审批总线。
+                        // "哪些事件算审批来源"的知识收敛在 lib（NoopSink 默认零行为；
+                        // 合并时换 M1 真实现）。verb 来源不走这里（host 进程内直登）。
+                        ion::approval_sink::try_register_from_worker_event(
+                            wid,
+                            session_id,
+                            ct,
+                            &data,
+                        );
+                        let mut event =
+                            ion::event_bus::ExtensionEvent::new(extension, ct).with_data(data);
+                        // 审批类事件路由到 ui（让 subscribe --ui 也能收到）
                         let ui_custom_types = [
                             "ApprovalRequest",
                             "ApprovalResolved",
@@ -6809,6 +6885,55 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                         let inner_ev = msg.get("event").cloned().unwrap_or(msg.clone());
                         let inner_type =
                             inner_ev.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        // ── M2 三来源接入（包裹形 extension_event）──
+                        // worker 侧所有 extension_event 都是包裹形
+                        // {"type":"event","event":{"type":"extension_event",...}}——
+                        // 上面的裸形分支对 worker 事件不可达。审批类事件
+                        // （worker Ask / file-snapshot ApprovalRequest/Resolved）在这里：
+                        // ① 顺手登记进统一审批总线（知识收敛在 lib，NoopSink 默认零行为）
+                        // ② 重建 ExtensionEvent 广播到 EventBus 并路由到 ui
+                        //    （subscribe --ui / webui 收到 ⏸，对齐死分支的原始意图）
+                        // verb 来源不走这里（host 进程内 verb 注册点直登总线）。
+                        if inner_type == "extension_event" {
+                            let inner_ct = inner_ev
+                                .get("customType")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let inner_data =
+                                inner_ev.get("data").cloned().unwrap_or_default();
+                            ion::approval_sink::try_register_from_worker_event(
+                                wid,
+                                session_id,
+                                inner_ct,
+                                &inner_data,
+                            );
+                            const APPROVAL_CUSTOM_TYPES: [&str; 7] = [
+                                "ApprovalRequest",
+                                "ApprovalResolved",
+                                "ApprovalReset",
+                                "Ask",
+                                "AskResolved",
+                                "AskTimedOut",
+                                "verb_approval",
+                            ];
+                            if APPROVAL_CUSTOM_TYPES.contains(&inner_ct) {
+                                let extension = inner_ev
+                                    .get("extension")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown");
+                                let mut event = ion::event_bus::ExtensionEvent::new(
+                                    extension,
+                                    inner_ct,
+                                )
+                                .with_data(inner_data)
+                                .with_route("ui");
+                                if !session_id.is_empty() {
+                                    event = event.with_session(session_id);
+                                }
+                                let mut bus = pump_event_bus.lock().await;
+                                bus.broadcast(&event);
+                            }
+                        }
                         // 广播 worker 原始事件到全局 EventBus，让 subscribe（无参数）也能收到
                         // text_delta / agent_start / agent_end / tool_execution_* 等流式输出。
                         // 之前只 println 到 serve stdout，全局订阅收不到。对齐 pi 行为。
@@ -7464,6 +7589,39 @@ async fn handle_manager_command(
         "verb_pending" => Ok(serde_json::json!({
             "pending": ion::worker_registry::verb_pending_list()
         })),
+        // ── M2 临时测试 RPC（合并时换成 M1 正式入口，见报告）──
+        // _m2_approvals_pending：读统一审批总线当前 pending（approvals_pending 的形状预览）
+        "_m2_approvals_pending" => {
+            let pending: Vec<serde_json::Value> = ion::approval_sink::sink()
+                .pending()
+                .iter()
+                .map(|e| e.to_json())
+                .collect();
+            Ok(serde_json::json!({
+                "pending": pending,
+                "total": ion::approval_sink::sink().pending().len(),
+            }))
+        }
+        // _m2_approval_respond：approval_respond 的路由执行（params: requestId + decision）
+        "_m2_approval_respond" => {
+            let request_id = cmd
+                .get("params")
+                .and_then(|p| p.get("requestId").or_else(|| p.get("request_id")))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let decision = cmd
+                .get("params")
+                .and_then(|p| p.get("decision").or_else(|| p.get("response")))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if request_id.is_empty() {
+                Err("missing params.requestId".to_string())
+            } else {
+                execute_approval_respond(registry, &request_id, &decision).await
+            }
+        }
         // Host 级会话直读：纯磁盘读 JSONL，不拉起 worker（UI 浏览历史会话用，毫秒级）
         "get_session_messages" => host_direct_session_read(&cmd, "messages"),
         "list_session_turns" => host_direct_session_read(&cmd, "turns"),

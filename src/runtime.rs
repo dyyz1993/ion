@@ -95,6 +95,52 @@ pub fn pending_ui() -> &'static Mutex<HashMap<String, oneshot::Sender<String>>> 
 }
 
 // ---------------------------------------------------------------------------
+// worker RPC 模式标记（M2 来源 1：worker Ask 经 stdout 上报 host 统一审批表）
+//
+// worker（--mode rpc）启动时置 true；Ask 事件走 stdout JSONL（对齐
+// file_snapshot::approval::emit_public_event 的既定 worker→host 事件通道），
+// host event-pump 收到后登记进 ApprovalSink（kind=ui_ask），并把
+// approval_respond 经 `ask_respond` 命令转发回本 worker（worker_rpc.rs 处理，
+// 从 pending_ui 取 oneshot 放行）。场景 1/2（无 worker 进程）不受影响。
+// ---------------------------------------------------------------------------
+static WORKER_RPC_MODE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// 标记当前进程是 `--mode rpc` worker（run_worker_rpc 入口调用）。
+pub fn set_worker_rpc_mode(v: bool) {
+    WORKER_RPC_MODE.store(v, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 当前进程是否是 worker RPC 模式。
+pub fn is_worker_rpc_mode() -> bool {
+    WORKER_RPC_MODE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// worker 模式下把 Ask 生命周期事件发到 stdout（Manager 转发给订阅者 + 登记审批表）。
+/// 非 worker 模式静默跳过（场景 1 直跑不污染终端输出）。
+fn emit_ask_event_stdout(custom_type: &str, request_id: &str, title: &str, message: &str) {
+    if !is_worker_rpc_mode() {
+        return;
+    }
+    let msg = serde_json::json!({
+        "type": "event",
+        "event": {
+            "type": "extension_event",
+            "extension": "ui",
+            "customType": custom_type,
+            "visibility": "ui_only",
+            "data": {
+                "request_id": request_id,
+                "title": title,
+                "message": message,
+            },
+        },
+    });
+    // 与 BashExtension / file-approval 相同的 stdout JSONL 模式
+    println!("{}", serde_json::to_string(&msg).unwrap_or_default());
+}
+
+// ---------------------------------------------------------------------------
 // Runtime trait
 // ---------------------------------------------------------------------------
 
@@ -1099,8 +1145,10 @@ impl<R: Runtime> SecuredRuntime<R> {
 
     /// 处理 Ask 结果：
     /// 1. 有 UiSystem 且有 confirm_handler → 同步确认（现有路径）
-    /// 2. 有 EventBus → 异步 Ask（发 UI 事件 → 等回复 → 推 AskResolved）
-    /// 3. 都没有 → 安全优先，拒绝
+    /// 2. worker RPC 模式 → stdout 上报 host（M2 来源 1：host 登记统一审批表，
+    ///    approval_respond 经 ask_respond 命令回流放行）
+    /// 3. 有 EventBus → 异步 Ask（发 UI 事件 → 等回复 → 推 AskResolved）
+    /// 4. 都没有 → 安全优先，拒绝
     async fn resolve_ask(&self, title: &str, message: &str) -> bool {
         // 路径 1：同步确认
         if let Some(ref ui) = self.ui_system
@@ -1108,7 +1156,34 @@ impl<R: Runtime> SecuredRuntime<R> {
         {
             return ui.confirm(title, message);
         }
-        // 路径 2：异步 Ask 走 UI 通道
+        // 路径 2：worker RPC 模式 —— stdout 上报 host（J8 缺口修复主链路）
+        if is_worker_rpc_mode() {
+            let request_id = format!("req_{}", &uuid::Uuid::new_v4().to_string()[..8]);
+            let (tx, rx) = oneshot::channel();
+            pending_ui().lock().unwrap().insert(request_id.clone(), tx);
+
+            emit_ask_event_stdout("Ask", &request_id, title, message);
+
+            let timeout = std::time::Duration::from_secs(120);
+            let result = tokio::time::timeout(timeout, rx).await;
+            let (allowed, response_str) = match result {
+                Ok(Ok(resp)) => (resp == "allow", resp),
+                _ => (false, "timeout".into()),
+            };
+            // 超时清理 pending 条目（避免泄漏；respond 端 remove 已处理成功路径）
+            if response_str == "timeout" {
+                pending_ui().lock().unwrap().remove(&request_id);
+            }
+
+            let resolved_type = if response_str == "timeout" {
+                "AskTimedOut"
+            } else {
+                "AskResolved"
+            };
+            emit_ask_event_stdout(resolved_type, &request_id, title, message);
+            return allowed;
+        }
+        // 路径 3：异步 Ask 走 UI 通道
         if let Some(ref bus_arc) = self.event_bus {
             let request_id = format!("req_{}", &uuid::Uuid::new_v4().to_string()[..8]);
 
@@ -1150,7 +1225,7 @@ impl<R: Runtime> SecuredRuntime<R> {
 
             return allowed;
         }
-        // 路径 3：都没有 → 拒绝
+        // 路径 4：都没有 → 拒绝
         false
     }
 }

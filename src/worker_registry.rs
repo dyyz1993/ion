@@ -4710,10 +4710,23 @@ impl WorkerRegistry {
                                 }),
                                 Some(&sid),
                             );
+                            // M2 来源 2：同步登记进统一审批总线（kind=remote_verb）。
+                            // 旧 verb_pending/verb_review API 语义不变——总线只是多登记一份，
+                            // approval_respond 路由到 VerbReview（worker_registry::verb_review）。
+                            crate::approval_sink::sink().register(
+                                crate::approval_sink::verb_entry(
+                                    &req_id,
+                                    &sid,
+                                    &from_worker,
+                                    verb,
+                                    &args,
+                                ),
+                            );
                             let reg_arc = registry_arc.clone();
                             let wid = from_worker.clone();
                             let verb_o = verb.to_string();
                             let args_o = args.clone();
+                            let req_id_o = req_id.clone();
                             tokio::spawn(async move {
                                 let approved = match tokio::time::timeout(
                                     std::time::Duration::from_secs(300),
@@ -4722,7 +4735,14 @@ impl WorkerRegistry {
                                 .await
                                 {
                                     Ok(Ok(v)) => v,
-                                    _ => false, // 超时/通道关闭 = 拒绝
+                                    _ => {
+                                        // 超时/通道关闭 = 拒绝——同步消除总线条目
+                                        crate::approval_sink::sink().resolve(
+                                            &req_id_o,
+                                            "timeout",
+                                        );
+                                        false
+                                    }
                                 };
                                 let (ok2, data_or_err2) = if approved {
                                     match verb_o.as_str() {
@@ -8915,6 +8935,95 @@ mod tests {
             g.chars().count()
         );
     }
+
+    // ── M2 来源 2：verb 审批 ↔ 统一审批总线接线 ──────────────────────────────
+    // 完整链路（register → verb_review → resolve）的进程内验证。真实 verb 触发
+    // 需要 ssh 远端（环境铁律禁止），SSH 前的注册/应答接线由此覆盖。
+
+    /// verb_review 应答后统一总线条目必须消除（RecordingSink 观察）。
+    #[test]
+    fn test_m2_verb_review_resolves_sink_entry() {
+        let _sink_g = crate::approval_sink::TEST_SINK_LOCK.lock().unwrap();
+        crate::approval_sink::set_sink(std::sync::Arc::new(
+            crate::approval_sink::RecordingSink::new(),
+        ));
+        let req_id = "vapp_m2t1".to_string();
+        let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+        // 与 process_manager_command 注册点同构：全局表 + 总线双登记
+        verb_approvals_global().lock().unwrap().insert(
+            req_id.clone(),
+            VerbApprovalReq {
+                worker_session: "sess_m2t1".into(),
+                project_path: "/tmp/m2t1".into(),
+                grants: crate::config::RemoteWorkerGrants::default(),
+                verb: "fs.read".into(),
+                args: serde_json::json!({"path": "/tmp/m2t1/a.txt"}),
+                tx: Some(tx),
+                created_at: 1,
+            },
+        );
+        crate::approval_sink::sink().register(crate::approval_sink::verb_entry(
+            &req_id,
+            "sess_m2t1",
+            "wkr_m2t1",
+            "fs.read",
+            &serde_json::json!({"path": "/tmp/m2t1/a.txt"}),
+        ));
+        let pending = crate::approval_sink::sink().pending();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].kind, crate::approval_sink::ApprovalKind::RemoteVerb);
+
+        // 应答：旧 API 语义（true = 移除成功 + tx 投递）+ 总线条目消除
+        assert!(verb_review(&req_id, true));
+        assert!(
+            rx.blocking_recv().unwrap_or(false),
+            "approve decision must be delivered to the waiting verb task"
+        );
+        assert!(
+            crate::approval_sink::sink().pending().is_empty(),
+            "verb_review must resolve the unified bus entry"
+        );
+        // 拒绝路径 + 未知 id
+        assert!(!verb_review(&req_id, false), "second review of same id = false");
+        crate::approval_sink::set_sink(std::sync::Arc::new(crate::approval_sink::NoopSink));
+    }
+
+    /// verb_pending_list 与总线并存：旧 API 输出不受接线影响。
+    #[test]
+    fn test_m2_verb_pending_list_unchanged_with_sink() {
+        let _sink_g = crate::approval_sink::TEST_SINK_LOCK.lock().unwrap();
+        crate::approval_sink::set_sink(std::sync::Arc::new(
+            crate::approval_sink::RecordingSink::new(),
+        ));
+        verb_approvals_global()
+            .lock()
+            .unwrap()
+            .insert("vapp_m2t2".into(), VerbApprovalReq {
+                worker_session: "sess_m2t2".into(),
+                project_path: "/tmp/m2t2".into(),
+                grants: crate::config::RemoteWorkerGrants::default(),
+                verb: "http.fetch".into(),
+                args: serde_json::json!({"url": "https://example.com"}),
+                tx: None,
+                created_at: 42,
+            });
+        let list = verb_pending_list();
+        // 进程级全局表可能残留并行测试条目——按本测试自己的 id 断言
+        let mine: Vec<_> = list
+            .iter()
+            .filter(|e| e["requestId"] == "vapp_m2t2")
+            .collect();
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0]["verb"], "http.fetch");
+        // 清场（verb_pending_list 只读，需要 verb_review 移除）
+        assert!(verb_review("vapp_m2t2", false));
+        assert!(
+            verb_pending_list()
+                .iter()
+                .all(|e| e["requestId"] != "vapp_m2t2")
+        );
+        crate::approval_sink::set_sink(std::sync::Arc::new(crate::approval_sink::NoopSink));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -9171,6 +9280,11 @@ pub fn verb_review(request_id: &str, approve: bool) -> bool {
     let Some(mut req) = verb_approvals_global().lock().unwrap().remove(request_id) else {
         return false;
     };
+    // M2 来源 2：应答同步消除统一审批总线条目（旧 API 语义不变）
+    crate::approval_sink::sink().resolve(
+        request_id,
+        if approve { "approved" } else { "rejected" },
+    );
     if let Some(tx) = req.tx.take() {
         let _ = tx.send(approve);
     }
