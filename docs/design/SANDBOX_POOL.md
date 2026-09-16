@@ -1,6 +1,6 @@
 # SANDBOX_POOL 沙盒池 — 无状态远程执行端的统一管理
 
-> **状态：Phase 1 已实现（2026-09-13，commit 0c7a26e）** — sandbox_pool 模块 + list_sandboxes / sandbox_probe / host=auto 三 RPC 真机验证通过；五步试炼 `tests/sandbox_stateless_ci.sh` 8/0。Phase 2 跨沙盒重派、Phase 3 UI 面板待开工。目标：远程服务无状态、会话统一在 Mac 管理、任意沙盒即派即跑。
+> **状态：Phase 1 已实现（2026-09-13，commit 0c7a26e）+ §3.3 审批停摆机制性解决已实现（2026-09-16，`sandbox_policy` RPC + 审批泵，`tests/sandbox_policy_ci.sh` 27/0）** — sandbox_pool 模块 + list_sandboxes / sandbox_probe / host=auto / sandbox_policy 四 RPC；五步试炼 `tests/sandbox_stateless_ci.sh` 8/0（真机，勿在开发机直跑——默认端点即生产 win38）。§4.2 跨沙盒重派已被 fix4 覆盖（commit 8110919，`failover_decision` + `auto_recovered` 事件）；Phase 3 UI 面板待开工。目标：远程服务无状态、会话统一在 Mac 管理、任意沙盒即派即跑。
 
 ## 0. 一句话
 
@@ -78,7 +78,40 @@ impl SandboxPool {
 | 规范层 | AGENTS.md 项目惯例 | clone 内自动生效（路径命名空间=执行侧），零成本 |
 | 任务层 | 四要素：目标 / 验收标准（可自验的命令）/ 文件约束（防 merge 冲突）/ 交付格式 | 任务卡人写，这是唯一需要动脑的部分 |
 
-**🔴 审批停摆教训（2026-09-13，worker B 实录）**：无人值守的沙盒 dev worker 写文件会触发 `file-approval` 扩展的 `ApprovalRequest`，agent 停下等批准——协调方没盯审批队列 → 4 分钟后 worker 超时退场（表现酷似"连接不稳"，host 日志里 agent_end + ApprovalRequest 才是真相）。**先查日志再归因**。解法按优先级：① 沙盒档案增加 `approval_policy: auto_approve` 字段（Phase 1.5，从机制上解决）；② 协调方挂审批泵（轮询 `review_pending` → `review_approve_all`，当前 Phase 1 已用）；③ 人盯队列（不可持续，弃）。
+**🔴 审批停摆教训（2026-09-13，worker B 实录）**：无人值守的沙盒 dev worker 写文件会触发 `file-approval` 扩展的 `ApprovalRequest`，agent 停下等批准——协调方没盯审批队列 → 4 分钟后 worker 超时退场（表现酷似"连接不稳"，host 日志里 agent_end + ApprovalRequest 才是真相）。**先查日志再归因**。解法按优先级：① 沙盒档案增加 `approval_policy: auto_approve` 字段（✅ **已实现 2026-09-16**：`remote_workers.<name>.approval_policy` / `.notes` 配置 + `sandbox_policy` RPC 运行时覆盖 + host 侧审批泵——reader loop 捕获 `ApprovalRequest` → 短锁判定（策略 + 2s 冷却）→ 锁外 `review_approve_all` + 广播 `SandboxAutoApproved` 事件，详见 §3.4）；② 协调方挂审批泵（轮询 `review_pending` → `review_approve_all`，当前 Phase 1 已用）；③ 人盯队列（不可持续，弃）。
+
+### 3.4 `sandbox_policy` RPC + 沙盒档案（§3.3 ①的实现）
+
+**配置面**（`remote_workers.<name>` 新增两字段，均缺省安全）：
+
+| 字段 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `approval_policy` | string | `""`(=default) | `auto_approve` = 审批泵自动放行；其他值宽容回落 default |
+| `notes` | string[] | `[]` | 环境层事实（如 "cargo 在 ~/.cargo/bin"），派发时注入 initial_prompt 前缀（先环境层后任务层） |
+
+**查询（GET）：**
+```bash
+ion rpc --method sandbox_policy --params '{"host":"win38"}'     # host 级
+ion rpc --session <sid> --method sandbox_policy --params '{"worker":"<wid>"}'  # worker 级
+```
+成功响应（GET host）：`{"success":true,"data":{"scope":"host","key":"win38","profile":"auto_approve","effective":"auto_approve","override":null}}`
+（GET worker：`{"scope":"worker","key":...,"effective":...,"override":...}`）
+
+**设置（SET）：**
+```bash
+ion rpc --method sandbox_policy --params '{"host":"win38","policy":"auto_approve"}'
+```
+成功响应（SET）：`{"success":true,"data":{"scope":"host","key":"win38","policy":"auto_approve","effective":"auto_approve"}}`
+失败响应：`{"success":false,"error":"unknown policy 'yolo' (expected auto_approve | default)"}`
+
+**验证点：**
+- ✅ 生效链优先级：worker 覆盖 > host 覆盖 > 出生档案（record.approval_policy），写后回读三层一致
+- ✅ `list_sandboxes` 每条附带 `approvalPolicy`（生效值）+ `notes`
+- ✅ SET 走严格校验（非法值/未知沙盒明确报错，不静默回落）；GET/SET 均广播 `SandboxPolicyChanged` 事件
+- ✅ 泵只在 `auto_approve` 生效时 fire；2s 冷却窗防 gate check 重复触发刷屏
+- ✅ 覆盖为内存态（host 重启即失，符合"宁可丢也不建新文件"存储原则）
+- ✅ 对照组：default 策略同样任务 → 无 `SandboxAutoApproved`、`review_pending` 保留（人工审批语义不变）
+- ✅ CLI：`bash tests/sandbox_policy_ci.sh`（mock 级零 ssh，27 断言）
 
 ## 4. Phase 2 — 无状态闭环 + 跨沙盒续跑
 
@@ -95,12 +128,13 @@ impl SandboxPool {
 
 任何新沙盒接入跑一遍即认证入库。
 
-### 4.2 AUTO-RECOVERY 重派目标选择
+### 4.2 AUTO-RECOVERY 重派目标选择（✅ 已被 fix4 覆盖，commit 8110919）
 
-现状：worker 死后原沙盒重派。增强：
-- 重派前 probe 原沙盒：不可达 / VersionMismatch → `pick_healthy(exclude=[原沙盒])` 换沙盒续跑
-- 事件 `autorecovery_reassigned` 带 `{from, to, reason}`，UI 可见
-- 全部不健康 → 保持现有 Dead 保留语义，等 `recover_tree` 手动触发
+原设计的增强点已随修复批 4 落地，无需重做：
+- 重派前按池决策换沙盒：`sandbox_pool::failover_decision(pool, original_host)`——非池成员/显式指定原样回原沙盒；池成员死 → `pick_healthy(exclude=[原沙盒])` 换节点；全不健康 → 回落原沙盒 + WARN（respawn 决策区，`src/worker_registry.rs`）
+- 事件 `auto_recovered` 带 failover 三态 mode（`pool_pick` 原沙盒仍健康选回自身 / `pool_failover` 换节点 / `fallback_no_healthy` 全不健康回落），UI 可见
+- 全部不健康时保持 Dead 保留语义，等 `recover_tree` 手动触发
+- 验证：`src/sandbox_pool.rs` 单测 failover 三态 5 条 + `tests/heartbeat_ci.sh`
 
 ## 5. Phase 3 — ion-web 沙盒管理面板
 
