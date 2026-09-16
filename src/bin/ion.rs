@@ -5203,23 +5203,42 @@ async fn do_create_session(
         // 10s 上限：冷启动 spawn 可能 >3s，3s 就回落会双开
         {
             let reg = registry.lock();
-            let exists = reg.workers.values().any(|w| w.session_id == session_id);
+            // ⚠️ 只认 LIVE 记录（P0 修复，J7 e2e"prompt 撞重建窗口被吞"）：
+            // Dead/Stale 不是可复用的 worker——status-blind 复用会让重建窗口的
+            // 补拉直接返回"复用死记录"，prompt 依然无处投递。
+            let exists = reg.workers.values().any(|w| {
+                w.session_id == session_id
+                    && !matches!(
+                        w.status,
+                        ion::worker_registry::WorkerStatus::Stale
+                            | ion::worker_registry::WorkerStatus::Dead
+                    )
+            });
             if exists {
                 eprintln!("[create_session] reuse existing {session_id}");
-            }
-            let occupied = !creating_sessions_slot().lock().insert(session_id.clone());
-            if exists {
                 tracing::info!("[create_session] reuse existing worker for {session_id}");
                 return Ok(session_id);
             }
+            // 抢占创建权。exists 早退必须发生在 insert 之前——旧顺序在复用路径
+            // 也 insert，sid 泄漏在 creating 集合里永不清理（CreatingGuard 未建，
+            // 没人删），后续真创建者被空占坑多等 10s。
+            let occupied = !creating_sessions_slot().lock().insert(session_id.clone());
             if !occupied {
                 break; // 抢到创建权
             }
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        // 等待兜底：占坑者可能已建成（慢 spawn）→ 复用而非自己也建一份
+        // 等待兜底：占坑者可能已建成（慢 spawn）→ 复用而非自己也建一份（只认 LIVE）
         let reg = registry.lock();
-        if reg.workers.values().any(|w| w.session_id == session_id) {
+        let exists_live = reg.workers.values().any(|w| {
+            w.session_id == session_id
+                && !matches!(
+                    w.status,
+                    ion::worker_registry::WorkerStatus::Stale
+                        | ion::worker_registry::WorkerStatus::Dead
+                )
+        });
+        if exists_live {
             drop(reg);
             tracing::info!("[create_session] slow-spawn wait: reuse existing {session_id}");
             return Ok(session_id);
@@ -5328,6 +5347,98 @@ async fn do_create_session(
         .lock()
         .register_prepared_worker(prepared, &cfg, registry)?;
     Ok(session_id)
+}
+
+/// 判定 worker 记录是否"活"（可投递）：Dead/Stale 视为不可投递。
+/// 与 socket 层 wid_alive、只读命令 has_live 的口径一致。
+fn worker_is_live(w: &ion::worker_registry::WorkerRecord) -> bool {
+    !matches!(
+        w.status,
+        ion::worker_registry::WorkerStatus::Stale | ion::worker_registry::WorkerStatus::Dead
+    )
+}
+
+/// 按 session 找 LIVE worker 的 id。
+/// 同 sid 可能 Dead 旧记录 + 重建新记录并存（AUTO-RECOVERY 原地重派）——只认活的。
+fn live_worker_id_for_session(
+    registry: &std::sync::Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>>,
+    session_id: &str,
+) -> Option<String> {
+    let reg = registry.lock();
+    reg.workers
+        .values()
+        .find(|w| w.session_id == session_id && worker_is_live(w))
+        .map(|w| w.worker_id.clone())
+}
+
+/// 工作类命令（prompt/steer）投递前置：确保会话有 LIVE worker，返回其 worker_id。
+///
+/// P0 修复（J7 e2e"prompt 撞上 worker 重建窗口被吞"）：worker 死亡（kill -9）后的
+/// 重建窗口（Dead 标记 / AUTO-RECOVERY 原地重派 / 记录清理竞态）期间，session 只有
+/// 死记录或无记录。旧代码把 session_id 直接传给 send_async（它期望 worker_id，
+/// 4dd79da parking_lot 重构时丢了 sid→wid 解析）→ 永远 "worker not found:
+/// sess_xxx"，prompt 从不投递；Dead 记录常驻（本地默认无 respawn）时错误是
+/// 永久的。触发自动建 worker 的路径更荒唐：worker 建好了（host 日志 guard
+/// enter → worker_ready），触发它的 prompt 却没发给它。
+///
+/// 三段决策（投递优先；响应诚实：Ok = prompt 真的会写进该 worker 的 stdin）：
+/// 1. 已有 LIVE 记录 → 直接返回（稳态零开销，不读盘）；
+/// 2. 只有死记录且替补可能在做（remote 必重派 / 本地 auto_respawn_local）→
+///    有界等待 ≤1.5s 等 AUTO-RECOVERY 的替补注册（本地 spawn 毫秒级，足够），
+///    避免与它同 sid 双开；
+/// 3. 等不到 / 本就没有记录 → do_create_session 补拉（幂等守卫防并发双开 +
+///    模型继承），返回新 worker id。spawn 失败 → Err（客户端可见，可重试）。
+async fn ensure_live_worker_for_session(
+    registry: &std::sync::Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>>,
+    session_id: &str,
+) -> Result<String, String> {
+    // 1) 稳态：LIVE 记录直接用
+    if let Some(wid) = live_worker_id_for_session(registry, session_id) {
+        return Ok(wid);
+    }
+    // 2) 死记录在场：判断替补是否可能在做（只读状态/配置，不动 respawn 决策本身）
+    let is_remote = {
+        let reg = registry.lock();
+        reg.workers
+            .values()
+            .find(|w| w.session_id == session_id)
+            .and_then(|w| w.host.clone())
+            .is_some()
+    };
+    let respawn_expected =
+        is_remote || ion::config::IonConfig::load().runtime.auto_respawn_local;
+    if respawn_expected {
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_millis(1500);
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if let Some(wid) = live_worker_id_for_session(registry, session_id) {
+                tracing::info!(
+                    "[ensure_live] respawned worker ready for {session_id}: {wid}"
+                );
+                return Ok(wid);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+        }
+    }
+    // 3) 补拉（do_create_session：幂等守卫 + register 后才返回 Ok）
+    let project = ion::session_index::SessionIndex::load()
+        .get(session_id)
+        .and_then(|m| m.project.clone());
+    let mut create = serde_json::json!({
+        "session_id": session_id,
+        "agent": "build",
+    });
+    if let Some(p) = project {
+        create["project_path"] = serde_json::json!(p);
+    }
+    if let Err(e) = do_create_session(registry, &create).await {
+        return Err(format!("auto-create worker for session {session_id} failed: {e}"));
+    }
+    live_worker_id_for_session(registry, session_id)
+        .ok_or_else(|| format!("no live worker for session {session_id} after auto-create"))
 }
 
 /// `get_session_snapshot`：刷新/重连恢复用（设计文档 §3.2）。
@@ -6107,13 +6218,26 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                     // ⚠️ parking_lot: send_command 持 &mut self + .await（stdin write），
                                     // 不能持锁调用。改用 WorkerRegistry::send_async（自管锁）。
                                     // 先短锁查 worker_id（subscribe 在此同步完成）。
+                                    // ⚠️ 同 sid 可能 Dead 旧记录 + 重建新记录并存
+                                    // （AUTO-RECOVERY 原地重派）——HashMap 遍历序
+                                    // 随机，必须先找 LIVE 再认死记录，否则 50%
+                                    // 概率撞 Dead → 白走 manager 兜底（P0 修复）。
                                     let wid_opt = {
                                         let inner_reg = reg.lock();
                                         inner_reg
                                             .workers
                                             .values()
-                                            .find(|w| w.session_id == *sid)
+                                            .find(|w| {
+                                                w.session_id == *sid && worker_is_live(w)
+                                            })
                                             .map(|w| w.worker_id.clone())
+                                            .or_else(|| {
+                                                inner_reg
+                                                    .workers
+                                                    .values()
+                                                    .find(|w| w.session_id == *sid)
+                                                    .map(|w| w.worker_id.clone())
+                                            })
                                     };
                                     // ⚠️ Stale/Dead worker 不能转发：发给死进程=客户端永久
                                     // timeout（2026-08-30 实测页面模型下拉/状态全挂）。
@@ -8375,45 +8499,93 @@ async fn handle_manager_command_write(
                 let sid = sid.to_string();
                 let params = cmd.get("params").cloned().unwrap_or_default();
 
-                // 检查 session 是否存在，不存在则自动创建（修复 #2 的另一条路径）
-                // 对齐 pi：pi 用 SessionManager 隐式管理，永远有 session
-                // ⚠️ parking_lot: 短锁查 exists，drop 后再 await。
-                let exists = {
-                    let reg = registry.lock();
-                    reg.workers.values().any(|w| w.session_id == sid)
-                };
-                if !exists {
-                    tracing::info!("[forward] session {sid} not found, auto-creating");
-                    // project_path 兜底：从 SessionIndex 取原项目（否则 fallback 到
-                    // host 进程 cwd，消息会写进错误项目目录的同名文件）
-                    let project = ion::session_index::SessionIndex::load()
-                        .get(&sid)
-                        .and_then(|m| m.project.clone());
-                    let mut create = serde_json::json!({
-                        "session_id": sid,
-                        "agent": "build",
-                    });
-                    if let Some(p) = project {
-                        create["project_path"] = serde_json::json!(p);
+                // 工作类命令：确保 LIVE worker → 按 worker_id 投递（P0 修复，
+                // 见 ensure_live_worker_for_session 注释）。
+                // - prompt/steer：无活 worker 时补拉再投（用户意图必须落地；
+                //   steer 投给空闲 worker = 开一轮，与 worker prompt 臂语义一致）；
+                // - abort：只投给已在跑的活 worker，没有就诚实报错（为 abort
+                //   白拉一个空转 worker 没有意义）。
+                // send_async 等待 worker 的 ack oneshot——prompt/steer 的 ack 在
+                // agent.run 前立即返回（不阻塞到轮次结束），同 socket 层直转路径。
+                if method == "prompt" || method == "steer" {
+                    match ensure_live_worker_for_session(&registry, &sid).await {
+                        Ok(wid) => {
+                            ion::worker_registry::WorkerRegistry::send_async(
+                                &registry, &wid, method, params,
+                            )
+                            .await
+                            .map(|resp| {
+                                let mut data = serde_json::json!({
+                                    "status": "forwarded",
+                                    "session": sid,
+                                    "workerId": wid,
+                                });
+                                // 透传 worker ack 的 data（prompt: null /
+                                // steer 撞运行中: {"status":"queued",...}）
+                                if let Some(inner) =
+                                    resp.get("data").filter(|d| !d.is_null())
+                                {
+                                    data["workerData"] = inner.clone();
+                                }
+                                data
+                            })
+                        }
+                        Err(e) => Err(e),
                     }
-                    if let Err(e) = do_create_session(&registry, &create).await {
-                        return Err(format!("auto-create session failed: {e}"));
+                } else if method == "abort" {
+                    match live_worker_id_for_session(&registry, &sid) {
+                        Some(wid) => {
+                            ion::worker_registry::WorkerRegistry::send_async(
+                                &registry, &wid, method, params,
+                            )
+                            .await
+                            .map(|resp| {
+                                let mut data = serde_json::json!({
+                                    "status": "forwarded",
+                                    "session": sid,
+                                    "workerId": wid,
+                                });
+                                if let Some(inner) =
+                                    resp.get("data").filter(|d| !d.is_null())
+                                {
+                                    data["workerData"] = inner.clone();
+                                }
+                                data
+                            })
+                        }
+                        None => Err(format!(
+                            "no live worker for session {sid} (nothing to abort; \
+                             worker may be restarting — retry once it is up)"
+                        )),
                     }
-                }
-
-                // prompt/abort/steer 用 fire-and-forget(不等 oneshot)——
-                // agent.run / bash sleep 会阻塞 worker 主循环很久,如果等 oneshot,
-                // Manager 锁不释放,后续命令(如 abort)进不来。
-                // 这些命令的 worker handler 会在 agent.run 前立刻 output_response(null)
-                if method == "prompt" || method == "abort" || method == "steer" {
-                    // ⚠️ parking_lot: send_command 持 &mut self + .await，改用 send_async（自管锁）。
-                    ion::worker_registry::WorkerRegistry::send_async(
-                        &registry, &sid, method, params,
-                    )
-                    .await
-                    .map(|_| serde_json::json!({"status": "forwarded", "session": sid}))
                 } else {
-                    // 其他命令等响应(list_turns/get_messages/abort 等)
+                    // 其他命令等响应(list_turns/get_messages 等)：保持既有
+                    // auto-create + send_to_session 语义不变。
+                    // 检查 session 是否存在，不存在则自动创建（修复 #2 的另一条路径）
+                    // 对齐 pi：pi 用 SessionManager 隐式管理，永远有 session
+                    // ⚠️ parking_lot: 短锁查 exists，drop 后再 await。
+                    let exists = {
+                        let reg = registry.lock();
+                        reg.workers.values().any(|w| w.session_id == sid)
+                    };
+                    if !exists {
+                        tracing::info!("[forward] session {sid} not found, auto-creating");
+                        // project_path 兜底：从 SessionIndex 取原项目（否则 fallback 到
+                        // host 进程 cwd，消息会写进错误项目目录的同名文件）
+                        let project = ion::session_index::SessionIndex::load()
+                            .get(&sid)
+                            .and_then(|m| m.project.clone());
+                        let mut create = serde_json::json!({
+                            "session_id": sid,
+                            "agent": "build",
+                        });
+                        if let Some(p) = project {
+                            create["project_path"] = serde_json::json!(p);
+                        }
+                        if let Err(e) = do_create_session(&registry, &create).await {
+                            return Err(format!("auto-create session failed: {e}"));
+                        }
+                    }
                     match ion::worker_registry::WorkerRegistry::send_to_session(
                         &registry, &sid, method, params,
                     )
