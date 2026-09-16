@@ -75,9 +75,10 @@
                     "type": "string",
                     "enum": [
                       "default",
-                      "auto_approve"
+                      "auto_approve",
+                      "per_kind"
                     ],
-                    "description": "生效审批策略：host 运行时覆盖 > config 沙盒档案（SANDBOX_POOL.md §3.3 Phase 2）"
+                    "description": "生效审批策略：host 运行时覆盖 > config 沙盒档案（SANDBOX_POOL.md §3.3 Phase 2 → M3 全来源）。map 形态（per-kind 覆盖）在此视图显示标记 per_kind，结构化三来源视图走 sandbox_policy RPC 的 effective（string|object）"
                   },
                   "notes": {
                     "type": "array",

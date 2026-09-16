@@ -425,6 +425,125 @@ fn ui_respond_and_verb_schemas_validate() {
     assert!(cw_miss.is_valid(&json!({"type":"response","id":"v2","success":false,"error":"missing params.requestId"})));
 }
 
+/// 统一审批总线（M3 固化的协议形状）：approvals_pending / approval_respond 命令
+/// + ApprovalRequest / ApprovalResolved 事件 data 载荷。
+/// 静态层固化正反例；动态层（隔离 host 走真 RPC）留 TODO——RPC 是 M1 的，
+/// 合并后补（见 tests/approval_bus_ci.sh Group D 预留断言块）。
+#[test]
+fn approval_bus_schemas_validate() {
+    // ── approvals_pending：请求 + 响应（ApprovalEntry 表行）──
+    let ap_req = sub_validator("approvals_pending.json", "request");
+    assert!(ap_req.is_valid(&json!({"id":"a1","method":"approvals_pending"})));
+    assert!(ap_req.is_valid(&json!({"id":"a2","method":"approvals_pending","session":"sess_x"})));
+    assert!(!ap_req.is_valid(&json!({"id":"a3","method":"approvals_pendingX"})));
+
+    let ap_resp = sub_validator("approvals_pending.json", "response");
+    let entry = json!({
+        "id":"appr_1757900000000","kind":"file_snapshot","sessionId":"sess_x",
+        "workerId":"wkr_ab12","summary":"3 files pending review",
+        "payload":{"files":[{"path":"src/a.rs","status":"pending","diffStat":"+10 -2"}]},
+        "raisedAtMs":1757900000000i64
+    });
+    assert!(ap_resp.is_valid(&json!({"type":"response","id":"a1","success":true,
+        "data":{"pending":[entry]}})));
+    assert!(ap_resp.is_valid(&json!({"type":"response","id":"a1","success":true,"data":{"pending":[]}})));
+    // 每来源 kind 一个正例（workerId/expiresAtMs 可选）
+    for kind in ["ui_ask","file_snapshot","remote_verb"] {
+        let mut e = json!({
+            "id":"x","kind":kind,"sessionId":"s","summary":"sum",
+            "payload":{"k":"v"},"raisedAtMs":1i64
+        });
+        if kind == "remote_verb" {
+            e["expiresAtMs"] = json!(60000i64);
+        }
+        assert!(ap_resp.is_valid(&json!({"type":"response","id":"a1","success":true,"data":{"pending":[e]}})),
+            "kind={kind} 应通过");
+    }
+    // 负例：缺 kind / kind 非法 / 缺 raisedAtMs / 缺 payload / 未知额外字段（表行封闭）
+    let bad = json!({"type":"response","id":"a1","success":true,"data":{"pending":[
+        {"id":"x","sessionId":"s","summary":"sum","payload":{},"raisedAtMs":1}]}});
+    assert!(!ap_resp.is_valid(&bad), "缺 kind 必须拒绝");
+    let mut bad_kind = bad.clone();
+    bad_kind["data"]["pending"][0]["kind"] = json!("bogus");
+    assert!(!ap_resp.is_valid(&bad_kind), "非法 kind 必须拒绝");
+    let mut extra = entry.clone();
+    extra["extraField"] = json!(1);
+    assert!(!ap_resp.is_valid(&json!({"type":"response","id":"a1","success":true,"data":{"pending":[extra]}})),
+        "ApprovalEntry additionalProperties=false");
+
+    // ── approval_respond：请求 + 四种响应变体 ──
+    let ar_req = sub_validator("approval_respond.json", "request");
+    assert!(ar_req.is_valid(&json!({"id":"r1","method":"approval_respond",
+        "params":{"id":"appr_1","decision":"approve"}})));
+    assert!(ar_req.is_valid(&json!({"id":"r2","method":"approval_respond",
+        "params":{"id":"appr_1","decision":"reject","reason":"too risky"}})));
+    // fail-closed：decision 必填、无缺省、枚举封闭
+    assert!(!ar_req.is_valid(&json!({"id":"r3","method":"approval_respond","params":{"id":"appr_1"}})));
+    assert!(!ar_req.is_valid(&json!({"id":"r4","method":"approval_respond","params":{"id":"appr_1","decision":"yes"}})));
+    assert!(!ar_req.is_valid(&json!({"id":"r5","method":"approval_respond","params":{"decision":"approve"}})));
+
+    let ar_ok = sub_validator("approval_respond.json", "responseSuccess");
+    assert!(ar_ok.is_valid(&json!({"type":"response","id":"r1","success":true,
+        "data":{"id":"appr_1","kind":"remote_verb","decision":"approve"}})));
+    assert!(ar_ok.is_valid(&json!({"type":"response","id":"r1","success":true,
+        "data":{"id":"appr_1","kind":"ui_ask","decision":"reject","remaining":2}})));
+    assert!(!ar_ok.is_valid(&json!({"type":"response","id":"r1","success":true,
+        "data":{"id":"appr_1","decision":"approve"}})), "缺 kind 必须拒绝");
+
+    let ar_nf = sub_validator("approval_respond.json", "responseNotFound");
+    assert!(ar_nf.is_valid(&json!({"type":"response","id":"r1","success":false,
+        "error":"approval not found: appr_gone"})));
+    assert!(!ar_nf.is_valid(&json!({"type":"response","id":"r1","success":false,"error":"not found"})));
+
+    let ar_miss = sub_validator("approval_respond.json", "responseMissingParam");
+    assert!(ar_miss.is_valid(&json!({"type":"response","id":"r1","success":false,"error":"missing params.id"})));
+    assert!(ar_miss.is_valid(&json!({"type":"response","id":"r1","success":false,"error":"missing params.decision"})));
+
+    let ar_bad = sub_validator("approval_respond.json", "responseBadDecision");
+    assert!(ar_bad.is_valid(&json!({"type":"response","id":"r1","success":false,
+        "error":"invalid decision 'yes' (expected approve | reject)"})));
+    assert!(!ar_bad.is_valid(&json!({"type":"response","id":"r1","success":false,"error":"invalid"})));
+
+    // ── 事件 data 载荷：ApprovalRequest（统一 + legacy 两形态）──
+    let evq = compile("events/approval_request.json");
+    // 统一形态（M1/M2 产出）
+    assert!(evq.is_valid(&json!({
+        "kind":"ui_ask","id":"appr_2","sessionId":"sess_x","workerId":"wkr_1",
+        "summary":"Extension asks: deploy?","payload":{"title":"deploy","message":"now?"},
+        "raisedAtMs":1757900000000i64
+    })));
+    // legacy file-approval 形态（无 kind，file-approval 扩展现产出）——缺省 file_snapshot
+    assert!(evq.is_valid(&json!({"requestId":"appr_ts","total":2,
+        "files":[{"path":"a.rs","status":"pending","diffStat":"+1"}]})));
+    // 负例：kind 非法（缺 kind 合法=legacy）
+    assert!(!evq.is_valid(&json!({"kind":"bogus","id":"x"})));
+
+    // ── 事件 data 载荷：ApprovalResolved ──
+    let evr = compile("events/approval_resolved.json");
+    // 泵自动放行（file_snapshot；M3 泵现产出——SandboxAutoApproved 之外的统一事件）
+    assert!(evr.is_valid(&json!({
+        "id":"appr_ts","kind":"file_snapshot","decision":"approve",
+        "sessionId":"sess_x","workerId":"wkr_1","by":"pump",
+        "reason":"approval_policy auto_approve (pump)",
+        "result":{"approved":1}
+    })));
+    // 人工拒绝（带 reason）+ 系统收尾（无 result）
+    assert!(evr.is_valid(&json!({"id":"x","kind":"remote_verb","decision":"reject","by":"user","reason":"too risky"})));
+    assert!(evr.is_valid(&json!({"id":"y","kind":"ui_ask","decision":"reject","by":"system"})));
+    // 批量放行语义下 id 可空串
+    assert!(evr.is_valid(&json!({"id":"","kind":"file_snapshot","decision":"approve","by":"pump"})));
+    // 负例：decision 非法 / by 非法 / 缺 kind / 缺 id
+    assert!(!evr.is_valid(&json!({"id":"x","kind":"ui_ask","decision":"maybe","by":"user"})));
+    assert!(!evr.is_valid(&json!({"id":"x","kind":"ui_ask","decision":"approve","by":"someone"})));
+    assert!(!evr.is_valid(&json!({"id":"x","decision":"approve","by":"user"})));
+    assert!(!evr.is_valid(&json!({"kind":"ui_ask","decision":"approve"})));
+
+    // TODO(M1-merge): 动态层——隔离 host 走真 RPC（approvals_pending/approval_respond
+    // 尚未在 master 实现，合并 M1 后在本测试补 raw socket 全链路校验，
+    // 对齐 live_host_protocol_frames_match_schemas 的模式；CI 骨架见
+    // tests/approval_bus_ci.sh Group D（[M1-PENDING] 标记的预留断言块）。
+}
+
 #[test]
 fn inner_typed_event_schemas_validate() {
     // 每个内层事件 schema 一个正例（形状转录自源码产生点）

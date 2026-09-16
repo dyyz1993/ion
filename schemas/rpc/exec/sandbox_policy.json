@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "schemas/rpc/exec/sandbox_policy.json",
   "title": "RPC sandbox_policy response (host)",
-  "description": "host 级：查/设沙盒审批策略运行时覆盖（SANDBOX_POOL.md §3.3 Phase 2，内存态不落盘，host 重启即失）。GET：{worker|host}（无 policy）→ 生效策略链；SET：{worker|host, policy: auto_approve|default} → 严格校验 + SandboxPolicyChanged 事件。host 响应不带 command 字段。",
+  "description": "host 级：查/设沙盒审批策略运行时覆盖（SANDBOX_POOL.md §3.3 Phase 2，内存态不落盘，host 重启即失）。GET：{worker|host}（无 policy）→ 生效策略链；SET：{worker|host, policy} → 严格校验 + SandboxPolicyChanged 事件。policy 形态（M3 全来源升级）：string（\"auto_approve\"/\"default\"，旧配置零破坏）或 per-kind map（{\"file_snapshot\":\"auto\",\"ui_ask\":\"ask\",\"remote_verb\":\"auto\"}，值 auto|ask）。响应里 effective/policy/profile/override 同样两形态——map 形态展开为三来源全覆盖的解析视图。host 响应不带 command 字段。",
   "type": "object",
   "required": [
     "id",
@@ -42,25 +42,37 @@
               "description": "worker id 或沙盒名"
             },
             "effective": {
-              "type": "string",
-              "enum": [
-                "default",
-                "auto_approve"
+              "oneOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "default",
+                    "auto_approve"
+                  ]
+                },
+                { "$ref": "#/$defs/KindMap" }
               ],
-              "description": "生效策略：worker 覆盖 > host 覆盖 > 出生档案"
+              "description": "生效策略：worker 覆盖 > host 覆盖 > 出生档案。string 形态或 per-kind map 解析视图"
             },
             "policy": {
-              "type": "string",
-              "description": "SET 时回显请求的 policy"
+              "oneOf": [
+                { "type": "string" },
+                { "$ref": "#/$defs/KindMap" }
+              ],
+              "description": "SET 时回显请求的 policy（归一化为解析视图）"
             },
             "profile": {
-              "type": "string",
-              "description": "GET host 级：config 沙盒档案原始策略"
+              "oneOf": [
+                { "type": "string" },
+                { "$ref": "#/$defs/KindMap" }
+              ],
+              "description": "GET host 级：config 沙盒档案原始策略（解析视图）"
             },
             "override": {
-              "type": [
-                "string",
-                "null"
+              "oneOf": [
+                { "type": "string" },
+                { "$ref": "#/$defs/KindMap" },
+                { "type": "null" }
               ],
               "description": "运行时覆盖值（无覆盖为 null）"
             }
@@ -92,8 +104,26 @@
     }
   ],
   "additionalProperties": true,
+  "$defs": {
+    "KindMap": {
+      "type": "object",
+      "description": "per-kind 审批策略解析视图：三来源全覆盖，值 auto（泵自动放行）| ask（人工审批）",
+      "required": [
+        "file_snapshot",
+        "ui_ask",
+        "remote_verb"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "file_snapshot": { "enum": ["auto", "ask"] },
+        "ui_ask": { "enum": ["auto", "ask"] },
+        "remote_verb": { "enum": ["auto", "ask"] }
+      }
+    }
+  },
   "x-quirks": [
     "override 在 JSON 里恒出现（None 序列化为 null）",
-    "未知 policy / 未知 worker / 未知沙盒名 → success=false + error 文本（写路径严格校验，不静默回落）"
+    "未知 policy / 未知 worker / 未知沙盒名 → success=false + error 文本（写路径严格校验，不静默回落）",
+    "map 形态 policy 的 list_sandboxes 视图仍显示字符串标记 \"per_kind\"（本 schema 仅约束 sandbox_policy RPC）"
   ]
 }

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/approval_request.json",
+  "title": "ApprovalRequest 事件 data 载荷 — 统一审批请求（三来源）",
+  "description": "本 schema 固化的是事件 data 载荷（非整帧）：经 extension_event 帧（customType=\"ApprovalRequest\"，host 路由到 ui）传播，subscribe --ui / subscribe {session} 可见；host 审批泵（src/worker_registry.rs pump_arm）也在此事件上按 kind 判定自动放行。统一形态（M1 总线/M2 三来源接入产出）携带 kind+id+summary；legacy 形态（file-approval 扩展现产出：requestId/total/files）无 kind——消费方缺省按 file_snapshot 处理（M3 泵已按此兼容，schema 层 kind 可选）。additionalProperties 保留 true：来源自定义字段透传。",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "kind": {
+      "enum": ["ui_ask", "file_snapshot", "remote_verb"],
+      "description": "审批来源；缺省=file_snapshot（legacy file-approval 事件兼容）"
+    },
+    "id": { "type": "string", "description": "统一审批条目 id（approvals_pending 表 id / approval_respond.params.id；legacy 形态对应 requestId）" },
+    "requestId": { "type": "string", "description": "legacy file_snapshot 形态字段（语义等价 id，file-approval 扩展产出）" },
+    "sessionId": { "type": "string" },
+    "workerId": { "type": "string" },
+    "summary": { "type": "string", "description": "一行摘要（统一形态携带）" },
+    "payload": { "description": "来源原样载荷（统一形态携带；legacy 用平铺的 total/files）" },
+    "raisedAtMs": { "type": "integer", "description": "请求产生时间（unix 毫秒）" },
+    "expiresAtMs": { "type": "integer", "description": "过期时间（unix 毫秒，无过期语义省略）" },
+    "total": { "type": "integer", "description": "legacy file_snapshot：待审文件数" },
+    "files": {
+      "type": "array",
+      "description": "legacy file_snapshot：待审文件列表（{path,status,diffStat}）"
+    }
+  }
+}

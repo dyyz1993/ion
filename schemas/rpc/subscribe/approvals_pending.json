@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/approvals_pending.json",
+  "title": "approvals_pending — 统一审批总线：列出全部待审批条目（三来源归一化）",
+  "description": "M1 统一审批总线 host 表读口（M3 固化协议形状，M1 实现须满足本契约）。三来源（file_snapshot/ui_ask/remote_verb）在 host 侧归一化为 ApprovalEntry：每条带稳定 id（approval_respond.params.id 用）、来源 kind、一行 summary、来源原样 payload、入表时间。可选 session 过滤。现状基线：master 上本命令尚不存在（M1 合并后启用，见 tests/approval_bus_ci.sh Group D 预留断言块）。",
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "object",
+      "required": ["id", "method"],
+      "properties": {
+        "id": { "type": ["string", "integer"] },
+        "method": { "const": "approvals_pending" },
+        "session": { "type": "string", "description": "可选：按 sessionId 过滤（缺省=全部待审条目）" }
+      }
+    },
+    "response": {
+      "type": "object",
+      "required": ["type", "id", "success", "data"],
+      "properties": {
+        "type": { "const": "response" },
+        "id": { "type": ["string", "integer", "null"] },
+        "success": { "const": true },
+        "session": { "type": "string", "description": "请求带 session 时回显" },
+        "data": {
+          "type": "object",
+          "required": ["pending"],
+          "properties": {
+            "pending": {
+              "type": "array",
+              "description": "ApprovalEntry 表行（刻意自包含，不用跨处 $ref）",
+              "items": {
+                "type": "object",
+                "required": ["id", "kind", "sessionId", "summary", "payload", "raisedAtMs"],
+                "additionalProperties": false,
+                "properties": {
+                  "id": { "type": "string", "description": "统一审批条目 id（approval_respond.params.id）" },
+                  "kind": {
+                    "enum": ["ui_ask", "file_snapshot", "remote_verb"],
+                    "description": "来源：file_snapshot=file-snapshot 审批；ui_ask=扩展 host_ui_ask；remote_verb=VerbGate grants 转 ask_on_deny"
+                  },
+                  "sessionId": { "type": "string", "description": "发起 worker 的会话" },
+                  "workerId": { "type": "string", "description": "发起 worker id（host 直查/已清理场景可省）" },
+                  "summary": { "type": "string", "description": "一行摘要（UI 列表展示用）" },
+                  "payload": { "description": "来源原样载荷（file_snapshot: {files:[...]}; ui_ask: {title,message}; remote_verb: {verb,args}）" },
+                  "raisedAtMs": { "type": "integer", "description": "入表时间（unix 毫秒）" },
+                  "expiresAtMs": { "type": "integer", "description": "过期时间（unix 毫秒）；无过期语义的来源省略" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

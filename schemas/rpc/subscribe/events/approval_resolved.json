@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/events/approval_resolved.json",
+  "title": "ApprovalResolved 事件 data 载荷 — 统一审批已决通知（全来源）",
+  "description": "本 schema 固化的是事件 data 载荷（非整帧）：customType=\"ApprovalResolved\"，host 路由到 ui（bin/ion.rs ui_custom_types 白名单已含）。审批条目被应答时广播：by=pump（审批策略自动放行，M3 泵全来源路径）/ by=user（approval_respond 等人工 RPC）/ by=system（过期/会话清理收尾）。与 SandboxAutoApproved（沙盒泵遗留事件，仅 file_snapshot 路径，保留兼容）并存——新 UI 应订阅 ApprovalResolved。",
+  "type": "object",
+  "required": ["id", "kind", "decision"],
+  "additionalProperties": true,
+  "properties": {
+    "id": { "type": "string", "description": "条目 id（批量放行语义下为该轮 ApprovalRequest 的 id/requestId；无 id 可空串）" },
+    "kind": {
+      "enum": ["ui_ask", "file_snapshot", "remote_verb"],
+      "description": "审批来源"
+    },
+    "decision": {
+      "enum": ["approve", "reject"],
+      "description": "应答决定（与 approval_respond.params.decision 同一枚举）"
+    },
+    "sessionId": { "type": "string" },
+    "workerId": { "type": "string" },
+    "by": {
+      "enum": ["pump", "user", "system"],
+      "description": "pump=审批策略自动放行；user=人工 RPC；system=过期/清理收尾"
+    },
+    "reason": { "type": "string", "description": "应答理由（人工 reason / 泵策略说明）" },
+    "result": { "description": "来源应答结果原样（如 file_snapshot 的 review_approve_all resolved 明细）" }
+  }
+}

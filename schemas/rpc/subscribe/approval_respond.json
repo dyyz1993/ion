@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ion.dev/schemas/rpc/subscribe/approval_respond.json",
+  "title": "approval_respond — 统一审批应答（approve/reject 一条待审批条目）",
+  "description": "M1 统一审批总线写口（M3 固化协议形状）。fail-closed：decision 必填且只认 approve|reject——无缺省值，不允许「没说就是同意」（对齐 verb_review approve 缺省 false 的哲学，但更显式）。kind→来源动词映射（M1 实现基准）：file_snapshot+approve→review_approve_all（批量放行该 session 全部 pending 文件，M3 审批泵既有语义）；file_snapshot+reject→review_reject_all；remote_verb→verb_review {requestId: id, approve: decision==\"approve\"}；ui_ask→ui_respond {request_id: id, response: approve→\"allow\", reject→\"deny\"}。成功后条目出表 + 广播 ApprovalResolved 事件（events/approval_resolved.json）。现状基线：master 上本命令尚不存在（M1 合并后启用）。",
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "object",
+      "required": ["id", "method", "params"],
+      "properties": {
+        "id": { "type": ["string", "integer"] },
+        "method": { "const": "approval_respond" },
+        "params": {
+          "type": "object",
+          "required": ["id", "decision"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "type": "string", "description": "approvals_pending 返回的条目 id" },
+            "decision": {
+              "enum": ["approve", "reject"],
+              "description": "必填：应答决定（fail-closed，无缺省）"
+            },
+            "reason": { "type": "string", "description": "应答理由（审计 + ApprovalResolved 事件透传，可选）" }
+          }
+        }
+      }
+    },
+    "responseSuccess": {
+      "type": "object",
+      "required": ["type", "id", "success", "data"],
+      "properties": {
+        "type": { "const": "response" },
+        "id": { "type": ["string", "integer", "null"] },
+        "success": { "const": true },
+        "session": { "type": "string" },
+        "data": {
+          "type": "object",
+          "required": ["id", "kind", "decision"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "type": "string" },
+            "kind": { "enum": ["ui_ask", "file_snapshot", "remote_verb"] },
+            "decision": { "enum": ["approve", "reject"] },
+            "remaining": { "type": "integer", "description": "应答后表内剩余待审条数（CLI 断言用，可选）" }
+          }
+        }
+      }
+    },
+    "responseNotFound": {
+      "type": "object",
+      "required": ["type", "id", "success", "error"],
+      "properties": {
+        "type": { "const": "response" },
+        "id": { "type": ["string", "integer", "null"] },
+        "success": { "const": false },
+        "error": { "type": "string", "pattern": "^approval not found: " }
+      }
+    },
+    "responseMissingParam": {
+      "type": "object",
+      "required": ["type", "id", "success", "error"],
+      "properties": {
+        "type": { "const": "response" },
+        "id": { "type": ["string", "integer", "null"] },
+        "success": { "const": false },
+        "error": { "enum": ["missing params.id", "missing params.decision"] }
+      }
+    },
+    "responseBadDecision": {
+      "type": "object",
+      "required": ["type", "id", "success", "error"],
+      "properties": {
+        "type": { "const": "response" },
+        "id": { "type": ["string", "integer", "null"] },
+        "success": { "const": false },
+        "error": { "type": "string", "pattern": "^invalid decision '" }
+      }
+    }
+  }
+}

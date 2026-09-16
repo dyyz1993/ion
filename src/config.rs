@@ -173,12 +173,16 @@ pub struct RemoteWorkerHost {
     /// `SshHostKeyFirstSeen` 警告事件（data 含 host+指纹），提示用户尽快 pin。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_key_fingerprint: Option<String>,
-    /// 沙盒档案·审批策略（SANDBOX_POOL.md §3.3 Phase 2）：无人值守沙盒的审批
-    /// 自动放行。空/"default" = 正常人工审批；"auto_approve" = host 审批泵在
-    /// ApprovalRequest 事件上自动 `review_approve_all`（治审批停摆：协调方没盯
-    /// 审批队列 → worker 超时退场）。运行时可用 `sandbox_policy` RPC 覆盖（内存态）。
+    /// 沙盒档案·审批策略（SANDBOX_POOL.md §3.3 Phase 2；M3 全来源升级）：
+    /// 无人值守沙盒的审批自动放行。两形态（serde untagged，旧字符串配置零破坏）：
+    /// - string：空/"default" = 正常人工审批；"auto_approve" = host 审批泵在
+    ///   ApprovalRequest 事件上自动 `review_approve_all`（治审批停摆：协调方没盯
+    ///   审批队列 → worker 超时退场）。
+    /// - per-kind map：`{"file_snapshot":"auto","ui_ask":"ask","remote_verb":"auto"}`
+    ///   （值 auto|ask；未列出的来源 = ask）——统一审批总线三来源按来源差异化放行。
+    /// 运行时可用 `sandbox_policy` RPC 覆盖（内存态，同样两形态）。
     #[serde(default)]
-    pub approval_policy: String,
+    pub approval_policy: crate::sandbox_pool::ApprovalPolicySpec,
     /// 沙盒档案·环境层事实（SANDBOX_POOL.md §3.3 三层模型）：派发时自动注入
     /// initial_prompt 前缀的工具链/PATH/版本提示（如 "cargo 在 ~/.cargo/bin"）。
     /// 修沙盒优先（ln -sf 进 /usr/local/bin），这里只留兜底事实。
