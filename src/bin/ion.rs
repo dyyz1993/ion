@@ -128,11 +128,13 @@ async fn respond_to_ui_request(
 // 统一审批总线 host 出口（APPROVAL_BUS.md）
 //
 // 三来源 → 统一表（ion::approval_bus::ApprovalBus::global()，内存态不落盘）：
-//   ui_ask       ← EventBus "Ask"（route=ui, ext=ui）镜像；应答等价 ui_respond
-//   remote_verb  ← EventBus "verb_approval"（ext=session）镜像；应答走 verb_review
-//   file_snapshot← EventBus "ApprovalRequest/Resolved/Reset"（ext=file-approval，
-//                  worker stdout 经 serve pump 转入 ui 路由）镜像；M1 只读
-//                  （approvals_pending 可见，approval_respond 返回 M2 未接线错误）
+//   ui_ask       ← serve pump 登记路径（带 worker/session，先到胜出）+
+//                  EventBus "Ask"（route=ui, ext=ui）镜像兜底；应答等价 ui_respond
+//   remote_verb  ← verb_gate ask_on_deny 直登 + EventBus "verb_approval"
+//                  （ext=session）镜像；应答走 verb_review
+//   file_snapshot← serve pump 登记路径 + EventBus "ApprovalRequest/Resolved/Reset"
+//                  （ext=file-approval）镜像；应答走 review_approve_all/reject_all
+// （pump 登记与镜像双写同一张表，dedupe key 幂等去重，见 APPROVAL_BUS.md §1）
 //
 // 出口三件套（UI 交互架构规范）：
 //   Pull  : RPC approvals_pending（全量统一表）
@@ -231,9 +233,10 @@ fn mirror_ui_event_to_bus(extension: &str, custom_type: &str, data: &serde_json:
             let Some(req_id) = data.get("request_id").and_then(|v| v.as_str()) else {
                 return;
             };
-            bus.mark_resolved_matching(
+            bus.mark_resolved_matching_as(
                 |e| e.kind == ApprovalKind::UiAsk && e.native_request_id() == Some(req_id),
                 ApprovalDecision::Reject,
+                ion::approval_bus::ApprovalActor::System,
                 Some("timeout"),
             );
         }
@@ -355,33 +358,50 @@ fn wire_approval_bus(
     static CALLBACK_WIRED: OnceLock<bool> = OnceLock::new();
     if CALLBACK_WIRED.set(true).is_ok() {
         ApprovalBus::global().on_change(Arc::new(|change| {
+            // 事件 data 形状对齐 schemas/rpc/subscribe/events/*.json：
+            // ApprovalRequest/Resolved 顶层平铺契约字段（kind/id/summary/...），
+            // 兼容保留 "approval" 完整对象（桥接方按 data.approval 识别总线事件）
+            let entry_value =
+                |e: &ion::approval_bus::ApprovalEntry| serde_json::to_value(e).unwrap_or_default();
             match change {
-                ApprovalChange::Registered(entry) => broadcast_host_ui_event(
-                    "ApprovalRequest",
-                    serde_json::json!({"approval": entry}),
-                    Some(&entry.session_id),
-                ),
+                ApprovalChange::Registered(entry) => {
+                    let mut data = entry_value(&entry);
+                    data["approval"] = entry_value(&entry);
+                    broadcast_host_ui_event("ApprovalRequest", data, Some(&entry.session_id));
+                }
                 ApprovalChange::Resolved {
                     entry,
                     decision,
                     note,
-                } => broadcast_host_ui_event(
-                    "ApprovalResolved",
-                    serde_json::json!({
-                        "approval": entry,
-                        "decision": decision.as_str(),
-                        "reason": note,
-                    }),
-                    Some(&entry.session_id),
-                ),
-                ApprovalChange::Removed { entry, cause } => broadcast_host_ui_event(
-                    "ApprovalRemoved",
-                    serde_json::json!({
-                        "approval": entry,
-                        "cause": cause.as_str(),
-                    }),
-                    Some(&entry.session_id),
-                ),
+                    actor,
+                } => {
+                    broadcast_host_ui_event(
+                        "ApprovalResolved",
+                        serde_json::json!({
+                            "id": entry.id,
+                            "kind": entry.kind.as_str(),
+                            "decision": decision.as_str(),
+                            "sessionId": entry.session_id,
+                            "workerId": entry.worker_id,
+                            "by": actor.as_str(),
+                            "reason": note,
+                            "approval": entry_value(&entry),
+                        }),
+                        Some(&entry.session_id),
+                    );
+                }
+                ApprovalChange::Removed { entry, cause } => {
+                    broadcast_host_ui_event(
+                        "ApprovalRemoved",
+                        serde_json::json!({
+                            "id": entry.id,
+                            "kind": entry.kind.as_str(),
+                            "cause": cause.as_str(),
+                            "approval": entry_value(&entry),
+                        }),
+                        Some(&entry.session_id),
+                    );
+                }
             }
         }));
     }
@@ -397,166 +417,6 @@ fn wire_approval_bus(
             }
         });
     }
-}
-
-/// approval_respond 的可注入依赖（生产用真实来源；单测注入 fake 闭包）
-struct ApprovalRespondDeps {
-    /// ui_ask：取走 pending_ui 里的 oneshot sender（等价 ui_respond 通路）
-    take_ui_ask: Box<dyn Fn(&str) -> Option<oneshot::Sender<String>>>,
-    /// remote_verb：verb_review 后端
-    verb_review: Box<dyn Fn(&str, bool) -> bool>,
-}
-
-impl Default for ApprovalRespondDeps {
-    fn default() -> Self {
-        Self {
-            take_ui_ask: Box::new(|request_id| {
-                ion::runtime::pending_ui().lock().unwrap().remove(request_id)
-            }),
-            verb_review: Box::new(|request_id, approve| {
-                ion::worker_registry::verb_review(request_id, approve)
-            }),
-        }
-    }
-}
-
-/// 统一审批应答路由（approval_respond RPC 核心；与传输解耦，单测直测）。
-///
-/// 路由矩阵（M1）：
-/// | kind         | 闭环 | 通路                                             |
-/// |--------------|------|--------------------------------------------------|
-/// | ui_ask       | ✅   | pending_ui oneshot（等价 ui_respond）            |
-/// | remote_verb  | ✅   | verb_review 后端                                  |
-/// | file_snapshot| ❌ M2| 明确错误 + 指引旧 review_approve/review_reject   |
-fn route_approval_response(
-    id: &str,
-    decision: ApprovalDecision,
-    note: Option<&str>,
-    deps: &ApprovalRespondDeps,
-) -> Result<serde_json::Value, String> {
-    let bus = ApprovalBus::global();
-    let Some(entry) = bus.get(id) else {
-        return Err(format!(
-            "approval not found: {id} (unknown, already resolved, or source removed)"
-        ));
-    };
-    match entry.kind {
-        ApprovalKind::UiAsk => {
-            let native = entry.native_request_id().unwrap_or_default().to_string();
-            let Some(tx) = (deps.take_ui_ask)(&native) else {
-                return Err(format!(
-                    "ui ask request not found or already expired: {native}"
-                ));
-            };
-            let response = if decision == ApprovalDecision::Approve {
-                "allow"
-            } else {
-                "deny"
-            };
-            let _ = tx.send(response.to_string());
-            // 复刻 ui_respond 语义：广播 AskResolved（既有 UI 监听该类型更新状态）
-            broadcast_host_ui_event(
-                "AskResolved",
-                serde_json::json!({
-                    "request_id": native,
-                    "response": response,
-                    "resolved_by": "approval_bus",
-                }),
-                Some(&entry.session_id),
-            );
-        }
-        ApprovalKind::RemoteVerb => {
-            let native = entry.native_request_id().unwrap_or_default().to_string();
-            if !(deps.verb_review)(&native, decision == ApprovalDecision::Approve) {
-                return Err(format!(
-                    "verb approval not found: {native} (already resolved?)"
-                ));
-            }
-        }
-        ApprovalKind::FileSnapshot => {
-            return Err(format!(
-                "file_snapshot approval routing not wired yet (planned M2): \
-                 resolve via review_approve / review_reject RPC on the session \
-                 (files: {:?})",
-                entry
-                    .payload
-                    .get("files")
-                    .and_then(|v| v.as_array())
-                    .map(|fs| {
-                        fs.iter()
-                            .filter_map(|f| f.get("path").and_then(|v| v.as_str()))
-                            .take(5)
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default()
-            ));
-        }
-    }
-    // 来源执行成功 → 统一表收口（触发 ApprovalResolved 广播）。
-    // 竞态（get 与 resolve 之间被并发收口）按未找到处理。
-    bus.resolve(id, decision, note).map_err(|e| e.message())?;
-    Ok(serde_json::json!({
-        "id": id,
-        "kind": entry.kind.as_str(),
-        "decision": decision.as_str(),
-        "nativeRequestId": entry.native_request_id(),
-    }))
-}
-
-// M2 统一审批总线：approval_respond 路由执行（合并对齐点）
-//
-// M1 的 host RPC `approval_respond` 直接调用本函数；M2 临时测试 RPC
-// `_m2_approval_respond` 也走这里。路由决策在 lib（approval_sink::respond_route）：
-// - ui_ask        → send_to_worker(ask_respond)——worker 从 runtime::pending_ui 放行
-// - remote_verb   → worker_registry::verb_review（host 进程内）
-// - file_snapshot → send_to_worker(review_approve_all / review_reject_all)
-// ---------------------------------------------------------------------------
-async fn execute_approval_respond(
-    registry: &Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>>,
-    request_id: &str,
-    decision: &str,
-) -> Result<serde_json::Value, String> {
-    // decision 校验先行（非法输入优先于 not found 报错，便于调用方区分）
-    ion::approval_sink::normalize_decision(decision)?;
-    let entry = ion::approval_sink::sink()
-        .pending()
-        .into_iter()
-        .find(|e| e.id == request_id)
-        .ok_or_else(|| format!("approval not found: {request_id}"))?;
-    let kind = entry.kind.as_str().to_string();
-    let route = ion::approval_sink::respond_route(&entry, decision)?;
-    let out = match route {
-        ion::approval_sink::RespondRoute::WorkerCommand {
-            worker_id,
-            method,
-            params,
-        } => {
-            // ⚠️ parking_lot：send_async 自管锁（prepare/await 分离），不能持锁调
-            ion::worker_registry::WorkerRegistry::send_async(
-                registry,
-                &worker_id,
-                method,
-                params,
-            )
-            .await?
-        }
-        ion::approval_sink::RespondRoute::VerbReview { request_id, approve } => {
-            if ion::worker_registry::verb_review(&request_id, approve) {
-                serde_json::json!({
-                    "requestId": request_id,
-                    "approved": approve,
-                    "via": "verb_review",
-                })
-            } else {
-                return Err(format!("verb approval not found: {request_id}"));
-            }
-        }
-    };
-    // 应答投递成功 → 消除总线条目（ui_ask 的 AskResolved 事件泵会再兜底消除，幂等）
-    ion::approval_sink::sink().resolve(request_id, decision);
-    let mut out = out;
-    out["kind"] = serde_json::json!(kind);
-    Ok(out)
 }
 
 /// per-session epoch 栅栏表（host 级全局：router 退出重建后 epoch 不回退）
@@ -6078,12 +5938,12 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
     let event_bus = Arc::new(tokio::sync::Mutex::new(
         ion::event_bus::ExtensionEventBus::new(),
     ));
-    // M2 过渡：serve 启动即装 RecordingSink 作为统一审批总线的临时实现——
-    // 三来源（worker Ask / verb / file-snapshot）登记 + `_m2_approvals_pending`
-    // 可查 + `_m2_approval_respond` 可答，J8 缺口（Ask 事件可见但 ui_respond 找不到）
-    // 在 M1 合并前即闭环。合并时 M1 的 ApprovalBus 经 set_sink 换入即可。
+    // 统一审批总线单一数据源：serve 启动装 BusBackedSink——三来源
+    // （worker Ask / verb / file-snapshot）的 pump 登记路径与 EventBus 镜像路径
+    // 双写 ApprovalBus::global()，靠 dedupe key 对齐幂等去重。
+    // RecordingSink 仅保留为 lib 单测替身。
     ion::approval_sink::set_sink(std::sync::Arc::new(
-        ion::approval_sink::RecordingSink::new(),
+        ion::approval_sink::BusBackedSink,
     ));
 
     // ── 注册单例扩展（host 级，只在 serve 模式）──
@@ -6818,79 +6678,28 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
             for (wid, (session_id, rx)) in subs.iter_mut() {
                 while let Ok(msg) = rx.try_recv() {
                     let mtype = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                    // ── ExtensionEvent → 广播到 EventBus ──
-                    // ⚠️ 信封形状：worker stdout 的扩展事件是 {"type":"event",
-                    // "event":{"type":"extension_event",...}}——旧条件只查外层
-                    // type=="extension_event"（永远不成立，死分支），审批族事件
-                    // 从未到过 EventBus（subscribe --ui 看不到 file-approval）。
-                    // 修正：按内层 event.type 判定；且只转发审批/Ask 族（route=ui），
-                    // 其余扩展事件维持原状不上 EventBus（避免噪声面扩大）。
-                    let inner_is_ext_event = mtype == "event"
-                        && msg
-                            .get("event")
-                            .and_then(|e| e.get("type"))
-                            .and_then(|v| v.as_str())
-                            == Some("extension_event");
-                    if inner_is_ext_event {
-                        let ev = msg.get("event").cloned().unwrap_or_default();
-                        let extension = ev
-                            .get("extension")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown");
-                        let ct = ev.get("customType").and_then(|v| v.as_str()).unwrap_or("");
-                        let data = ev.get("data").cloned().unwrap_or_default();
-                        // M2 三来源接入：审批类事件（worker Ask / file-snapshot
-                        // ApprovalRequest/Resolved）转发时顺手登记进统一审批总线。
-                        // "哪些事件算审批来源"的知识收敛在 lib（NoopSink 默认零行为；
-                        // 合并时换 M1 真实现）。verb 来源不走这里（host 进程内直登）。
-                        ion::approval_sink::try_register_from_worker_event(
-                            wid,
-                            session_id,
-                            ct,
-                            &data.clone(),
-                        );
-                        // 审批类事件路由到 ui（让 subscribe --ui 也能收到，事件构造在下方 if 块）
-                        let ui_custom_types = [
-                            "ApprovalRequest",
-                            "ApprovalResolved",
-                            "ApprovalReset",
-                            "Ask",
-                            "AskResolved",
-                            "AskTimedOut",
-                            "Confirm",
-                            "Prompt",
-                            "Alert",
-                            "Notif",
-                        ];
-                        if ui_custom_types.contains(&ct) {
-                            let mut event =
-                                ion::event_bus::ExtensionEvent::new(extension, ct).with_data(data);
-                            event = event.with_route("ui");
-                            // 事件信封的 session 在顶层 session_id（pump 侧已知，
-                            // 用 subs 表的会话 id，比信封字段可靠）
-                            if !session_id.is_empty() {
-                                event = event.with_session(session_id);
-                            }
-                            let mut bus = pump_event_bus.lock().await;
-                            bus.broadcast(&event);
-                        }
-                    }
                     if mtype == "response" {
                         let out = worker_response_frame(&wid, &session_id, &msg);
                         println!("{}", out);
                     } else {
+                    // ── ExtensionEvent → 登记总线 + 广播到 EventBus ──
+                    // worker stdout 的扩展事件是包裹形 {"type":"event",
+                    // "event":{"type":"extension_event",...}}——按内层 event.type
+                    // 判定（M1 死分支修复语义；原裸形/包裹形双分支已去重合并为
+                    // 此唯一处理点）。
+
                         let inner_ev = msg.get("event").cloned().unwrap_or(msg.clone());
                         let inner_type =
                             inner_ev.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                        // ── M2 三来源接入（包裹形 extension_event）──
-                        // worker 侧所有 extension_event 都是包裹形
-                        // {"type":"event","event":{"type":"extension_event",...}}——
-                        // 上面的裸形分支对 worker 事件不可达。审批类事件
-                        // （worker Ask / file-snapshot ApprovalRequest/Resolved）在这里：
-                        // ① 顺手登记进统一审批总线（知识收敛在 lib，NoopSink 默认零行为）
+                        // 审批类事件（worker Ask / file-snapshot ApprovalRequest/
+                        // Resolved）在这里：
+                        // ① 顺手登记进统一审批总线（try_register → BusBackedSink →
+                        //    ApprovalBus，带 worker/session 信息；与 EventBus 镜像
+                        //    路径双写靠 dedupe key 幂等去重——本路径先于 ② 的
+                        //    broadcast 执行，故带 worker 信息的条目胜出）
                         // ② 重建 ExtensionEvent 广播到 EventBus 并路由到 ui
-                        //    （subscribe --ui / webui 收到 ⏸，对齐死分支的原始意图）
-                        // verb 来源不走这里（host 进程内 verb 注册点直登总线）。
+                        //    （subscribe --ui / webui 收到 ⏸）
+                        // verb 来源不走这里（host 进程内 verb_gate 直登总线）。
                         if inner_type == "extension_event" {
                             let inner_ct = inner_ev
                                 .get("customType")
@@ -6904,7 +6713,9 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                 inner_ct,
                                 &inner_data,
                             );
-                            const APPROVAL_CUSTOM_TYPES: [&str; 7] = [
+                            // ui 家族事件白名单（审批/Ask/verb + 旧裸形分支的
+                            // Confirm/Prompt/Alert/Notif 合并；两分支去重后只此一处）
+                            const UI_FAMILY_CUSTOM_TYPES: [&str; 11] = [
                                 "ApprovalRequest",
                                 "ApprovalResolved",
                                 "ApprovalReset",
@@ -6912,8 +6723,12 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                 "AskResolved",
                                 "AskTimedOut",
                                 "verb_approval",
+                                "Confirm",
+                                "Prompt",
+                                "Alert",
+                                "Notif",
                             ];
-                            if APPROVAL_CUSTOM_TYPES.contains(&inner_ct) {
+                            if UI_FAMILY_CUSTOM_TYPES.contains(&inner_ct) {
                                 let extension = inner_ev
                                     .get("extension")
                                     .and_then(|v| v.as_str())
@@ -7531,16 +7346,38 @@ async fn handle_manager_command(
             }))
         }
         // ── 统一审批总线 RPC（APPROVAL_BUS.md）：全量 Pull + 路由 Respond ──
+        // 数据源唯一：ApprovalBus::global()（BusBackedSink 双登记路径已收敛于此）
         "approvals_pending" => {
-            let entries = ApprovalBus::global().pending();
+            let session_filter = cmd
+                .get("params")
+                .and_then(|p| p.get("session"))
+                .or_else(|| cmd.get("session"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let entries: Vec<_> = ApprovalBus::global()
+                .pending()
+                .into_iter()
+                .filter(|e| session_filter.is_empty() || e.session_id == session_filter)
+                .collect();
             let total = entries.len();
             let requests: Vec<serde_json::Value> = entries
                 .iter()
                 .map(|e| serde_json::to_value(e).unwrap_or_default())
                 .collect();
-            Ok(serde_json::json!({"total": total, "requests": requests}))
+            // `pending` 为 schema 契约名（schemas/rpc/subscribe/approvals_pending.json）；
+            // `requests`/`total` 为 M1 既有字段，向后兼容保留
+            Ok(serde_json::json!({
+                "total": total,
+                "requests": requests,
+                "pending": requests,
+            }))
         }
         "approval_respond" => {
+            // 统一应答入口（单一路由）：host ui_ask oneshot / worker ask_respond /
+            // remote_verb verb_review / file_snapshot review_approve_all|reject_all
+            // 校验顺序 fail-closed（对齐 approval_respond.json 契约）：
+            // 缺 decision → 非法 decision → 缺 id
             let params = cmd.get("params").cloned().unwrap_or_default();
             let id = params
                 .get("id")
@@ -7555,17 +7392,23 @@ async fn handle_manager_command(
                 .get("reason")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
-            match ApprovalDecision::parse(&decision_str) {
-                Some(decision) if !id.is_empty() => {
-                    let deps = ApprovalRespondDeps::default();
-                    route_approval_response(&id, decision, reason.as_deref(), &deps)
-                }
-                Some(_) => {
-                    Err("missing params.id (unified approval id, apr_ prefix)".to_string())
-                }
-                None => Err(
-                    "invalid params.decision: expect \"approve\" or \"reject\"".to_string(),
-                ),
+            if decision_str.is_empty() {
+                Err("missing params.decision".to_string())
+            } else if ApprovalDecision::parse(decision_str).is_none() {
+                Err(format!(
+                    "invalid decision '{decision_str}' (expected approve | reject)"
+                ))
+            } else if id.is_empty() {
+                Err("missing params.id".to_string())
+            } else {
+                ion::worker_registry::WorkerRegistry::execute_unified_approval(
+                    registry,
+                    &id,
+                    decision_str,
+                    ion::approval_bus::ApprovalActor::User,
+                    reason.as_deref(),
+                )
+                .await
             }
         }
         // ── M4.5 VerbGate 审批 RPC ──
@@ -7602,39 +7445,6 @@ async fn handle_manager_command(
         "verb_pending" => Ok(serde_json::json!({
             "pending": ion::worker_registry::verb_pending_list()
         })),
-        // ── M2 临时测试 RPC（合并时换成 M1 正式入口，见报告）──
-        // _m2_approvals_pending：读统一审批总线当前 pending（approvals_pending 的形状预览）
-        "_m2_approvals_pending" => {
-            let pending: Vec<serde_json::Value> = ion::approval_sink::sink()
-                .pending()
-                .iter()
-                .map(|e| e.to_json())
-                .collect();
-            Ok(serde_json::json!({
-                "pending": pending,
-                "total": ion::approval_sink::sink().pending().len(),
-            }))
-        }
-        // _m2_approval_respond：approval_respond 的路由执行（params: requestId + decision）
-        "_m2_approval_respond" => {
-            let request_id = cmd
-                .get("params")
-                .and_then(|p| p.get("requestId").or_else(|| p.get("request_id")))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let decision = cmd
-                .get("params")
-                .and_then(|p| p.get("decision").or_else(|| p.get("response")))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            if request_id.is_empty() {
-                Err("missing params.requestId".to_string())
-            } else {
-                execute_approval_respond(registry, &request_id, &decision).await
-            }
-        }
         // Host 级会话直读：纯磁盘读 JSONL，不拉起 worker（UI 浏览历史会话用，毫秒级）
         "get_session_messages" => host_direct_session_read(&cmd, "messages"),
         "list_session_turns" => host_direct_session_read(&cmd, "turns"),
@@ -11699,155 +11509,6 @@ fn mirror_ignores_bus_self_broadcast_no_loop() {
         &serde_json::json!({"request_id": "req_zz", "title": "t", "message": "m"}),
     );
     assert!(ApprovalBus::global().pending().is_empty());
-    bus_test_teardown();
-}
-
-#[test]
-fn route_ui_ask_approve_and_reject_closes_loop_via_pending_ui() {
-    let _g = bus_test_setup();
-    // 构造 host 级 Ask（镜像注册 + 真实 pending_ui oneshot，即生产通路）
-    mirror_ui_event_to_bus(
-        "ui",
-        "Ask",
-        &serde_json::json!({"request_id": "req_rt1", "title": "t", "message": "m"}),
-    );
-    let (tx, mut rx) = oneshot::channel::<String>();
-    ion::runtime::pending_ui()
-        .lock()
-        .unwrap()
-        .insert("req_rt1".to_string(), tx);
-    let entry_id = ApprovalBus::global().pending()[0].id.clone();
-
-    let deps = ApprovalRespondDeps::default();
-    let out = route_approval_response(&entry_id, ApprovalDecision::Approve, None, &deps)
-        .expect("ui_ask approve ok");
-    assert_eq!(out["kind"], "ui_ask");
-    assert_eq!(out["nativeRequestId"], "req_rt1");
-    // oneshot 收到 allow（等价 ui_respond 的 response 语义）
-    let resp = rx.try_recv().expect("oneshot fired");
-    assert_eq!(resp, "allow");
-    // 统一表收口
-    assert!(ApprovalBus::global().pending().is_empty());
-    // pending_ui 表也取走了
-    assert!(!ion::runtime::pending_ui().lock().unwrap().contains_key("req_rt1"));
-
-    // reject → deny
-    mirror_ui_event_to_bus(
-        "ui",
-        "Ask",
-        &serde_json::json!({"request_id": "req_rt2", "title": "t", "message": "m"}),
-    );
-    let (tx2, mut rx2) = oneshot::channel::<String>();
-    ion::runtime::pending_ui()
-        .lock()
-        .unwrap()
-        .insert("req_rt2".to_string(), tx2);
-    let id2 = ApprovalBus::global().pending()[0].id.clone();
-    route_approval_response(&id2, ApprovalDecision::Reject, Some("ci"), &deps).unwrap();
-    assert_eq!(rx2.try_recv().unwrap(), "deny");
-    bus_test_teardown();
-}
-
-#[test]
-fn route_ui_ask_without_pending_sender_errors() {
-    let _g = bus_test_setup();
-    mirror_ui_event_to_bus(
-        "ui",
-        "Ask",
-        &serde_json::json!({"request_id": "req_gone", "title": "t", "message": "m"}),
-    );
-    let id = ApprovalBus::global().pending()[0].id.clone();
-    // 不放 sender（模拟已被取走/超时后泄漏）
-    let deps = ApprovalRespondDeps::default();
-    let err = route_approval_response(&id, ApprovalDecision::Approve, None, &deps)
-        .expect_err("missing sender must error");
-    assert!(err.contains("ui ask request not found"), "可诊断错误: {err}");
-    bus_test_teardown();
-}
-
-#[test]
-fn route_remote_verb_via_injected_backend() {
-    let _g = bus_test_setup();
-    mirror_ui_event_to_bus(
-        "session",
-        "verb_approval",
-        &serde_json::json!({
-            "requestId": "vapp_rt9",
-            "verb": "http.fetch",
-            "args": {"url": "https://example.com"},
-            "session": "sess_v",
-        }),
-    );
-    let id = ApprovalBus::global().pending()[0].id.clone();
-    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, bool)>::new()));
-    let sink = seen.clone();
-    let deps = ApprovalRespondDeps {
-        take_ui_ask: Box::new(|_| None),
-        verb_review: Box::new(move |rid, approve| {
-            sink.lock().unwrap().push((rid.to_string(), approve));
-            true
-        }),
-    };
-    let out = route_approval_response(&id, ApprovalDecision::Approve, None, &deps).unwrap();
-    assert_eq!(out["kind"], "remote_verb");
-    assert_eq!(out["nativeRequestId"], "vapp_rt9");
-    assert_eq!(
-        seen.lock().unwrap().as_slice(),
-        &[("vapp_rt9".to_string(), true)],
-        "verb_review 后端收到 (nativeId, approve)"
-    );
-    assert!(ApprovalBus::global().pending().is_empty());
-    bus_test_teardown();
-}
-
-#[test]
-fn route_file_snapshot_returns_clear_m2_error() {
-    let _g = bus_test_setup();
-    mirror_ui_event_to_bus(
-        "file-approval",
-        "ApprovalRequest",
-        &serde_json::json!({
-            "requestId": "appr_m2",
-            "total": 1,
-            "files": [{"path": "x.rs", "status": "pending", "diffStat": "+1"}],
-        }),
-    );
-    let id = ApprovalBus::global().pending()[0].id.clone();
-    let deps = ApprovalRespondDeps::default();
-    let err = route_approval_response(&id, ApprovalDecision::Approve, None, &deps)
-        .expect_err("file_snapshot routing is M2");
-    assert!(err.contains("file_snapshot approval routing not wired"), "{err}");
-    assert!(err.contains("review_approve"), "指引旧通路: {err}");
-    // 条目保留（未收口——来源侧还没执行）
-    assert_eq!(ApprovalBus::global().pending().len(), 1);
-    bus_test_teardown();
-}
-
-#[test]
-fn route_unknown_or_resolved_id_errors() {
-    let _g = bus_test_setup();
-    let deps = ApprovalRespondDeps::default();
-    let err = route_approval_response("apr_nope", ApprovalDecision::Approve, None, &deps)
-        .expect_err("unknown id");
-    assert!(err.contains("approval not found"), "{err}");
-    assert!(err.contains("apr_nope"));
-
-    // 已收口的 id 二次应答 → 同样 NotFound
-    mirror_ui_event_to_bus(
-        "ui",
-        "Ask",
-        &serde_json::json!({"request_id": "req_dup", "title": "t", "message": "m"}),
-    );
-    let (tx, _rx) = oneshot::channel::<String>();
-    ion::runtime::pending_ui()
-        .lock()
-        .unwrap()
-        .insert("req_dup".to_string(), tx);
-    let id = ApprovalBus::global().pending()[0].id.clone();
-    route_approval_response(&id, ApprovalDecision::Approve, None, &deps).unwrap();
-    let err2 = route_approval_response(&id, ApprovalDecision::Approve, None, &deps)
-        .expect_err("already resolved");
-    assert!(err2.contains("approval not found"), "{err2}");
     bus_test_teardown();
 }
 
