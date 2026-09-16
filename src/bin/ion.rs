@@ -5072,55 +5072,67 @@ async fn main() {
 // Serve commands
 // ---------------------------------------------------------------------------
 
-/// Stop the host server: connect to Unix socket and send shutdown.
+/// Stop the host server: connect to Unix socket and send shutdown, wait for
+/// confirmed exit, fall back to identity-gated force-kill.
 async fn cmd_serve_stop() {
     let sock_path = ion::paths::host_socket_path();
-    match tokio::net::UnixStream::connect(&sock_path).await {
-        Ok(mut stream) => {
+    if let Ok(mut stream) = tokio::net::UnixStream::connect(&sock_path).await {
         use tokio::io::AsyncWriteExt;
         let req = ion_protocol::Request::rpc("serve-stop", "shutdown", serde_json::json!({}));
         let _ = stream
             .write_all(format!("{}\n", serde_json::to_string(&req).unwrap()).as_bytes())
             .await;
-            println!("✔ Shutdown signal sent to host server");
+        let _ = stream.flush().await;
+        // 等 host 真正退出（host 退出时自清 socket 文件），最多 ~8s。此前这里
+        // 只看"写进管道成功"就报停机成功——host 收到 unknown-command 继续跑，
+        // sock/pid 文件还被无条件盲删（拆活 host 的入口文件 = DoS 面，与 G1
+        // bind 修复同源的问题，只是换了入口）。
+        for _ in 0..40 {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if tokio::net::UnixStream::connect(&sock_path).await.is_err() {
+                println!("✔ Host stopped");
+                return;
+            }
         }
-        Err(_) => {
-            // Socket not available: identity-gated force-kill from PID file.
-            // 身份不匹配（pid 疑似被复用）→ 拒绝强杀（G1：杀到无辜进程比
-            // 少杀一个僵尸 pid 文件严重得多）。
-            match ion::paths::host_running_verified(std::time::Duration::from_millis(500)).await {
-                ion::paths::HostIdentityCheck::Verified(info) => {
-                    // socket 连不上但 pid 存活 + 身份确认 = host 假死，强制回收
-                    #[cfg(unix)]
-                    let _ = std::process::Command::new("kill")
-                        .args([&info.pid.to_string()])
-                        .status();
-                    println!("✔ Host stopped (force-killed pid {})", info.pid);
-                }
-                ion::paths::HostIdentityCheck::IdentityMismatch { pid } => {
-                    println!(
-                        "✘ 拒绝强杀：pid {pid} 的身份与 socket 记录不符（pid 可能已被其他进程复用）。请手动确认后 kill。"
-                    );
-                    return;
-                }
-                ion::paths::HostIdentityCheck::Unconfirmed => {
-                    // hello 探活失败但 pid 存活的假死场景兜底：host_running()
-                    // 确认 pid 还活着就按旧语义强杀（不比旧版更冒险）
-                    if let Some(pid) = ion::paths::host_running() {
-                        #[cfg(unix)]
-                        let _ = std::process::Command::new("kill")
-                            .args([&pid.to_string()])
-                            .status();
-                        println!("✔ Host stopped (force-killed pid {pid})");
-                    } else {
-                        println!("✘ Host not running");
-                        return;
-                    }
-                }
+        eprintln!("⚠️ host 未在 8s 内退出，按 pid 身份复核后强杀…");
+    }
+    // Socket 不可达（或优雅停机超时）：identity-gated force-kill from PID file.
+    // 身份不匹配（pid 疑似被复用）→ 拒绝强杀（G1：杀到无辜进程比
+    // 少杀一个僵尸 pid 文件严重得多）。
+    match ion::paths::host_running_verified(std::time::Duration::from_millis(500)).await {
+        ion::paths::HostIdentityCheck::Verified(info) => {
+            // pid 存活 + 身份确认 = host 假死/优雅停机失效，强制回收
+            #[cfg(unix)]
+            let _ = std::process::Command::new("kill")
+                .args([&info.pid.to_string()])
+                .status();
+            println!("✔ Host stopped (force-killed pid {})", info.pid);
+        }
+        ion::paths::HostIdentityCheck::IdentityMismatch { pid } => {
+            println!(
+                "✘ 拒绝强杀：pid {pid} 的身份与 socket 记录不符（pid 可能已被其他进程复用）。请手动确认后 kill。"
+            );
+            return;
+        }
+        ion::paths::HostIdentityCheck::Unconfirmed => {
+            // hello 探活失败但 pid 存活的假死场景兜底：host_running()
+            // 确认 pid 还活着就按旧语义强杀（不比旧版更冒险）
+            if let Some(pid) = ion::paths::host_running() {
+                #[cfg(unix)]
+                let _ = std::process::Command::new("kill")
+                    .args([&pid.to_string()])
+                    .status();
+                println!("✔ Host stopped (force-killed pid {pid})");
+            } else {
+                println!("✘ Host not running");
+                // 死链 sock 文件不在这里盲删（可能属于别的用户/实例）——
+                // 下次 serve 启动的 bind 仲裁会做属主校验后清理。
+                return;
             }
         }
     }
-    // Clean up stale files
+    // 只有强杀路径走到这里（host 被杀，没机会自己清）——进程已死，清理安全。
+    // 优雅退出路径的文件由 host 自己清理（cmd_serve_start 退出段）。
     let _ = std::fs::remove_file(&sock_path);
     let _ = std::fs::remove_file(&ion::paths::host_pid_path());
 }
@@ -5664,6 +5676,12 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
     //   Stream mode（subscribe）：长连接，持续推事件
     let sock_registry = Arc::clone(&registry);
     let sock_event_bus = Arc::clone(&event_bus);
+    // socket 优雅停机信号（G1 冒烟暴露的既有缺口修复）：`ion serve stop` 发
+    // `method:"shutdown"` RPC——此前 host 侧没有任何处理者（只有 stdin `quit`
+    // 能退出），serve stop 假报成功，还会盲删活 host 的 sock/pid 文件。
+    // notify_one 在无等待者时存 permit：shutdown 先于 select! 注册也不丢。
+    let host_shutdown = std::sync::Arc::new(tokio::sync::Notify::new());
+    let sock_shutdown = std::sync::Arc::clone(&host_shutdown);
     tokio::spawn(async move {
         use tokio::io::{AsyncWriteExt, BufReader};
 
@@ -5684,6 +5702,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                     }
                     let reg = Arc::clone(&sock_registry);
                     let ev_bus = Arc::clone(&sock_event_bus);
+                    let conn_shutdown = std::sync::Arc::clone(&sock_shutdown);
                     tokio::spawn(async move {
                         let (read_half, mut write_half) = stream.into_split();
                         let mut reader = BufReader::new(read_half);
@@ -5749,6 +5768,25 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                         .await;
                                     let _ = write_half.flush().await;
                                     continue;
+                                }
+
+                                // ── 优雅停机：shutdown → 回 success 帧并触发主循环退出 ──
+                                // 此前 host 侧没有 shutdown 处理者，serve stop 永远停不掉
+                                // host（只有 stdin quit 能退出），还盲删活 host 的文件。
+                                if method == "shutdown" {
+                                    let resp = host_response::success(
+                                        cmd.get("id").cloned().unwrap_or(serde_json::Value::Null),
+                                        serde_json::json!({
+                                            "stopping": true,
+                                            "hostId": ion_protocol::host_id(),
+                                        }),
+                                    );
+                                    let _ = write_half
+                                        .write_all(format!("{resp}\n").as_bytes())
+                                        .await;
+                                    let _ = write_half.flush().await;
+                                    conn_shutdown.notify_one();
+                                    return;
                                 }
 
                                 // ── Stream mode: subscribe ──
@@ -6477,54 +6515,76 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
     // 主循环：异步读 stdin。
     // stdin EOF 时不退出（nohup/daemon 场景 stdin 立刻 EOF，但 socket 还在用）。
     // 只有显式 `quit` 命令才退出。
+    // 读取走专用 OS 线程 + channel：tokio::io::stdin 的 blocking read 无法取消
+    // （tokio 文档明确：可能挂到用户按键为止）——socket shutdown 触发退出时
+    // main 直接返回，runtime drop 不会被未完成的 stdin read 卡住。
+    let (stdin_tx, mut stdin_rx) = tokio::sync::mpsc::unbounded_channel::<Option<String>>();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let stdin = std::io::stdin();
+        for line in stdin.lock().lines() {
+            match line {
+                Ok(l) => {
+                    if stdin_tx.send(Some(l)).is_err() {
+                        return; // receiver 已 drop（host 在退出）
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        // EOF：通知读循环进入"不退出"慢轮询分支
+        let _ = stdin_tx.send(None);
+    });
     let main_registry = Arc::clone(&registry);
     let main_handle = tokio::spawn(async move {
-        use tokio::io::{AsyncBufReadExt, BufReader};
-        let stdin = tokio::io::stdin();
-        let mut reader = BufReader::new(stdin).lines();
         loop {
-            match reader.next_line().await {
-                Ok(Some(line)) => {
-                    let line = line.trim().to_string();
-                    if line.is_empty() {
-                        continue;
-                    }
-                    let cmd: serde_json::Value = match serde_json::from_str(&line) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            // 走信封构造（此前手工拼字符串，error 含引号时会产出非法 JSON 行）
-                            println!(
-                                "{}",
-                                ion_protocol::serialize_line(&host_response::error(
-                                    serde_json::Value::Null,
-                                    e.to_string()
-                                ))
-                            );
-                            continue;
-                        }
-                    };
-                    if cmd.get("method").and_then(|v| v.as_str()) == Some("quit")
-                        || cmd.get("type").and_then(|v| v.as_str()) == Some("quit")
-                    {
-                        return; // 退出 stdin task → 主进程退出
-                    }
-                    let resp = handle_manager_command(&main_registry, cmd).await;
-                    println!("{}", resp);
-                }
-                Ok(None) => {
-                    // stdin EOF（nohup 场景）：不退出，等 socket 客户端发 quit
-                    // 用 sleep 拉长下次检查间隔，避免 busy loop
+            let line = match stdin_rx.recv().await {
+                Some(Some(line)) => line,
+                // EOF（nohup 场景）：不退出，等 socket 客户端发 quit
+                // 用 sleep 拉长下次检查间隔，避免 busy loop
+                Some(None) | None => {
                     tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                    continue;
                 }
-                Err(_) => {
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                }
+            };
+            let line = line.trim().to_string();
+            if line.is_empty() {
+                continue;
             }
+            let cmd: serde_json::Value = match serde_json::from_str(&line) {
+                Ok(v) => v,
+                Err(e) => {
+                    // 走信封构造（此前手工拼字符串，error 含引号时会产出非法 JSON 行）
+                    println!(
+                        "{}",
+                        ion_protocol::serialize_line(&host_response::error(
+                            serde_json::Value::Null,
+                            e.to_string()
+                        ))
+                    );
+                    continue;
+                }
+            };
+            if cmd.get("method").and_then(|v| v.as_str()) == Some("quit")
+                || cmd.get("type").and_then(|v| v.as_str()) == Some("quit")
+            {
+                return; // 退出 stdin task → 主进程退出
+            }
+            let resp = handle_manager_command(&main_registry, cmd).await;
+            println!("{}", resp);
         }
     });
 
-    // 等待 stdin task 结束（用户输 quit，或被信号杀掉）
-    let _ = main_handle.await;
+    // 等待退出：stdin `quit` 或 socket `shutdown`（ion serve stop）任一触发。
+    // 此前只等 stdin task——socket shutdown 没有处理者，serve stop 停不掉 host。
+    let shutdown_waiter = {
+        let n = std::sync::Arc::clone(&host_shutdown);
+        tokio::spawn(async move { n.notified().await })
+    };
+    tokio::select! {
+        _ = main_handle => {},
+        _ = shutdown_waiter => { eprintln!("Host shutdown requested via socket"); },
+    }
 
     // 退出时清理 PID + socket 文件
     let _ = std::fs::remove_file(ion::paths::host_pid_path());
