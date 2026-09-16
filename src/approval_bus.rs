@@ -29,6 +29,9 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// 已收口条目的墓碑窗口（治镜像兜底在泵收口后迟到重注册的竞态，见 BusInner）
+const TOMBSTONE_TTL_MS: u64 = 30_000;
+
 // ---------------------------------------------------------------------------
 // 条目与枚举
 // ---------------------------------------------------------------------------
@@ -197,6 +200,13 @@ struct BusInner {
     entries: HashMap<String, ApprovalEntry>,
     /// dedupe_key → entry id
     by_dedupe: HashMap<String, String>,
+    /// 已收口条目的 dedupe_key 墓碑（key → 过期时刻 ms）。
+    /// 治镜像兜底竞态：泵登记条目被收口出表后，迟到的镜像监听再以同 key 注册
+    /// （无 worker 信息）会"复活"出一条不可路由的幽灵条目——dedupe 只能挡
+    /// "仍在表内"的重复，挡不住"已移除后"的重注册。墓碑窗口内同 key 且
+    /// **无 worker**（=镜像兜底路径特征）的注册被吞；带 worker 的主路径注册
+    /// 放行并清墓碑（合法重发不受影响）。
+    resolved_tombstones: HashMap<String, u64>,
 }
 
 /// 统一审批总线。进程内单例（`ApprovalBus::global()`），内存态不落盘。
@@ -311,7 +321,36 @@ impl ApprovalBus {
                     newly_registered: false,
                     entry: existing.clone(),
                 }
+            } else if worker_id.is_none()
+                && inner
+                    .resolved_tombstones
+                    .get(dedupe_key)
+                    .is_some_and(|&t| t > now)
+            {
+                // 墓碑抑制：同 key 条目刚被收口出表，且本次注册不带 worker
+                // （镜像兜底路径特征）——判定为迟到的镜像重注册，吞掉不建条目
+                // （否则会复活出一条无 worker 的不可路由幽灵条目）。
+                // 带 worker 的主路径（pump 登记）不受限，且会清掉墓碑。
+                let entry = ApprovalEntry {
+                    id: Self::new_id(),
+                    kind,
+                    session_id: session_id.to_string(),
+                    worker_id: None,
+                    summary: summary.to_string(),
+                    payload,
+                    raised_at_ms: now,
+                    expires_at_ms: ttl_ms.map(|t| now + t),
+                    dedupe_key: dedupe_key.to_string(),
+                };
+                RegisterOutcome {
+                    id: entry.id.clone(),
+                    newly_registered: false,
+                    entry,
+                }
             } else {
+                if worker_id.is_some() {
+                    inner.resolved_tombstones.remove(dedupe_key);
+                }
                 let entry = ApprovalEntry {
                     id: Self::new_id(),
                     kind,
@@ -409,8 +448,13 @@ impl ApprovalBus {
         let mut inner = self.inner.lock().unwrap();
         let expired = Self::purge_expired_locked(&mut inner, now);
         let removed = inner.entries.remove(id);
-        if removed.is_some() {
+        if let Some(e) = removed.as_ref() {
             inner.by_dedupe.retain(|_, v| v != id);
+            if !e.dedupe_key.is_empty() {
+                inner
+                    .resolved_tombstones
+                    .insert(e.dedupe_key.clone(), now + TOMBSTONE_TTL_MS);
+            }
         }
         drop(inner);
         for e in expired {
@@ -494,7 +538,15 @@ impl ApprovalBus {
             .map(|e| e.id.clone());
         let removed = hit.and_then(|id| {
             inner.by_dedupe.retain(|_, v| v != &id);
-            inner.entries.remove(&id)
+            let e = inner.entries.remove(&id);
+            if let Some(e) = e.as_ref() {
+                if !e.dedupe_key.is_empty() {
+                    inner
+                        .resolved_tombstones
+                        .insert(e.dedupe_key.clone(), now_ms() + TOMBSTONE_TTL_MS);
+                }
+            }
+            e
         });
         drop(inner);
         if let Some(entry) = removed {
@@ -515,6 +567,7 @@ impl ApprovalBus {
         let mut inner = self.inner.lock().unwrap();
         inner.entries.clear();
         inner.by_dedupe.clear();
+        inner.resolved_tombstones.clear();
     }
 }
 
@@ -855,6 +908,71 @@ mod tests {
             &[ApprovalActor::Pump],
             "Resolved 事件携带 actor（by=pump）"
         );
+    }
+
+    /// 墓碑抑制：收口后同 key 的无 worker 重注册（镜像兜底竞态）被吞；
+    /// 带 worker 的主路径注册放行并清墓碑。
+    /// 场景：泵登记（带 worker）→ 泵收口出表 → 迟到的镜像监听以同 key
+    /// 重注册（无 worker）——dedupe 挡不住（条目已不在表内），无墓碑时会
+    /// 复活出一条不可路由的幽灵条目（CI P2.8 残留 / P3.5 "no live worker"）。
+    #[test]
+    fn tombstone_suppresses_mirror_reregister_after_resolve() {
+        let b = bus();
+        let registered = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = registered.clone();
+        b.on_change(Arc::new(move |ch| {
+            if let ApprovalChange::Registered(e) = ch {
+                sink.lock().unwrap().push(e.id.clone());
+            }
+        }));
+        // 主路径（pump 登记，带 worker）
+        let out = b.register(
+            ApprovalKind::FileSnapshot,
+            "s",
+            Some("wkr_a"),
+            "1 file(s) pending review: a.txt",
+            serde_json::json!({"nativeRequestId": "appr_1", "total": 1,
+                "files": [{"path": "a.txt", "status": "added"}]}),
+            "fs:a.txt:added",
+            None,
+        );
+        assert!(out.newly_registered);
+        // 泵收口出表（sandbox_pump_resolve 的 mark_resolved_matching_as 路径）
+        b.mark_resolved_matching_as(
+            |e| e.worker_id.as_deref() == Some("wkr_a"),
+            ApprovalDecision::Approve,
+            ApprovalActor::Pump,
+            None,
+        );
+        assert!(b.pending().is_empty());
+        // 迟到的镜像重注册（同 key，无 worker）→ 墓碑吞掉
+        let mirror = b.register(
+            ApprovalKind::FileSnapshot,
+            "",
+            None,
+            "1 file(s) pending review: a.txt",
+            serde_json::json!({"nativeRequestId": "appr_2", "total": 1,
+                "files": [{"path": "a.txt", "status": "added"}]}),
+            "fs:a.txt:added",
+            None,
+        );
+        assert!(!mirror.newly_registered, "镜像重注册被墓碑抑制");
+        assert!(b.pending().is_empty(), "无幽灵条目复活");
+        // 带 worker 的主路径重发（合法：新轮 gate 重发）→ 放行 + 清墓碑
+        let again = b.register(
+            ApprovalKind::FileSnapshot,
+            "s",
+            Some("wkr_a"),
+            "1 file(s) pending review: a.txt",
+            serde_json::json!({"nativeRequestId": "appr_3", "total": 1,
+                "files": [{"path": "a.txt", "status": "added"}]}),
+            "fs:a.txt:added",
+            None,
+        );
+        assert!(again.newly_registered, "主路径重发不受墓碑限制");
+        assert_eq!(b.pending().len(), 1);
+        // 只 fired 过两次 Registered（主路径首登 + 主路径重发；镜像被吞）
+        assert_eq!(registered.lock().unwrap().len(), 2);
     }
 
     #[test]
