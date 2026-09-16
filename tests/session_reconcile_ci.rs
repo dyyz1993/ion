@@ -316,6 +316,83 @@ fn reconcile_rebuilds_missing_index_entries_from_disk() {
         let ids = read_index_ids(&sbx);
         assert!(!ids.contains(&"sess_bad".to_string()), "R5: 坏文件不进索引");
     }
+
+    // ═══ R6 统计补全（H2 遗留）：对账重建条目带真实统计，不再永远顶着 0 ═══
+    {
+        let sbx = Sandbox::new("r6");
+
+        // 会话内容：2 条 user + 2 条 assistant + 1 条 custom（不计）+ 坏行（不计）
+        // → message_count 应为 4（live_total 口径），turn_count 应为 2（user 消息数）
+        let dir = sbx.sessions.join("--h1--a--");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut body = String::new();
+        body.push_str(&header_json(
+            "sess_stats",
+            "/tmp/proj-a",
+            "2025-06-01T12:00:00.000Z",
+            "",
+        ));
+        body.push('\n');
+        for (i, role) in ["user", "assistant", "user", "assistant"].iter().enumerate() {
+            body.push_str(&format!(
+                r#"{{"type":"message","id":"m{}","parentId":"p{}","timestamp":"2025-06-01T12:00:0{}.000Z","message":{{"role":"{}","content":[{{"type":"text","text":"hi"}}]}}}}"#,
+                i, i, i, role
+            ));
+            body.push('\n');
+        }
+        body.push_str(
+            r#"{"type":"custom","customType":"note","data":{"x":1}}"#,
+        );
+        body.push('\n');
+        body.push_str("not json\n");
+        std::fs::write(dir.join("sess_stats.jsonl"), body).unwrap();
+
+        // 纯 header 会话（无消息）也应正常重建，统计为 0 合法
+        sbx.write_session(
+            "--h1--a--",
+            "sess_empty",
+            &header_json("sess_empty", "/tmp/proj-a", "2025-06-01T12:00:00.000Z", ""),
+        );
+
+        let report = reconcile_missing(&sbx.sessions_dir_as_path());
+        assert_eq!(report.rebuilt, 2, "R6 前置：两条缺失会话都重建");
+
+        let idx = SessionIndex::load();
+        let s = idx.get("sess_stats").expect("R6: sess_stats 应在索引");
+        assert_eq!(
+            s.message_count, 4,
+            "R6: message_count 与文件内容一致（2 user + 2 assistant，custom/坏行不计）"
+        );
+        assert_eq!(
+            s.turn_count, 2,
+            "R6: turn_count 与文件内容一致（2 条 user 消息）"
+        );
+        assert_eq!(
+            s.user_prompt_count, 2,
+            "R6: user_prompt_count 与 turn_count 同口径（increment_turn_stats 语义）"
+        );
+        assert!(
+            s.message_count > 0 && s.turn_count > 0,
+            "R6: 统计字段非零（修复前恒 0，list_all_sessions lazy heal 也救不回）"
+        );
+
+        let e = idx.get("sess_empty").expect("R6: sess_empty 应在索引");
+        assert_eq!(
+            e.message_count, 0,
+            "R6: 纯 header 会话统计为 0（与内容一致）"
+        );
+        assert_eq!(e.turn_count, 0, "R6: 纯 header 会话 turn_count 为 0");
+
+        // 幂等：二次对账零重建，索引文件逐字节不变（统计不被重复累计）
+        let raw_after_first = std::fs::read_to_string(sbx.index_path()).unwrap();
+        let r2 = reconcile_missing(&sbx.sessions_dir_as_path());
+        assert_eq!(r2.rebuilt, 0, "R6: 二次对账零重建");
+        let raw_after_second = std::fs::read_to_string(sbx.index_path()).unwrap();
+        assert_eq!(
+            raw_after_first, raw_after_second,
+            "R6: 二次对账索引文件逐字节不变（统计不漂移）"
+        );
+    }
 }
 
 impl Sandbox {
