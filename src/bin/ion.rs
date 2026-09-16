@@ -6839,7 +6839,6 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                             .unwrap_or("unknown");
                         let ct = ev.get("customType").and_then(|v| v.as_str()).unwrap_or("");
                         let data = ev.get("data").cloned().unwrap_or_default();
-                        let ev_session = ev.get("session").and_then(|v| v.as_str());
                         // M2 三来源接入：审批类事件（worker Ask / file-snapshot
                         // ApprovalRequest/Resolved）转发时顺手登记进统一审批总线。
                         // "哪些事件算审批来源"的知识收敛在 lib（NoopSink 默认零行为；
@@ -6850,9 +6849,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                             ct,
                             &data.clone(),
                         );
-                        let mut event =
-                            ion::event_bus::ExtensionEvent::new(extension, ct).with_data(data);
-                        // 审批类事件路由到 ui（让 subscribe --ui 也能收到）
+                        // 审批类事件路由到 ui（让 subscribe --ui 也能收到，事件构造在下方 if 块）
                         let ui_custom_types = [
                             "ApprovalRequest",
                             "ApprovalResolved",
