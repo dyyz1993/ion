@@ -62,7 +62,7 @@
     "misc-worker",
     "host-misc"
   ],
-  "commandCount": 43,
+  "commandCount": 44,
   "commands": [
     {
       "command": "abort_bash",
@@ -407,6 +407,14 @@
       "level": "worker",
       "schema": "./unregister_remote_tool.json",
       "title": "RPC unregister_remote_tool response"
+    },
+    {
+      "command": "sandbox_policy",
+      "file": "sandbox_policy.json",
+      "group": "host-misc",
+      "level": "host",
+      "schema": "./sandbox_policy.json",
+      "title": "RPC sandbox_policy response (host)"
     }
   ],
   "dynamicTested": {

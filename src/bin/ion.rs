@@ -6443,18 +6443,36 @@ async fn handle_manager_command(
             let mut pool = ion::sandbox_pool::SandboxPool::from_config(&cfg);
             let mut counts: std::collections::HashMap<String, usize> =
                 std::collections::HashMap::new();
-            {
+            let overrides: std::collections::HashMap<String, String> = {
                 let reg = registry.lock();
                 for w in reg.workers.values() {
                     if let Some(h) = &w.host {
                         *counts.entry(h.clone()).or_insert(0) += 1;
                     }
                 }
-            }
+                // 沙盒审批策略运行时覆盖（内存态）随视图一起返回
+                reg.sandbox_policy_overrides.clone()
+            };
             for st in pool.statuses_mut() {
                 st.worker_count = counts.get(&st.name).copied().unwrap_or(0);
             }
-            let sandboxes: Vec<&ion::sandbox_pool::SandboxStatus> = pool.statuses();
+            // 附加沙盒档案字段（Phase 2 §3.3）：生效策略 = host 覆盖 > config 档案
+            let sandboxes: Vec<serde_json::Value> = pool
+                .statuses()
+                .iter()
+                .map(|st| {
+                    let profile = pool.profile(&st.name);
+                    let effective = overrides
+                        .get(&st.name)
+                        .map(|o| ion::sandbox_pool::ApprovalPolicy::parse(o))
+                        .unwrap_or(profile.approval_policy);
+                    let mut v = serde_json::to_value(st).unwrap_or_default();
+                    v["approvalPolicy"] =
+                        serde_json::json!(effective.as_str());
+                    v["notes"] = serde_json::json!(profile.notes);
+                    v
+                })
+                .collect();
             Ok(serde_json::json!({ "sandboxes": sandboxes }))
         }
         "sandbox_probe" => {
@@ -6475,6 +6493,123 @@ async fn handle_manager_command(
                     } else {
                         let st = pool.probe(&name).await;
                         Ok(serde_json::json!({ "sandbox": st }))
+                    }
+                }
+            }
+        }
+        // ── 沙盒审批策略（SANDBOX_POOL.md §3.3 Phase 2）：运行时覆盖（内存态）──
+        // GET:  {"worker": "<wid>"} → 生效策略链；{"host": "<name>"} → 档案+覆盖
+        // SET:  {"worker"|"host": "<key>", "policy": "auto_approve"|"default"}
+        // ⚠️ 本 match 臂内禁用 return（会跳过末尾响应回写），一律表达式收 Result。
+        "sandbox_policy" => {
+            let params = cmd.get("params").cloned().unwrap_or_default();
+            let host_name = params.get("host").and_then(|v| v.as_str()).map(String::from);
+            let worker = params.get("worker").and_then(|v| v.as_str()).map(String::from);
+            let policy = params.get("policy").and_then(|v| v.as_str()).map(String::from);
+            match (host_name, worker, policy) {
+                (None, None, _) => Err("missing 'host' or 'worker' param".into()),
+                (h, w, None) => {
+                    // GET：worker 级查生效链（覆盖>host覆盖>出生档案）；host 级查档案+覆盖
+                    if let Some(wid) = w {
+                        let reg = registry.lock();
+                        if !reg.workers.contains_key(&wid) {
+                            Err(format!("worker '{wid}' not found"))
+                        } else {
+                            let effective = reg.effective_approval_policy(&wid);
+                            let ovr = reg.get_sandbox_policy(&wid);
+                            Ok(serde_json::json!({
+                                "scope": "worker", "key": wid,
+                                "effective": effective.as_str(),
+                                "override": ovr,
+                            }))
+                        }
+                    } else if let Some(name) = h {
+                        let cfg = ion::config::IonConfig::load();
+                        let pool = ion::sandbox_pool::SandboxPool::from_config(&cfg);
+                        if !pool.contains(&name) {
+                            Err(format!(
+                                "unknown sandbox '{name}' — define it in remote_workers"
+                            ))
+                        } else {
+                            let profile = pool.profile(&name);
+                            let reg = registry.lock();
+                            Ok(serde_json::json!({
+                                "scope": "host", "key": name,
+                                "profile": profile.approval_policy.as_str(),
+                                "effective": reg
+                                    .get_sandbox_policy(&name)
+                                    .map(|o| ion::sandbox_pool::ApprovalPolicy::parse(&o).as_str())
+                                    .unwrap_or(profile.approval_policy.as_str()),
+                                "override": reg.get_sandbox_policy(&name),
+                            }))
+                        }
+                    } else {
+                        unreachable!()
+                    }
+                }
+                (h, w, Some(pol)) => {
+                    // SET：严格校验（写路径不静默回落）；成功后广播事件供 subscribe 观察
+                    let parsed = ion::sandbox_pool::ApprovalPolicy::parse(&pol);
+                    let valid = matches!(
+                        pol.trim().to_ascii_lowercase().as_str(),
+                        "auto_approve" | "auto-approve" | "autoapprove" | "default"
+                    );
+                    if !valid {
+                        Err(format!(
+                            "unknown policy '{pol}' (expected auto_approve | default)"
+                        ))
+                    } else if let Some(wid) = w {
+                        let mut reg = registry.lock();
+                        if !reg.workers.contains_key(&wid) {
+                            Err(format!("worker '{wid}' not found"))
+                        } else {
+                            match reg.set_sandbox_policy(&wid, &pol) {
+                                Ok(()) => {
+                                    let sid =
+                                        reg.workers.get(&wid).map(|r| r.session_id.clone());
+                                    reg.broadcast_ui_event(
+                                        "SandboxPolicyChanged",
+                                        serde_json::json!({
+                                            "scope": "worker", "key": wid, "policy": pol,
+                                        }),
+                                        sid.as_deref(),
+                                    );
+                                    // 立刻回读生效链（写后读，命令行可断言）
+                                    let effective = reg.effective_approval_policy(&wid);
+                                    Ok(serde_json::json!({
+                                        "scope": "worker", "key": wid, "policy": pol,
+                                        "effective": effective.as_str(),
+                                    }))
+                                }
+                                Err(e) => Err(e),
+                            }
+                        }
+                    } else if let Some(name) = h {
+                        let cfg = ion::config::IonConfig::load();
+                        let pool = ion::sandbox_pool::SandboxPool::from_config(&cfg);
+                        if !pool.contains(&name) {
+                            Err(format!(
+                                "unknown sandbox '{name}' — define it in remote_workers"
+                            ))
+                        } else {
+                            let mut reg = registry.lock();
+                            match reg.set_sandbox_policy(&name, &pol) {
+                                Ok(()) => {
+                                    reg.broadcast_ui_event(
+                                        "SandboxPolicyChanged",
+                                        serde_json::json!({"scope": "host", "key": name, "policy": pol}),
+                                        None,
+                                    );
+                                    Ok(serde_json::json!({
+                                        "scope": "host", "key": name, "policy": pol,
+                                        "effective": parsed.as_str(),
+                                    }))
+                                }
+                                Err(e) => Err(e),
+                            }
+                        }
+                    } else {
+                        unreachable!()
                     }
                 }
             }

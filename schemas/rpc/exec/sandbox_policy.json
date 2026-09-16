@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rpc/exec/sandbox_policy.json",
+  "title": "RPC sandbox_policy response (host)",
+  "description": "host 级：查/设沙盒审批策略运行时覆盖（SANDBOX_POOL.md §3.3 Phase 2，内存态不落盘，host 重启即失）。GET：{worker|host}（无 policy）→ 生效策略链；SET：{worker|host, policy: auto_approve|default} → 严格校验 + SandboxPolicyChanged 事件。host 响应不带 command 字段。",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "success"
+  ],
+  "properties": {
+    "id": {
+      "description": "透传请求 id（解析失败时为 null）"
+    },
+    "type": {
+      "const": "response"
+    },
+    "success": {
+      "type": "boolean"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "scope": {
+              "type": "string",
+              "enum": [
+                "worker",
+                "host"
+              ]
+            },
+            "key": {
+              "type": "string",
+              "description": "worker id 或沙盒名"
+            },
+            "effective": {
+              "type": "string",
+              "enum": [
+                "default",
+                "auto_approve"
+              ],
+              "description": "生效策略：worker 覆盖 > host 覆盖 > 出生档案"
+            },
+            "policy": {
+              "type": "string",
+              "description": "SET 时回显请求的 policy"
+            },
+            "profile": {
+              "type": "string",
+              "description": "GET host 级：config 沙盒档案原始策略"
+            },
+            "override": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "运行时覆盖值（无覆盖为 null）"
+            }
+          },
+          "required": [
+            "scope",
+            "key"
+          ]
+        }
+      },
+      "required": [
+        "success",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "success": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "error"
+      ]
+    }
+  ],
+  "additionalProperties": true,
+  "x-quirks": [
+    "override 在 JSON 里恒出现（None 序列化为 null）",
+    "未知 policy / 未知 worker / 未知沙盒名 → success=false + error 文本（写路径严格校验，不静默回落）"
+  ]
+}
