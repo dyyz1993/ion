@@ -280,34 +280,255 @@ pub fn failover_decision(pool: &SandboxPool, original_host: &str) -> FailoverDec
 }
 
 // ---------------------------------------------------------------------------
-// 沙盒档案 + 审批泵（SANDBOX_POOL.md §3.3 Phase 2 / Phase 1.5）
+// 沙盒档案 + 审批泵（SANDBOX_POOL.md §3.3 Phase 2 / Phase 1.5；M3 全来源升级）
 // ---------------------------------------------------------------------------
 
-/// 无人值守审批策略（沙盒档案 `approval_policy` 字段）。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+/// 审批来源（统一审批总线三来源，M1/M2/M3 对齐基准）。
+/// kind 字符串 = ApprovalRequest 事件 `data.kind` / approvals_pending 表 `kind`。
+/// 协议形状固化在 schemas/rpc/subscribe/{approvals_pending,approval_respond}.json。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ApprovalPolicy {
-    /// 人工审批（缺省）
-    #[default]
-    Default,
-    /// 审批泵自动放行：ApprovalRequest → 自动 `review_approve_all`
-    AutoApprove,
+pub enum ApprovalKind {
+    /// file-snapshot 审批（file-approval 扩展；应答动词 review_approve_all / review_reject_all）
+    FileSnapshot,
+    /// 扩展问询（wasm host_ui_ask 等；应答走 ui_respond 通道）
+    UiAsk,
+    /// 远程动词授权转人工（VerbGate grants ask_on_deny；应答动词 verb_review）
+    RemoteVerb,
 }
 
-impl ApprovalPolicy {
-    /// 解析配置串（空/未知值 → Default，宽容解析不炸配置加载）。
-    pub fn parse(raw: &str) -> Self {
+impl ApprovalKind {
+    /// 全部来源（展示/遍历用，顺序固定）。
+    pub const ALL: [ApprovalKind; 3] = [Self::FileSnapshot, Self::UiAsk, Self::RemoteVerb];
+
+    /// 解析 kind 字符串（snake_case / kebab-case 变体都认；None = 未知来源）。
+    pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
-            "auto_approve" | "auto-approve" | "autoapprove" => Self::AutoApprove,
-            _ => Self::Default,
+            "file_snapshot" | "file-snapshot" => Some(Self::FileSnapshot),
+            "ui_ask" | "ui-ask" => Some(Self::UiAsk),
+            "remote_verb" | "remote-verb" => Some(Self::RemoteVerb),
+            _ => None,
         }
     }
 
-    /// 序列化为配置串（list_sandboxes / sandbox_policy RPC 用）。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::FileSnapshot => "file_snapshot",
+            Self::UiAsk => "ui_ask",
+            Self::RemoteVerb => "remote_verb",
+        }
+    }
+
+    /// 从 ApprovalRequest 事件 data 提取来源：缺省/未知 → FileSnapshot。
+    /// legacy file-approval 事件无 kind 字段（requestId/total/files 平铺）——
+    /// 泵按 file_snapshot 语义处理，与升级前行为完全一致。
+    pub fn from_event_data(data: Option<&serde_json::Value>) -> Self {
+        data.and_then(|d| d.get("kind"))
+            .and_then(|v| v.as_str())
+            .and_then(Self::parse)
+            .unwrap_or(Self::FileSnapshot)
+    }
+}
+
+/// 单来源审批动作（per-kind 策略值）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyAction {
+    /// 人工审批（缺省）
+    #[default]
+    Ask,
+    /// 审批泵自动放行
+    Auto,
+}
+
+impl PolicyAction {
+    /// 解析动作串：per-kind 词汇（auto/ask）与全局词汇（auto_approve/default）都认。
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "auto" | "auto_approve" | "auto-approve" | "autoapprove" => Some(Self::Auto),
+            "ask" | "default" | "" => Some(Self::Ask),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Auto => "auto",
+        }
+    }
+}
+
+/// 配置里的 `approval_policy` 值（serde untagged 两形态，旧字符串配置零破坏）：
+/// - `Str`：`"auto_approve"` / `"default"` / `""`（既有形态）
+/// - `Map`：`{"file_snapshot":"auto","ui_ask":"ask","remote_verb":"auto"}`（M3 per-kind）
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum ApprovalPolicySpec {
+    Str(String),
+    Map(serde_json::Map<String, serde_json::Value>),
+}
+
+impl Default for ApprovalPolicySpec {
+    /// 缺省 = 空字符串（与升级前的 `String::new()` 语义一致：人工审批）。
+    fn default() -> Self {
+        Self::Str(String::new())
+    }
+}
+
+/// 无人值守审批策略（沙盒档案 `approval_policy` 字段；M3 升级为 per-kind 覆盖）。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ApprovalPolicy {
+    /// 人工审批（缺省）——全部来源 ask
+    #[default]
+    Default,
+    /// 全放行——全部来源 auto（旧 "auto_approve" 语义不变）
+    AutoApprove,
+    /// per-kind 覆盖：只存 auto 集合（ask 条目归一化剔除；空集 ≡ Default）。
+    /// 来源：map 形态配置 / map 形态运行时覆盖。
+    PerKind(std::collections::HashSet<ApprovalKind>),
+}
+
+impl ApprovalPolicy {
+    /// 宽容解析存储串（不炸配置加载）：scalar 词汇或 JSON map 字符串
+    /// （`to_config_string` 的产物——record/override 表存的字符串两形态都吃）。
+    /// 未知值 → Default（与升级前行为一致）。
+    pub fn parse(raw: &str) -> Self {
+        Self::parse_strict(raw).unwrap_or_default()
+    }
+
+    /// 从配置值（string | map 两形态）宽容解析。
+    pub fn parse_spec(spec: &ApprovalPolicySpec) -> Self {
+        match spec {
+            ApprovalPolicySpec::Str(s) => Self::parse(s),
+            ApprovalPolicySpec::Map(m) => {
+                let mut autos = std::collections::HashSet::new();
+                for (k, v) in m {
+                    if let (Some(kind), Some(act)) =
+                        (ApprovalKind::parse(k), v.as_str().and_then(PolicyAction::parse))
+                        && act == PolicyAction::Auto
+                    {
+                        autos.insert(kind);
+                    }
+                }
+                if autos.is_empty() {
+                    Self::Default
+                } else {
+                    Self::PerKind(autos)
+                }
+            }
+        }
+    }
+
+    /// 严格解析（RPC 写路径用，错误信息给用户）：
+    /// - scalar：`auto_approve` / `default`（含连字符/大小写变体）
+    /// - JSON map 字符串：key ∈ 三来源，value ∈ auto|ask（含全局词汇变体）
+    /// 空 map / 全 ask → Default（归一化）。
+    pub fn parse_strict(raw: &str) -> Result<Self, String> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err(
+                "missing 'policy' (auto_approve | default | {file_snapshot|ui_ask|remote_verb: auto|ask})"
+                    .into(),
+            );
+        }
+        if trimmed.starts_with('{') {
+            let v: serde_json::Value = serde_json::from_str(trimmed)
+                .map_err(|e| format!("invalid policy map JSON: {e}"))?;
+            let obj = v
+                .as_object()
+                .ok_or_else(|| "policy map must be a JSON object".to_string())?;
+            if obj.is_empty() {
+                return Ok(Self::Default);
+            }
+            let mut autos = std::collections::HashSet::new();
+            for (k, val) in obj {
+                let kind = ApprovalKind::parse(k).ok_or_else(|| {
+                    format!("unknown policy kind '{k}' (expected file_snapshot | ui_ask | remote_verb)")
+                })?;
+                let act = val.as_str().and_then(PolicyAction::parse).ok_or_else(|| {
+                    format!("unknown policy action for '{k}': {val} (expected auto | ask)")
+                })?;
+                if act == PolicyAction::Auto {
+                    autos.insert(kind);
+                }
+            }
+            return Ok(if autos.is_empty() {
+                Self::Default
+            } else {
+                Self::PerKind(autos)
+            });
+        }
+        match trimmed.to_ascii_lowercase().as_str() {
+            "auto_approve" | "auto-approve" | "autoapprove" => Ok(Self::AutoApprove),
+            "default" => Ok(Self::Default),
+            other => Err(format!(
+                "unknown policy '{other}' (expected auto_approve | default | \
+                 per-kind map {{file_snapshot|ui_ask|remote_verb: auto|ask}})"
+            )),
+        }
+    }
+
+    /// 指定来源的动作（审批泵判定入口）。
+    pub fn action_for(&self, kind: ApprovalKind) -> PolicyAction {
+        match self {
+            Self::Default => PolicyAction::Ask,
+            Self::AutoApprove => PolicyAction::Auto,
+            Self::PerKind(autos) => {
+                if autos.contains(&kind) {
+                    PolicyAction::Auto
+                } else {
+                    PolicyAction::Ask
+                }
+            }
+        }
+    }
+
+    /// 序列化为存储/配置串：scalar 形态原样；PerKind → 紧凑 JSON map（只含 auto 条目）。
+    /// roundtrip 保证：`parse(to_config_string(p)) == p`。
+    pub fn to_config_string(&self) -> String {
+        match self {
+            Self::Default => "default".into(),
+            Self::AutoApprove => "auto_approve".into(),
+            Self::PerKind(autos) => {
+                let mut m = serde_json::Map::new();
+                for kind in ApprovalKind::ALL {
+                    if autos.contains(&kind) {
+                        m.insert(kind.as_str().to_string(), serde_json::json!("auto"));
+                    }
+                }
+                serde_json::Value::Object(m).to_string()
+            }
+        }
+    }
+
+    /// 展示/响应视图：scalar → "default"/"auto_approve"；PerKind → 三来源全覆盖对象
+    /// （{"file_snapshot":"auto","ui_ask":"ask","remote_verb":"auto"}）。
+    /// sandbox_policy RPC 的 effective/policy/profile/override 字段用这个。
+    pub fn describe(&self) -> serde_json::Value {
+        match self {
+            Self::Default => serde_json::json!("default"),
+            Self::AutoApprove => serde_json::json!("auto_approve"),
+            Self::PerKind(_) => {
+                let mut m = serde_json::Map::new();
+                for kind in ApprovalKind::ALL {
+                    m.insert(
+                        kind.as_str().to_string(),
+                        serde_json::json!(self.action_for(kind).as_str()),
+                    );
+                }
+                serde_json::Value::Object(m)
+            }
+        }
+    }
+
+    /// 旧语义字符串（list_sandboxes 等遗留视图）：PerKind 无 scalar 等价 → "per_kind" 标记
+    /// （结构化视图用 `describe()`）。
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Default => "default",
             Self::AutoApprove => "auto_approve",
+            Self::PerKind(_) => "per_kind",
         }
     }
 }
@@ -325,7 +546,7 @@ impl SandboxProfile {
     /// 从沙盒配置（remote_workers.<name> 条目）提取档案。
     pub fn from_host(h: &crate::config::RemoteWorkerHost) -> Self {
         Self {
-            approval_policy: ApprovalPolicy::parse(&h.approval_policy),
+            approval_policy: ApprovalPolicy::parse_spec(&h.approval_policy),
             notes: h.notes.clone(),
         }
     }
@@ -335,7 +556,7 @@ impl SandboxPool {
     /// 取一台沙盒的档案（未配置 → Default 空档案）。
     pub fn profile(&self, name: &str) -> SandboxProfile {
         self.hosts.get(name).map(|h| SandboxProfile {
-            approval_policy: ApprovalPolicy::parse(&h.approval_policy),
+            approval_policy: ApprovalPolicy::parse_spec(&h.approval_policy),
             notes: h.notes.clone(),
         }).unwrap_or_default()
     }
@@ -356,17 +577,19 @@ pub fn profile_prompt(profile: &SandboxProfile) -> Option<String> {
     Some(out)
 }
 
-/// 审批泵冷却窗口（毫秒）：同 worker 两次自动放行的最小间隔。
+/// 审批泵冷却窗口（毫秒）：同 worker 同来源两次自动放行的最小间隔。
 /// ApprovalRequest 在 gate check 重复触发时防刷（review_approve_all 幂等，但别刷屏）。
+/// 冷却键 = (worker_id, kind)：不同来源互不冷却（file_snapshot 放行不挡 remote_verb）。
 pub const PUMP_COOLDOWN_MS: u64 = 2_000;
 
-/// 审批泵 fire 判定（纯函数）：策略为 auto_approve 且距上次 fire 超过冷却窗。
+/// 审批泵 fire 判定（纯函数）：该来源动作为 auto 且距上次 fire 超过冷却窗。
 pub fn pump_should_fire(
-    policy: ApprovalPolicy,
+    policy: &ApprovalPolicy,
+    kind: ApprovalKind,
     last_fire_ms: Option<u64>,
     now_ms: u64,
 ) -> bool {
-    if policy != ApprovalPolicy::AutoApprove {
+    if policy.action_for(kind) != PolicyAction::Auto {
         return false;
     }
     match last_fire_ms {
@@ -581,7 +804,7 @@ mod tests {
     fn host_with_policy(policy: &str, notes: Vec<String>) -> RemoteWorkerHost {
         RemoteWorkerHost {
             hostname: "h".into(),
-            approval_policy: policy.into(),
+            approval_policy: ApprovalPolicySpec::Str(policy.into()),
             notes,
             ..Default::default()
         }
@@ -602,6 +825,181 @@ mod tests {
         );
         assert_eq!(ApprovalPolicy::parse("whatever"), ApprovalPolicy::Default);
         assert_eq!(ApprovalPolicy::default(), ApprovalPolicy::Default);
+    }
+
+    // ── M3 全来源升级：ApprovalKind / PolicyAction / per-kind 策略 ──
+
+    #[test]
+    fn approval_kind_parse_roundtrip() {
+        for kind in ApprovalKind::ALL {
+            assert_eq!(ApprovalKind::parse(kind.as_str()), Some(kind));
+            // kebab-case 变体也认
+            let kebab = kind.as_str().replace('_', "-");
+            assert_eq!(ApprovalKind::parse(&kebab), Some(kind));
+        }
+        assert_eq!(ApprovalKind::parse("bogus"), None);
+        assert_eq!(ApprovalKind::parse(""), None);
+    }
+
+    #[test]
+    fn approval_kind_from_event_data_defaults_to_file_snapshot() {
+        use serde_json::json;
+        // 统一形态：带 kind
+        assert_eq!(
+            ApprovalKind::from_event_data(Some(&json!({"kind":"remote_verb","id":"x"}))),
+            ApprovalKind::RemoteVerb
+        );
+        assert_eq!(
+            ApprovalKind::from_event_data(Some(&json!({"kind":"ui_ask"}))),
+            ApprovalKind::UiAsk
+        );
+        // legacy file-approval 形态：无 kind（requestId/total/files 平铺）→ file_snapshot
+        assert_eq!(
+            ApprovalKind::from_event_data(Some(&json!({"requestId":"appr_1","total":2,"files":[]}))),
+            ApprovalKind::FileSnapshot
+        );
+        // 未知 kind / data 缺失 → file_snapshot（与升级前泵行为一致）
+        assert_eq!(
+            ApprovalKind::from_event_data(Some(&json!({"kind":"bogus"}))),
+            ApprovalKind::FileSnapshot
+        );
+        assert_eq!(ApprovalKind::from_event_data(None), ApprovalKind::FileSnapshot);
+    }
+
+    #[test]
+    fn policy_parse_map_form_per_kind() {
+        // map 形态：只列的 auto 生效，未列 = ask
+        let p = ApprovalPolicy::parse(r#"{"file_snapshot":"auto","ui_ask":"ask","remote_verb":"auto"}"#);
+        assert_eq!(p.action_for(ApprovalKind::FileSnapshot), PolicyAction::Auto);
+        assert_eq!(p.action_for(ApprovalKind::UiAsk), PolicyAction::Ask);
+        assert_eq!(p.action_for(ApprovalKind::RemoteVerb), PolicyAction::Auto);
+        // 全 ask / 空 map → 归一化 Default
+        assert_eq!(ApprovalPolicy::parse(r#"{"ui_ask":"ask"}"#), ApprovalPolicy::Default);
+        assert_eq!(ApprovalPolicy::parse(r#"{}"#), ApprovalPolicy::Default);
+        // 坏 JSON → 宽容回落 Default（不炸配置加载）
+        assert_eq!(ApprovalPolicy::parse("{not json"), ApprovalPolicy::Default);
+    }
+
+    #[test]
+    fn policy_parse_accepts_global_vocab_in_map_values() {
+        // map 值也认全局词汇（auto_approve/default）——两套词汇互通
+        let p = ApprovalPolicy::parse(r#"{"file_snapshot":"auto_approve","ui_ask":"default"}"#);
+        assert_eq!(p.action_for(ApprovalKind::FileSnapshot), PolicyAction::Auto);
+        assert_eq!(p.action_for(ApprovalKind::UiAsk), PolicyAction::Ask);
+    }
+
+    #[test]
+    fn policy_parse_spec_map_form() {
+        use serde_json::json;
+        // 配置 map 形态（untagged ApprovalPolicySpec::Map）
+        let spec: ApprovalPolicySpec = serde_json::from_value(json!({
+            "file_snapshot": "auto", "ui_ask": "ask", "remote_verb": "auto"
+        })).unwrap();
+        assert_eq!(
+            spec,
+            ApprovalPolicySpec::Map(
+                vec![
+                    ("file_snapshot".to_string(), json!("auto")),
+                    ("ui_ask".to_string(), json!("ask")),
+                    ("remote_verb".to_string(), json!("auto")),
+                ]
+                .into_iter()
+                .collect()
+            )
+        );
+        let p = ApprovalPolicy::parse_spec(&spec);
+        assert_eq!(p.action_for(ApprovalKind::FileSnapshot), PolicyAction::Auto);
+        assert_eq!(p.action_for(ApprovalKind::UiAsk), PolicyAction::Ask);
+        // 旧字符串形态不受影响
+        let s: ApprovalPolicySpec = serde_json::from_value(json!("auto_approve")).unwrap();
+        assert_eq!(ApprovalPolicy::parse_spec(&s), ApprovalPolicy::AutoApprove);
+        // 未知 kind / 非字符串值宽容忽略
+        let noisy: ApprovalPolicySpec =
+            serde_json::from_value(json!({"file_snapshot":"auto","bogus":"auto","ui_ask":true})).unwrap();
+        let p2 = ApprovalPolicy::parse_spec(&noisy);
+        assert_eq!(p2.action_for(ApprovalKind::FileSnapshot), PolicyAction::Auto);
+        assert_eq!(p2.action_for(ApprovalKind::UiAsk), PolicyAction::Ask);
+    }
+
+    #[test]
+    fn policy_parse_strict_errors() {
+        // scalar 非法 → 明确报错（写路径不静默回落）
+        assert!(ApprovalPolicy::parse_strict("yolo").is_err());
+        assert!(ApprovalPolicy::parse_strict("").is_err());
+        // map：未知 kind / 非法 value / 坏 JSON / 非对象 → 明确报错
+        assert!(ApprovalPolicy::parse_strict(r#"{"bogus":"auto"}"#).is_err());
+        assert!(ApprovalPolicy::parse_strict(r#"{"file_snapshot":"yolo"}"#).is_err());
+        assert!(ApprovalPolicy::parse_strict(r#"{"file_snapshot":true}"#).is_err());
+        assert!(ApprovalPolicy::parse_strict("{not json").is_err());
+        assert!(ApprovalPolicy::parse_strict("[1,2]").is_err());
+        // 合法两形态通过
+        assert_eq!(ApprovalPolicy::parse_strict("auto_approve").unwrap(), ApprovalPolicy::AutoApprove);
+        assert_eq!(ApprovalPolicy::parse_strict("default").unwrap(), ApprovalPolicy::Default);
+        assert_eq!(
+            ApprovalPolicy::parse_strict(r#"{"file_snapshot":"auto"}"#).unwrap(),
+            ApprovalPolicy::PerKind([ApprovalKind::FileSnapshot].into_iter().collect())
+        );
+    }
+
+    #[test]
+    fn policy_to_config_string_roundtrip() {
+        for p in [
+            ApprovalPolicy::Default,
+            ApprovalPolicy::AutoApprove,
+            ApprovalPolicy::PerKind([ApprovalKind::FileSnapshot, ApprovalKind::RemoteVerb].into_iter().collect()),
+            ApprovalPolicy::PerKind([ApprovalKind::UiAsk].into_iter().collect()),
+        ] {
+            let s = p.to_config_string();
+            assert_eq!(ApprovalPolicy::parse(&s), p, "roundtrip 失败: {s}");
+        }
+        // scalar 形态的存储串保持旧词汇（旧数据/旧工具可读）
+        assert_eq!(ApprovalPolicy::Default.to_config_string(), "default");
+        assert_eq!(ApprovalPolicy::AutoApprove.to_config_string(), "auto_approve");
+    }
+
+    #[test]
+    fn policy_describe_shapes() {
+        use serde_json::json;
+        assert_eq!(ApprovalPolicy::Default.describe(), json!("default"));
+        assert_eq!(ApprovalPolicy::AutoApprove.describe(), json!("auto_approve"));
+        // PerKind → 三来源全覆盖对象（未列 = ask）
+        assert_eq!(
+            ApprovalPolicy::PerKind([ApprovalKind::FileSnapshot, ApprovalKind::RemoteVerb].into_iter().collect()).describe(),
+            json!({"file_snapshot":"auto","ui_ask":"ask","remote_verb":"auto"})
+        );
+        // 旧 as_str 视图：PerKind → "per_kind" 标记（list_sandboxes 遗留路径）
+        assert_eq!(ApprovalPolicy::Default.as_str(), "default");
+        assert_eq!(ApprovalPolicy::AutoApprove.as_str(), "auto_approve");
+        assert_eq!(
+            ApprovalPolicy::PerKind([ApprovalKind::UiAsk].into_iter().collect()).as_str(),
+            "per_kind"
+        );
+    }
+
+    #[test]
+    fn pump_matrix_per_kind_policy() {
+        use ApprovalKind as K;
+        // 三 kind × 三策略的放行矩阵
+        let map = ApprovalPolicy::PerKind([K::FileSnapshot, K::RemoteVerb].into_iter().collect());
+        let cases: &[(ApprovalPolicy, K, bool)] = &[
+            (ApprovalPolicy::Default, K::FileSnapshot, false),
+            (ApprovalPolicy::Default, K::UiAsk, false),
+            (ApprovalPolicy::Default, K::RemoteVerb, false),
+            (ApprovalPolicy::AutoApprove, K::FileSnapshot, true),
+            (ApprovalPolicy::AutoApprove, K::UiAsk, true),
+            (ApprovalPolicy::AutoApprove, K::RemoteVerb, true),
+            // map：列的 auto 放行、未列的 ask 不放行
+            (map.clone(), K::FileSnapshot, true),
+            (map.clone(), K::UiAsk, false),
+            (map, K::RemoteVerb, true),
+        ];
+        for (i, (policy, kind, expect_fire)) in cases.iter().enumerate() {
+            assert_eq!(
+                pump_should_fire(policy, *kind, None, 1_000),
+                *expect_fire,
+                "矩阵 case #{i}: {policy:?} kind={kind:?}"
+            );
+        }
     }
 
     #[test]
@@ -638,21 +1036,33 @@ mod tests {
 
     #[test]
     fn pump_fires_only_for_auto_approve() {
-        assert!(pump_should_fire(ApprovalPolicy::AutoApprove, None, 1_000));
+        assert!(pump_should_fire(
+            &ApprovalPolicy::AutoApprove,
+            ApprovalKind::FileSnapshot,
+            None,
+            1_000
+        ));
         // 人工审批永不 fire
-        assert!(!pump_should_fire(ApprovalPolicy::Default, None, 1_000));
+        assert!(!pump_should_fire(
+            &ApprovalPolicy::Default,
+            ApprovalKind::FileSnapshot,
+            None,
+            1_000
+        ));
     }
 
     #[test]
     fn pump_respects_cooldown_window() {
         // 冷却窗内（<2s）不重复 fire；窗外再放行
         assert!(!pump_should_fire(
-            ApprovalPolicy::AutoApprove,
+            &ApprovalPolicy::AutoApprove,
+            ApprovalKind::FileSnapshot,
             Some(10_000),
             10_000 + PUMP_COOLDOWN_MS - 1
         ));
         assert!(pump_should_fire(
-            ApprovalPolicy::AutoApprove,
+            &ApprovalPolicy::AutoApprove,
+            ApprovalKind::FileSnapshot,
             Some(10_000),
             10_000 + PUMP_COOLDOWN_MS
         ));
