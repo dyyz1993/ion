@@ -122,32 +122,218 @@ pub fn host_pid_path() -> PathBuf {
     root().join("host.pid")
 }
 
-/// 检查 Host 是否在运行：读 PID 文件 + 验证进程存活
+/// pid 文件内容（安全加固 G1：pid 文件带 hostId 身份）。
+///
+/// JSON 形态：`{"pid":1234,"hostId":"<uuid>","startedAtMs":169…}`。
+/// `hostId` 与 hello RPC 回报的 `data.hostId` 同源（`ion_protocol::host_id()`，
+/// 进程内存态随机，重启即换）——`host_running_verified` 靠它做"同一个 host
+/// 在跑"的身份判定，防 pid 复用误判（陈旧 pid 文件 + 无关进程复用了那个 pid）。
+/// `startedAtMs` 是为将来进程级启动时间比对预留的元数据（当前身份判定走
+/// hello hostId，跨平台取得进程真实启动时间需要 /proc 或 sysctl FFI，暂不做）。
+/// 兼容旧格式：纯数字 pid 文件读出 `host_id: None`。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HostPidInfo {
+    pub pid: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<u64>,
+}
+
+/// 写 pid 文件（原子：同目录临时名 + rename）。**必须在 socket bind 成功之后
+/// 调用**（G1：先 bind 后写 pid——bind 失败的进程绝不留下"host 在跑"的假象）。
+pub fn write_host_pid_file_at(path: &std::path::Path, info: &HostPidInfo) -> std::io::Result<()> {
+    let mut tmp_name = path
+        .file_name()
+        .map(std::ffi::OsStr::to_os_string)
+        .unwrap_or_default();
+    tmp_name.push(".tmp");
+    let tmp = path.with_file_name(tmp_name);
+    let json = serde_json::to_vec(info)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    std::fs::write(&tmp, json)?;
+    // rename 原子落位：读者要么看到旧文件（完整），要么看到新文件（完整）
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
+/// 写 pid 文件（默认路径，内容 = 本进程 pid + 本进程 hostId + 当前时刻）。
+pub fn write_host_pid_file() -> std::io::Result<()> {
+    write_host_pid_file_at(
+        &host_pid_path(),
+        &HostPidInfo {
+            pid: std::process::id(),
+            host_id: Some(ion_protocol::host_id().to_string()),
+            started_at_ms: Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0),
+            ),
+        },
+    )
+}
+
+/// 读 pid 文件（路径参数版）。JSON 形态优先；旧纯数字格式兜底
+/// （`host_id: None`，verified 路径对它退化为 pid 存活判定）。
+/// 内容不可解析 → None（与旧行为一致：不删文件，留给下一次启动诊断）。
+pub fn read_host_pid_info_at(path: &std::path::Path) -> Option<HostPidInfo> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let trimmed = content.trim();
+    if let Ok(info) = serde_json::from_str::<HostPidInfo>(trimmed) {
+        return Some(info);
+    }
+    trimmed.parse::<u32>().ok().map(|pid| HostPidInfo {
+        pid,
+        host_id: None,
+        started_at_ms: None,
+    })
+}
+
+/// 读 pid 文件（默认路径）。
+pub fn read_host_pid_info() -> Option<HostPidInfo> {
+    read_host_pid_info_at(&host_pid_path())
+}
+
+/// 检查 Host 是否在运行：读 PID 文件 + 验证进程存活。
+///
+/// 快速同步路径（pid + kill(0)）；需要"确认 socket 背后就是 pid 文件里那个
+/// host"的身份级判定时用 [`host_running_verified`]。
 pub fn host_running() -> Option<u32> {
     let pid_path = host_pid_path();
     // Fallback: check old manager.pid path for migration
     let old_pid_path = root().join("manager.pid");
-    if !pid_path.exists() && old_pid_path.exists() {
-        let content = std::fs::read_to_string(&old_pid_path).ok()?;
-        let pid: u32 = content.trim().parse().ok()?;
-        let rc = libc_kill(pid, 0);
-        if rc == 0 {
-            Some(pid)
-        } else {
-            let _ = std::fs::remove_file(&old_pid_path);
-            None
-        }
+    let (target, legacy) = if !pid_path.exists() && old_pid_path.exists() {
+        (old_pid_path, true)
     } else {
-        let content = std::fs::read_to_string(&pid_path).ok()?;
-        let pid: u32 = content.trim().parse().ok()?;
-        let rc = libc_kill(pid, 0);
-        if rc == 0 {
-            Some(pid)
-        } else {
-            let _ = std::fs::remove_file(&pid_path);
-            None
+        (pid_path, false)
+    };
+    let info = read_host_pid_info_at(&target)?;
+    if libc_kill(info.pid, 0) == 0 {
+        Some(info.pid)
+    } else {
+        let _ = std::fs::remove_file(&target);
+        let _ = legacy;
+        None
+    }
+}
+
+/// 严格身份验活结果（安全加固 G1）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostIdentityCheck {
+    /// pid 存活，且 socket 背后活 host 经 hello 回报的 hostId 与 pid 文件记录
+    /// 一致（旧格式 pid 文件无 hostId、无法比对时保守视为通过）。
+    Verified(HostPidInfo),
+    /// pid 存活但身份对不上——该 pid 疑似已被无关进程复用（或 pid 文件陈旧、
+    /// socket 背后是另一个 host）。**禁止按此 pid 强杀**（会杀到无辜进程）。
+    IdentityMismatch { pid: u32 },
+    /// 无法确认：pid 不存活（陈旧文件已顺手清理）/ pid 文件不可读 /
+    /// socket 探活失败（host 未起或 accept loop 未就绪）。
+    /// 启动仲裁交给 bind 本身（见 ion.rs bind_host_socket）。
+    Unconfirmed,
+}
+
+/// 严格身份验活（安全加固 G1）：pid 存活 **且** 身份一致才算"同一个 host 在跑"。
+///
+/// 判定链：① pid 文件可读 ② kill(pid,0) 存活 ③ 经 socket 发 hello 探活 RPC，
+/// 活 host 回报的 `data.hostId` 必须与 pid 文件记录的 `hostId` 一致。
+/// 防 pid 复用误判：陈旧 pid 文件里的 pid 被无关进程复用时，kill(0) 通过但
+/// hello 回报的 hostId 对不上 → [`HostIdentityCheck::IdentityMismatch`]。
+///
+/// 取舍说明：hello 探活是异步且要求 socket 已就绪（accept loop 未起的窗口内
+/// 会探空 → Unconfirmed）——所以**重复启动防护不能只靠它**，serve 启动的最终
+/// 仲裁是 bind 本身（ion.rs bind_host_socket）；本函数用于 serve 启动前的
+/// 友好预检、serve status 展示、serve stop 强杀前的身份确认。进程级启动时间
+/// 比对（/proc 或 sysctl FFI）暂不做：macOS 侧需引入 libproc FFI 且 lib 已按
+/// 项目惯例避免 libc crate，hello hostId 已覆盖"同一 host"判定的实际需求；
+/// pid 文件里的 `startedAtMs` 为未来升级预留了元数据。
+pub async fn host_running_verified(timeout: std::time::Duration) -> HostIdentityCheck {
+    let Some(info) = read_host_pid_info() else {
+        return HostIdentityCheck::Unconfirmed;
+    };
+    if libc_kill(info.pid, 0) != 0 {
+        // 死 pid：清掉陈旧文件（自愈），报无法确认
+        let _ = std::fs::remove_file(host_pid_path());
+        return HostIdentityCheck::Unconfirmed;
+    }
+    let Some(live_id) = probe_hello_host_id(timeout).await else {
+        return HostIdentityCheck::Unconfirmed;
+    };
+    match &info.host_id {
+        Some(expect) if *expect == live_id => HostIdentityCheck::Verified(info),
+        Some(_) => HostIdentityCheck::IdentityMismatch { pid: info.pid },
+        // 旧格式 pid 文件（无 hostId）：无法做身份比对，保守接受 pid 存活
+        None => HostIdentityCheck::Verified(info),
+    }
+}
+
+/// 探活 RPC：连 host socket 发 `hello`，取回活 host 的 hostId（带超时）。
+/// 连不上 / 超时 / 响应缺 hostId → None。
+#[cfg(unix)]
+pub async fn probe_hello_host_id(timeout: std::time::Duration) -> Option<String> {
+    use tokio::io::AsyncReadExt as _;
+    use tokio::io::AsyncWriteExt as _;
+    let mut stream = tokio::time::timeout(
+        timeout,
+        tokio::net::UnixStream::connect(host_socket_path()),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    let req = ion_protocol::Request::rpc("pid-verify", "hello", serde_json::json!({}));
+    let line = serde_json::to_string(&req).ok()?;
+    stream.write_all(format!("{line}\n").as_bytes()).await.ok()?;
+    // 读一行响应（timeout 兜底防挂）
+    let mut buf = Vec::with_capacity(256);
+    let mut chunk = [0u8; 512];
+    loop {
+        let n = tokio::time::timeout(timeout, stream.read(&mut chunk))
+            .await
+            .ok()?
+            .ok()?;
+        if n == 0 {
+            return None;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if buf.ends_with(b"\n") || buf.len() > 64 * 1024 {
+            break;
         }
     }
+    let v: serde_json::Value = serde_json::from_slice(&buf).ok()?;
+    v.get("data")?.get("hostId")?.as_str().map(str::to_string)
+}
+
+/// socket 文件属主校验（安全加固 G1）：删除既有 sock 文件前确认属主是当前
+/// euid——防止误删/越权清理共享目录里不属于自己的文件（同 uid 攻击者本就
+/// 可以任意 DoS，这里收紧的是"跨用户/误操作"面）。
+#[cfg(unix)]
+pub fn socket_file_owned_by_self(path: &std::path::Path) -> bool {
+    socket_file_owned_by(path, current_euid())
+}
+
+/// 当前进程有效 uid（直调 syscall，避免引入 libc crate——与 libc_kill 同策略）。
+#[cfg(unix)]
+fn current_euid() -> u32 {
+    unsafe {
+        unsafe extern "C" {
+            fn geteuid() -> u32;
+        }
+        geteuid()
+    }
+}
+
+/// [`socket_file_owned_by_self`] 的 euid 注入版（测试跨属主分支用）。
+#[cfg(unix)]
+pub(crate) fn socket_file_owned_by(path: &std::path::Path, euid: u32) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    std::fs::metadata(path)
+        .map(|m| m.uid() == euid)
+        .unwrap_or(false)
 }
 
 // 跨平台 kill(pid, 0)。libc 在所有 unix 上都有；windows 不支持 Unix socket 跳过。
@@ -1097,5 +1283,226 @@ mod tests {
         // agent_dir_exists returns a bool — just verify it doesn't panic
         let _result = agent_dir_exists();
         // The result depends on the environment, so we just ensure it runs
+    }
+
+    // ── G1 加固：pid 文件身份 + host_running 判定矩阵（文件系统级模拟）──────
+
+    fn pid_tmp_path(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "ion-pid-test-{}-{}",
+            tag,
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&d);
+        d.join("host.pid")
+    }
+
+    #[test]
+    fn test_host_pid_file_json_roundtrip() {
+        let path = pid_tmp_path("roundtrip");
+        let info = HostPidInfo {
+            pid: 4242,
+            host_id: Some("abc-uuid-123".into()),
+            started_at_ms: Some(1_700_000_000_000),
+        };
+        write_host_pid_file_at(&path, &info).expect("write");
+        // 原子性：rename 落位后不留 .tmp 残渣
+        assert!(!path.with_file_name("host.pid.tmp").exists());
+        let got = read_host_pid_info_at(&path).expect("read");
+        assert_eq!(got, info);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn test_host_pid_file_legacy_number_and_garbage() {
+        let legacy = pid_tmp_path("legacy");
+        std::fs::write(&legacy, "9999\n").unwrap();
+        let got = read_host_pid_info_at(&legacy).expect("legacy parse");
+        assert_eq!(got.pid, 9999);
+        assert_eq!(got.host_id, None, "旧格式无 hostId");
+        assert_eq!(got.started_at_ms, None);
+
+        let garbage = pid_tmp_path("garbage");
+        std::fs::write(&garbage, "not a pid at all").unwrap();
+        assert!(read_host_pid_info_at(&garbage).is_none(), "垃圾内容 → None");
+        // 与旧行为一致：不可解析不删文件（留给启动诊断）
+        assert!(garbage.exists());
+        let _ = std::fs::remove_dir_all(garbage.parent().unwrap());
+    }
+
+    #[test]
+    fn test_host_running_matrix() {
+        let _guard = env_test_lock(); // host_running 读 ION_HOST_SOCKET，串行
+        let dir = std::env::temp_dir().join(format!("ion-running-matrix-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let sock = dir.join("m.sock");
+        let pid_file = dir.join("m.pid");
+        // host_pid_path 由 ION_HOST_SOCKET 派生 → 用 env 把矩阵隔离到临时目录
+        unsafe {
+            std::env::set_var("ION_HOST_SOCKET", &sock);
+        }
+
+        // 场景 1：无 pid 文件 → None
+        let _ = std::fs::remove_file(&pid_file);
+        assert_eq!(host_running(), None);
+
+        // 场景 2：本进程 pid（存活）+ JSON 带 hostId → Some(own pid)
+        write_host_pid_file_at(&pid_file, &HostPidInfo {
+            pid: std::process::id(),
+            host_id: Some("live-host-id".into()),
+            started_at_ms: Some(1),
+        })
+        .unwrap();
+        assert_eq!(host_running(), Some(std::process::id()));
+
+        // 场景 3：本进程 pid + 旧格式纯数字 → Some（兼容）
+        std::fs::write(&pid_file, format!("{}\n", std::process::id())).unwrap();
+        assert_eq!(host_running(), Some(std::process::id()));
+
+        // 场景 4：死 pid → None + 陈旧文件被顺手清理
+        // 造一个确定已死的 pid：fork 出后立即退出的子进程
+        let dead = {
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg("echo $$; exit 0")
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .parse::<u32>()
+                .unwrap()
+        };
+        std::thread::sleep(std::time::Duration::from_millis(50)); // 确保 reaped
+        write_host_pid_file_at(&pid_file, &HostPidInfo {
+            pid: dead,
+            host_id: Some("ghost".into()),
+            started_at_ms: Some(1),
+        })
+        .unwrap();
+        assert_eq!(host_running(), None, "死 pid 必须判不在跑");
+        assert!(!pid_file.exists(), "陈旧 pid 文件应被清理（自愈）");
+
+        // 场景 5：垃圾内容 → None（不删，留诊断）
+        std::fs::write(&pid_file, "garbage").unwrap();
+        assert_eq!(host_running(), None);
+        assert!(pid_file.exists());
+
+        unsafe {
+            std::env::remove_var("ION_HOST_SOCKET");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_host_running_verified_identity() {
+        let _guard = env_test_lock();
+        let dir = std::env::temp_dir().join(format!("ion-verified-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let sock = dir.join("v.sock");
+        let pid_file = dir.join("v.pid");
+        unsafe {
+            std::env::set_var("ION_HOST_SOCKET", &sock);
+        }
+
+        // 场景 A：pid 存活 + socket 背后 host 的 hostId 与 pid 文件一致 → Verified
+        let live_id = ion_protocol::generate_host_id();
+        write_host_pid_file_at(&pid_file, &HostPidInfo {
+            pid: std::process::id(),
+            host_id: Some(live_id.clone()),
+            started_at_ms: Some(1),
+        })
+        .unwrap();
+        // 起一个真 socket 假装 host：accept 后按 hello 协议回报 hostId
+        let listener = std::sync::Arc::new(tokio::net::UnixListener::bind(&sock).unwrap());
+        let server_id = live_id.clone();
+        let listener2 = std::sync::Arc::clone(&listener);
+        let server = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+            let (mut s, _) = listener2.accept().await.unwrap();
+            let mut buf = vec![0u8; 512];
+            let n = s.read(&mut buf).await.unwrap_or(0);
+            if n > 0 {
+                let reply = serde_json::json!({
+                    "id": "pid-verify",
+                    "type": "response",
+                    "command": "hello",
+                    "success": true,
+                    "data": {"protocolVersion": 1, "hostId": server_id},
+                });
+                let _ = s
+                    .write_all(format!("{}\n", reply).as_bytes())
+                    .await;
+            }
+        });
+        let checked = host_running_verified(std::time::Duration::from_secs(2)).await;
+        assert!(
+            matches!(checked, HostIdentityCheck::Verified(_)),
+            "身份一致必须 Verified: {checked:?}"
+        );
+        server.await.unwrap();
+
+        // 场景 B：pid 存活 + socket 背后 hostId 不一致 → IdentityMismatch
+        let listener3 = std::sync::Arc::clone(&listener);
+        let server = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+            let (mut s, _) = listener3.accept().await.unwrap();
+            let mut buf = vec![0u8; 512];
+            let n = s.read(&mut buf).await.unwrap_or(0);
+            if n > 0 {
+                let reply = serde_json::json!({
+                    "id": "pid-verify",
+                    "type": "response",
+                    "command": "hello",
+                    "success": true,
+                    "data": {"protocolVersion": 1, "hostId": "a-different-host"},
+                });
+                let _ = s
+                    .write_all(format!("{}\n", reply).as_bytes())
+                    .await;
+            }
+        });
+        let checked = host_running_verified(std::time::Duration::from_secs(2)).await;
+        assert_eq!(
+            checked,
+            HostIdentityCheck::IdentityMismatch { pid: std::process::id() },
+            "身份不一致必须拒绝（pid 复用防线）"
+        );
+        server.await.unwrap();
+
+        // 场景 C：socket 探活失败 → Unconfirmed。删掉 sock 文件造"socket 不存在"。
+        drop(listener);
+        let _ = std::fs::remove_file(&sock);
+        let checked = host_running_verified(std::time::Duration::from_millis(300)).await;
+        assert_eq!(checked, HostIdentityCheck::Unconfirmed, "探活失败 → Unconfirmed");
+        // 场景 D：死 pid → Unconfirmed + 陈旧文件清理
+        write_host_pid_file_at(&pid_file, &HostPidInfo {
+            pid: 2_000_000_000, // 远超正常 pid 上限的值，确定无此进程
+            host_id: Some("ghost".into()),
+            started_at_ms: Some(1),
+        })
+        .unwrap();
+        let checked = host_running_verified(std::time::Duration::from_millis(100)).await;
+        assert_eq!(checked, HostIdentityCheck::Unconfirmed);
+        assert!(!pid_file.exists(), "死 pid 的陈旧文件应被清理");
+
+        unsafe {
+            std::env::remove_var("ION_HOST_SOCKET");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_socket_file_ownership_check() {
+        let dir = std::env::temp_dir().join(format!("ion-owner-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let f = dir.join("s.sock");
+        std::fs::write(&f, b"placeholder").unwrap();
+        // 本进程创建的文件属主 = 自己
+        assert!(socket_file_owned_by_self(&f));
+        // 注入别人的 euid → 拒绝
+        assert!(!socket_file_owned_by(&f, current_euid() + 1));
+        // 不存在的文件 → 拒绝（fail-closed）
+        assert!(!socket_file_owned_by_self(&dir.join("nope.sock")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

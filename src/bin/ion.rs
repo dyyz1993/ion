@@ -5085,15 +5085,38 @@ async fn cmd_serve_stop() {
             println!("✔ Shutdown signal sent to host server");
         }
         Err(_) => {
-            // Socket not available, try force-kill from PID file
-            if let Some(pid) = ion::paths::host_running() {
-                #[cfg(unix)]
-                let _ = std::process::Command::new("kill")
-                    .args([&pid.to_string()])
-                    .status();
-                println!("✔ Host stopped");
-            } else {
-                println!("✘ Host not running");
+            // Socket not available: identity-gated force-kill from PID file.
+            // 身份不匹配（pid 疑似被复用）→ 拒绝强杀（G1：杀到无辜进程比
+            // 少杀一个僵尸 pid 文件严重得多）。
+            match ion::paths::host_running_verified(std::time::Duration::from_millis(500)).await {
+                ion::paths::HostIdentityCheck::Verified(info) => {
+                    // socket 连不上但 pid 存活 + 身份确认 = host 假死，强制回收
+                    #[cfg(unix)]
+                    let _ = std::process::Command::new("kill")
+                        .args([&info.pid.to_string()])
+                        .status();
+                    println!("✔ Host stopped (force-killed pid {})", info.pid);
+                }
+                ion::paths::HostIdentityCheck::IdentityMismatch { pid } => {
+                    println!(
+                        "✘ 拒绝强杀：pid {pid} 的身份与 socket 记录不符（pid 可能已被其他进程复用）。请手动确认后 kill。"
+                    );
+                    return;
+                }
+                ion::paths::HostIdentityCheck::Unconfirmed => {
+                    // hello 探活失败但 pid 存活的假死场景兜底：host_running()
+                    // 确认 pid 还活着就按旧语义强杀（不比旧版更冒险）
+                    if let Some(pid) = ion::paths::host_running() {
+                        #[cfg(unix)]
+                        let _ = std::process::Command::new("kill")
+                            .args([&pid.to_string()])
+                            .status();
+                        println!("✔ Host stopped (force-killed pid {pid})");
+                    } else {
+                        println!("✘ Host not running");
+                        return;
+                    }
+                }
             }
         }
     }
@@ -5102,14 +5125,26 @@ async fn cmd_serve_stop() {
     let _ = std::fs::remove_file(&ion::paths::host_pid_path());
 }
 
-/// Check host server status: read PID file and verify process.
+/// Check host server status: pid 文件 + 身份验活（G1）。
 async fn cmd_serve_status() {
-    if let Some(pid) = ion::paths::host_running() {
-        println!("✔ Host running (pid {pid})");
-        println!("   Socket: {}", ion::paths::host_socket_path().display());
-    } else {
-        println!("✘ Host not running");
-        println!("   Start with: ion serve");
+    match ion::paths::host_running_verified(std::time::Duration::from_millis(500)).await {
+        ion::paths::HostIdentityCheck::Verified(info) => {
+            match &info.host_id {
+                Some(hid) => println!("✔ Host running (pid {}, hostId {hid})", info.pid),
+                None => println!("✔ Host running (pid {}, 旧格式 pid 文件，无 hostId)", info.pid),
+            }
+            println!("   Socket: {}", ion::paths::host_socket_path().display());
+        }
+        ion::paths::HostIdentityCheck::IdentityMismatch { pid } => {
+            println!(
+                "⚠️ pid 文件指向 pid {pid} 且进程存活，但 socket 背后 host 的身份不匹配（pid 可能已被复用）"
+            );
+            println!("   请用 `ion serve stop` 清理或手动确认。");
+        }
+        ion::paths::HostIdentityCheck::Unconfirmed => {
+            println!("✘ Host not running");
+            println!("   Start with: ion serve");
+        }
     }
 }
 
@@ -5391,6 +5426,74 @@ fn socket_peer_allowed(peer_uid: Option<u32>) -> bool {
     }
 }
 
+// ── Unix socket 绑定仲裁（安全加固 G1：死链重绑竞态）──
+
+/// bind 仲裁结果（行为测试断言用）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BindOutcome {
+    /// 干净启动：目标路径无文件，直接 bind 成功
+    Bound,
+    /// 死链清理后重绑成功（属主校验通过）
+    ReboundAfterDeadLink,
+}
+
+/// Unix socket 绑定仲裁：
+/// 1. 直接 bind（路径无文件 → 成功；死链/活链残留 → EADDRINUSE 失败）
+/// 2. 失败后探测：connect 连通 = 有活 host 在监听 → Err（**绝不删活 host 的
+///    sock 文件**——旧实现 bind 前无条件 remove，正是这个 DoS 面）
+/// 3. 探测失败 = 死链 → 校验 sock 文件属主（仅当前 euid 允许清理，防误删/
+///    越权）→ remove → **立即**重试 bind（两步之间零 I/O，把同 uid 攻击者的
+///    抢绑窗口压到最窄；要完全归零需 bind-to-temp + rename 原子接管，见报告）
+///
+/// 纯同步（探测用 std UnixStream::connect，bind 是系统调用）——测试友好。
+fn bind_host_socket(
+    sock_path: &std::path::Path,
+) -> Result<(tokio::net::UnixListener, BindOutcome), String> {
+    #[cfg(unix)]
+    let euid = current_euid();
+    #[cfg(not(unix))]
+    let euid = 0u32;
+    bind_host_socket_as(sock_path, euid)
+}
+
+/// `bind_host_socket` 的 euid 注入版（测试跨属主拒绝分支用）。
+#[cfg(unix)]
+fn bind_host_socket_as(
+    sock_path: &std::path::Path,
+    euid: u32,
+) -> Result<(tokio::net::UnixListener, BindOutcome), String> {
+    use std::os::unix::fs::MetadataExt as _;
+    match tokio::net::UnixListener::bind(sock_path) {
+        Ok(l) => Ok((l, BindOutcome::Bound)),
+        Err(first_err) => {
+            let probe = std::os::unix::net::UnixStream::connect(sock_path);
+            if probe.is_ok() {
+                return Err(format!(
+                    "Failed to bind Unix socket at {}: {first_err}（有活 host 在监听，拒绝动它的 sock 文件）",
+                    sock_path.display()
+                ));
+            }
+            // 死链。属主校验：只允许清理当前用户自己的 sock 文件
+            let owner_ok = std::fs::metadata(sock_path)
+                .map(|m| m.uid() == euid)
+                .unwrap_or(false);
+            if !owner_ok {
+                return Err(format!(
+                    "sock 文件存在但无人监听，且属主非当前用户，拒绝清理: {}",
+                    sock_path.display()
+                ));
+            }
+            let _ = std::fs::remove_file(sock_path);
+            // 窗口最小化：remove 与 bind 之间不做任何其他 I/O
+            tokio::net::UnixListener::bind(sock_path)
+                .map(|l| (l, BindOutcome::ReboundAfterDeadLink))
+                .map_err(|e2| {
+                    format!("死链清理后重绑仍失败 ({}): {e2}", sock_path.display())
+                })
+        }
+    }
+}
+
 async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_workers: usize) {
     use ion::worker_registry::WorkerRegistry;
     use parking_lot::Mutex;
@@ -5408,6 +5511,9 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
         // Inject EventBus so Monitor/GlobalMemory singletons can broadcast events
         // (otherwise subscribe CLI cannot see monitor_triggered etc.)
         reg.set_event_bus(Arc::clone(&event_bus));
+        // C3 TOFU 加固：spawn/refresh 在静态上下文拿不到 registry——借全局 slot
+        // 广播 SshHostKeyFirstSeen / SshHostKeyPinned 事件（subscribe 可见）
+        ion::worker_registry::set_global_event_bus(Arc::clone(&event_bus));
         reg.register_singleton(Box::new(
             ion::global_memory_ext::GlobalMemoryExtension::new(),
         ));
@@ -5423,50 +5529,55 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
         ion::worker_registry::WorkerRegistry::post_init_singletons(&post_init_registry).await;
     });
 
-    // ── Host 单例检查 + Unix socket 启动 ──
+    // ── Host 单例检查 + Unix socket 启动（安全加固 G1）──
     // PID 文件防重复启动；Unix socket 让外部 `ion rpc` 能连进来。
     // ⚠️ socket bind 必须在 MCP connect 之前——否则 MCP 30s 超时会阻塞 socket 创建，
     // 导致 CI 并发时 host 起不来（rpc 连不上）。
-    if let Some(pid) = ion::paths::host_running() {
-        eprintln!(
-            "❌ Host already running (pid {pid}). Stop it first or use `ion rpc` to connect."
-        );
-        return;
+    // 预检用身份级验活（pid 文件 hostId vs socket hello 回报的 hostId）：
+    // - Verified / IdentityMismatch → 已经有 host 在跑（哪怕 pid 文件陈旧但
+    //   socket 被另一个 host 占着），直接退出——真正的单例仲裁是下面的 bind。
+    match ion::paths::host_running_verified(std::time::Duration::from_millis(500)).await {
+        ion::paths::HostIdentityCheck::Verified(info) => {
+            eprintln!(
+                "❌ Host already running (pid {}). Stop it first or use `ion rpc` to connect.",
+                info.pid
+            );
+            return;
+        }
+        ion::paths::HostIdentityCheck::IdentityMismatch { pid } => {
+            eprintln!(
+                "❌ Socket 已被另一个 host 占用（pid 文件指向 pid {pid}，但身份不匹配——pid 可能已被复用）。请先 `ion serve stop`。"
+            );
+            return;
+        }
+        ion::paths::HostIdentityCheck::Unconfirmed => {}
     }
     let sock_path = ion::paths::host_socket_path();
-    // 清理 stale socket 文件（上次崩溃残留）
-    let _ = std::fs::remove_file(&sock_path);
-    let listener = match tokio::net::UnixListener::bind(&sock_path) {
-        Ok(l) => l,
-        Err(e) => {
-            // 死链自清重试：gateway 自愈等场景下，新 host 可能在旧 sock 文件
-            // 还没被清掉时启动（上一个 host 已死但文件残留）→ bind 失败。
-            // 探测确认无人监听后删除重试一次。
-            let probe = std::os::unix::net::UnixStream::connect(&sock_path);
-            if probe.is_err() {
-                eprintln!(
-                    "⚠️ sock 文件存在但无人监听（死链），清理后重试: {}",
-                    sock_path.display()
-                );
-                let _ = std::fs::remove_file(&sock_path);
-                match tokio::net::UnixListener::bind(&sock_path) {
-                    Ok(l) => l,
-                    Err(e2) => {
-                        eprintln!("❌ 重试仍失败: {e2}");
-                        return;
-                    }
-                }
-            } else {
-                eprintln!(
-                    "❌ Failed to bind Unix socket at {}: {e}（有活 host 在监听）",
-                    sock_path.display()
-                );
-                return;
-            }
+    // G1 bind 仲裁：旧实现 bind 前无条件 remove sock 文件 = DoS 面（host_running
+    // 预检与 bind 之间活 host 出现时，会把它的 socket 文件删掉——新连接全部
+    // ENOENT，旧 host 无声残废）。新序：先直接 bind；失败再探测分诊——
+    // 探测连通 = 有活 host 在监听（不删，退出）；探测失败 = 死链（校验 sock
+    // 文件属主后删，立即重绑——remove 与 bind 之间零 I/O，把同 uid 抢绑窗口
+    // 压到最窄）。
+    let (listener, bind_outcome) = match bind_host_socket(&sock_path) {
+        Ok(ok) => ok,
+        Err(reason) => {
+            eprintln!("❌ {reason}");
+            return;
         }
-    }; // 写 PID 文件
-    let pid_path = ion::paths::host_pid_path();
-    let _ = std::fs::write(&pid_path, std::process::id().to_string());
+    };
+    if bind_outcome == BindOutcome::ReboundAfterDeadLink {
+        eprintln!(
+            "⚠️ 清理了无人监听的死链 sock 文件后重绑: {}（属主校验通过）",
+            sock_path.display()
+        );
+    }
+    // G1：pid 文件在 bind 成功之后写（先 bind 后 pid，原子 rename 落位），
+    // 内容带 hostId（与 hello 回报同源，进程内存态随机）——bind 失败绝不留下
+    // "host 在跑"的假象；host_running_verified 靠 hostId 比对防 pid 复用误判。
+    if let Err(e) = ion::paths::write_host_pid_file() {
+        eprintln!("⚠️ 写 pid 文件失败: {e}（继续启动，重复启动防护降级为 bind 仲裁）");
+    }
     eprintln!("🔌 Host listening on Unix socket: {}", sock_path.display());
 
     // ── 索引逆向对账（GC 只删不补的单向缺口）：启动时扫磁盘 JSONL，把索引
@@ -6416,7 +6527,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
     let _ = main_handle.await;
 
     // 退出时清理 PID + socket 文件
-    let _ = std::fs::remove_file(&pid_path);
+    let _ = std::fs::remove_file(ion::paths::host_pid_path());
     let _ = std::fs::remove_file(&sock_path);
     eprintln!("Host stopped");
 }
@@ -10255,5 +10366,107 @@ mod subscribe_protocol_tests {
     #[test]
     fn ui_respond_allowed_after_ui_subscribe_on_same_connection() {
         assert!(ui_respond_origin_error(true).is_none());
+    }
+}
+
+// ── G1 安全加固：host socket 绑定仲裁行为测试（文件系统级模拟，全本地）────
+#[cfg(test)]
+mod bind_arbitration_tests {
+    use super::*;
+
+    fn tmp_sock(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ion-bind-{}-{}-{}",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("host.sock")
+    }
+
+    /// 场景 1：干净启动——目标路径无文件，直接 bind 成功
+    #[tokio::test]
+    async fn bind_fresh_path_succeeds() {
+        let sock = tmp_sock("fresh");
+        let (listener, outcome) = bind_host_socket(&sock).expect("fresh bind");
+        assert_eq!(outcome, BindOutcome::Bound);
+        // bind 出来的确实是可用 socket：能连上（kernel listen 已生效）
+        assert!(std::os::unix::net::UnixStream::connect(&sock).is_ok());
+        drop(listener);
+        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+    }
+
+    /// 场景 2：活 host 在监听 → Err 且**不删它的 sock 文件**（G1 DoS 面核心断言：
+    /// 旧实现 bind 前无条件 remove_file 会把活 host 的 socket 拆掉）
+    #[tokio::test]
+    async fn bind_refuses_when_live_host_listens() {
+        let sock = tmp_sock("live");
+        let _live = std::os::unix::net::UnixListener::bind(&sock).expect("live host");
+        let before = std::fs::metadata(&sock).unwrap();
+        let err = bind_host_socket(&sock).expect_err("must refuse live host");
+        assert!(err.contains("有活 host"), "err = {err}");
+        // sock 文件原封不动（同一 inode：未被删除重建）
+        let after = std::fs::metadata(&sock).unwrap();
+        use std::os::unix::fs::MetadataExt as _;
+        assert_eq!(before.ino(), after.ino(), "活 host 的 sock 文件被动过 = DoS 回归");
+    }
+
+    /// 场景 3：死链（无人监听的残留文件）→ 探测失败 → 属主校验通过 → 清理重绑
+    #[tokio::test]
+    async fn bind_recovers_from_dead_link() {
+        let sock = tmp_sock("dead");
+        // 占位普通文件模拟崩溃残留（connect 必失败 = 无人监听）
+        std::fs::write(&sock, b"stale").unwrap();
+        let (listener, outcome) = bind_host_socket(&sock).expect("dead-link rebind");
+        assert_eq!(outcome, BindOutcome::ReboundAfterDeadLink);
+        // 残留文件确实被替换成了真 socket
+        assert!(std::os::unix::net::UnixStream::connect(&sock).is_ok());
+        drop(listener);
+        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+    }
+
+    /// 场景 4：死链但属主非当前用户 → 拒绝清理（不删别人文件）
+    #[tokio::test]
+    async fn bind_refuses_foreign_owned_dead_link() {
+        let sock = tmp_sock("foreign");
+        std::fs::write(&sock, b"not-mine").unwrap();
+        // euid 注入一个肯定不是自己的值（+1；测试进程非 root，uid 不会顶到边界）
+        #[cfg(unix)]
+        {
+            let err = bind_host_socket_as(&sock, current_euid() + 1)
+                .expect_err("foreign-owned dead link must be refused");
+            assert!(err.contains("属主非当前用户"), "err = {err}");
+            // 文件还在（没被误删）
+            assert!(sock.exists());
+        }
+        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+    }
+
+    /// 场景 5：pid 文件在 bind 成功之后写（G1 顺序要求）——
+    /// 行为等价验证：write_host_pid_file_at 产生的文件可被 host_running 判活，
+    /// 且 hostId 与 ion_protocol::host_id() 同源
+    #[tokio::test]
+    async fn pid_file_written_after_bind_carries_host_id() {
+        let dir = tmp_sock("pidorder").parent().unwrap().to_path_buf();
+        let pid_file = dir.join("host.pid");
+        let sock = dir.join("host.sock");
+        let (_listener, _) = bind_host_socket(&sock).expect("bind first");
+        // 顺序断言（编译期约束 bind→pid）：bind 拿到 listener 之后才允许写 pid
+        ion::paths::write_host_pid_file_at(
+            &pid_file,
+            &ion::paths::HostPidInfo {
+                pid: std::process::id(),
+                host_id: Some(ion_protocol::host_id().to_string()),
+                started_at_ms: Some(1),
+            },
+        )
+        .unwrap();
+        let info = ion::paths::read_host_pid_info_at(&pid_file).unwrap();
+        assert_eq!(info.host_id.as_deref(), Some(ion_protocol::host_id()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
