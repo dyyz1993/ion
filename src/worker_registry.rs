@@ -103,6 +103,302 @@ fn sh_quote_remote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+// ---------------------------------------------------------------------------
+// SSH host key TOFU 加固（安全调研 C3）
+//
+// 现状：ssh 参数用 StrictHostKeyChecking=accept-new——首连任何应答者都会被
+// 写进用户 known_hosts，等于把该 host 的 key 抢注权交给路径上的任何 MITM。
+// 加固设计（保持现有主机零破坏）：
+// 1. 配置 `host_key_fingerprint`（SHA256:base64，ssh-keygen -l 标准形态）→
+//    spawn 前先 `ssh-keyscan` 拉取远端 host key → SHA256 指纹与配置比对 →
+//    匹配才把该 key 写入临时 known_hosts，并以 `StrictHostKeyChecking=yes`
+//    精确 pin 连接（MITM 无法出示指纹匹配的 key，除非持有真实私钥可证明
+//    身份——那就不是 MITM）；不匹配 → 拒绝 spawn（fail-closed）。
+//    （注：known_hosts 条目需要 key 本体而非指纹，所以必须 keyscan 取 key
+//    再验指纹——这也是 Ansible/Terraform tofu 的标准做法。）
+// 2. 未配置指纹 → 保持 accept-new（无人值守 spawn 不能卡交互确认），但每个
+//    host 进程内对同一目标首次连接发 `SshHostKeyFirstSeen` 警告事件（data 含
+//    host+指纹），让用户/巡检看见 TOFU 发生并尽快 pin；pin 成功发
+//    `SshHostKeyPinned` 事件。
+// 测试全部本地化：只测参数构造 / 指纹校验 / keyscan 输出解析 / known_hosts
+// 文件写入，不 ssh 任何机器（keyscan 执行体在 resolve 里，单测不触达）。
+// ---------------------------------------------------------------------------
+
+/// host key 策略解析结果：决定 ssh argv 携带哪个 host key 选项。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum HostKeyPolicy {
+    /// 未配置指纹 → `StrictHostKeyChecking=accept-new`（TOFU）。
+    /// 同一 host 进程内首次使用该目标时发 `SshHostKeyFirstSeen` 警告事件。
+    Tofu,
+    /// 指纹配置且 keyscan 校验通过 → 临时 known_hosts 精确 pin。
+    Pinned { known_hosts: std::path::PathBuf },
+}
+
+/// 指纹格式校验：`SHA256:` 前缀 + base64 标准字符集（ssh-keygen -l 输出为
+/// 43 字符无 padding；容忍带一个 `=` 的 44 字符写法）。
+pub(crate) fn validate_host_key_fingerprint(fp: &str) -> Result<(), String> {
+    let Some(body) = fp.strip_prefix("SHA256:") else {
+        return Err(format!(
+            "host_key_fingerprint 必须以 'SHA256:' 开头（ssh-keygen -l 标准形态）: {fp:?}"
+        ));
+    };
+    let trimmed = body.strip_suffix('=').unwrap_or(body);
+    if trimmed.len() != 43 {
+        return Err(format!(
+            "host_key_fingerprint 主体应为 43 字符 base64（实际 {} 字符）: {fp:?}",
+            trimmed.len()
+        ));
+    }
+    if !trimmed
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/')
+    {
+        return Err(format!(
+            "host_key_fingerprint 含非法 base64 字符（仅允许 A-Za-z0-9+/=）: {fp:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// 从 base64 key 本体计算 SHA256 指纹（与 `ssh-keygen -lf` 等价：
+/// sha256(key bytes) → base64 无 padding → `SHA256:` 前缀）。
+pub(crate) fn compute_key_fingerprint(key_b64: &str) -> Option<String> {
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256};
+    let blob = base64::engine::general_purpose::STANDARD.decode(key_b64.trim()).ok()?;
+    let digest = Sha256::digest(&blob);
+    Some(format!(
+        "SHA256:{}",
+        base64::engine::general_purpose::STANDARD.encode(digest).trim_end_matches('=')
+    ))
+}
+
+/// 解析一行 ssh-keyscan 输出：`<host> <keytype> <key_b64>`（RFC 4253 公钥行）。
+/// 返回 (host 字段, keytype, key 本体)。注释行/格式不对 → None。
+pub(crate) fn parse_keyscan_line(line: &str) -> Option<(String, String, String)> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let mut parts = line.split_whitespace();
+    let host = parts.next()?.to_string();
+    let keytype = parts.next()?.to_string();
+    let key = parts.next()?.to_string();
+    // key 本体只能是 base64（防把后续字段误当 key）
+    if key
+        .bytes()
+        .any(|b| !(b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'='))
+    {
+        return None;
+    }
+    Some((host, keytype, key))
+}
+
+/// 把 key 材料改写成以 `hostname` 为 host 字段的 known_hosts 行。
+/// keyscan 不读 ~/.ssh/config：别名配置下 ssh 按**命令行原样主机名**匹配
+/// known_hosts，所以条目 host 字段必须重写为配置里的 hostname。
+pub(crate) fn known_hosts_line(hostname: &str, keytype: &str, key_b64: &str) -> String {
+    format!("{hostname} {keytype} {key_b64}")
+}
+
+/// 从 keyscan 输出行中挑出指纹匹配的行并写入临时 known_hosts（0600）。
+/// 纯本地 I/O（不 ssh）——单测直接喂行数据。
+/// 返回 (文件路径, 匹配的指纹)；没有任何 key 匹配 → Err。
+pub(crate) fn write_pinned_known_hosts(
+    dest_key: &str,
+    hostname: &str,
+    keyscan_lines: &[&str],
+    expected_fp: &str,
+) -> Result<(std::path::PathBuf, String), String> {
+    validate_host_key_fingerprint(expected_fp)?;
+    let mut matched: Vec<String> = Vec::new();
+    let mut matched_fp = String::new();
+    for line in keyscan_lines {
+        let Some((_, keytype, key_b64)) = parse_keyscan_line(line) else {
+            continue;
+        };
+        if let Some(fp) = compute_key_fingerprint(&key_b64)
+            && fp == expected_fp
+        {
+            matched.push(known_hosts_line(hostname, &keytype, &key_b64));
+            matched_fp = fp;
+        }
+    }
+    if matched.is_empty() {
+        return Err(format!(
+            "host key 指纹不匹配：远端出示的 key 没有一个等于配置的 {expected_fp}（疑似 MITM 或换机）— 拒绝连接"
+        ));
+    }
+    // 文件名对 dest 稳定（哈希），进程内/跨进程复用同一 pin 文件
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(dest_key.as_bytes());
+    let hex: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let path = std::env::temp_dir().join(format!("ion-ssh-pin-{}.known_hosts", &hex[..16]));
+    let content = matched.join("\n") + "\n";
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|e| format!("写临时 known_hosts 失败 ({}): {e}", path.display()))?;
+        f.write_all(content.as_bytes())
+            .map_err(|e| format!("写临时 known_hosts 失败 ({}): {e}", path.display()))?;
+    }
+    Ok((path, matched_fp))
+}
+
+/// 全局事件总线 slot：`prepare_worker_spawn` 是静态方法拿不到
+/// registry.event_bus，cmd_serve_start 启动时注入；spawn/refresh 等
+/// 静态上下文借此向所有 subscribe 端广播 host 侧事件。None 时静默。
+static GLOBAL_EVENT_BUS: std::sync::OnceLock<
+    std::sync::Arc<tokio::sync::Mutex<crate::event_bus::ExtensionEventBus>>,
+> = std::sync::OnceLock::new();
+
+/// 注入全局事件总线（host 启动时调用一次；重复调用以第一次为准）。
+pub fn set_global_event_bus(bus: std::sync::Arc<tokio::sync::Mutex<crate::event_bus::ExtensionEventBus>>) {
+    let _ = GLOBAL_EVENT_BUS.set(bus);
+}
+
+/// host 侧事件广播（无 runtime / 无总线时静默——单元测试环境安全）。
+pub fn broadcast_host_event_raw(custom_type: &str, data: serde_json::Value) {
+    let Some(bus) = GLOBAL_EVENT_BUS.get() else {
+        return;
+    };
+    let ev = crate::event_bus::ExtensionEvent::new("ssh", custom_type).with_data(data);
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        let bus = std::sync::Arc::clone(bus);
+        handle.spawn(async move {
+            bus.lock().await.broadcast(&ev);
+        });
+    }
+}
+
+/// TOFU 首连记录（内存态，按存储落位原则不建新文件——重启即丢、重新提醒，
+/// 误报方向安全）。
+fn tofu_seen_targets() -> &'static parking_lot::Mutex<std::collections::HashSet<String>> {
+    static SEEN: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    SEEN.get_or_init(|| parking_lot::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// pin 结果缓存：dest_key → 临时 known_hosts 路径（进程内 keyscan 一次）。
+fn pin_cache() -> &'static parking_lot::Mutex<std::collections::HashMap<String, std::path::PathBuf>> {
+    static CACHE: std::sync::OnceLock<
+        parking_lot::Mutex<std::collections::HashMap<String, std::path::PathBuf>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// keyscan 拉取远端 host key（带超时；输出行原样返回）。
+async fn ssh_keyscan(hostname: &str, port: Option<u16>) -> Result<Vec<String>, String> {
+    let mut cmd = tokio::process::Command::new("ssh-keyscan");
+    if let Some(p) = port
+        && p != 22
+    {
+        cmd.arg("-p").arg(p.to_string());
+    }
+    cmd.arg("-T").arg("5").arg(hostname);
+    let out = tokio::time::timeout(std::time::Duration::from_secs(8), cmd.output())
+        .await
+        .map_err(|_| format!("ssh-keyscan 超时（{hostname}）"))?
+        .map_err(|e| format!("ssh-keyscan 启动失败（请确认 PATH 里有 ssh-keyscan）: {e}"))?;
+    if !out.status.success() && out.stdout.is_empty() {
+        return Err(format!(
+            "ssh-keyscan 失败（{hostname}）: {}",
+            String::from_utf8_lossy(&out.stderr)
+                .chars()
+                .take(120)
+                .collect::<String>()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect())
+}
+
+/// 解析 host key 策略（spawn/refresh 共用）。
+///
+/// - `fingerprint` 已配置：keyscan → 指纹比对 → pin（进程内每目标只 keyscan
+///   一次，结果缓存）。任何一步失败都 fail-closed（拒绝连接）。
+/// - 未配置：TOFU（accept-new），`seen_key` 首次出现时 keyscan 取指纹（尽力
+///   而为，失败则事件省略指纹）发 `SshHostKeyFirstSeen` 警告事件。
+/// `hostname` 是 known_hosts 匹配用的命令行主机名（不含 user）。
+pub(crate) async fn resolve_host_key_policy(
+    dest_key: &str,
+    hostname: &str,
+    port: Option<u16>,
+    fingerprint: Option<&str>,
+    seen_key: &str,
+) -> Result<HostKeyPolicy, String> {
+    match fingerprint {
+        Some(fp) => {
+            validate_host_key_fingerprint(fp)?;
+            if let Some(p) = pin_cache().lock().get(dest_key) {
+                if p.exists() {
+                    return Ok(HostKeyPolicy::Pinned { known_hosts: p.clone() });
+                }
+            }
+            let lines = ssh_keyscan(hostname, port).await?;
+            let (path, got_fp) = write_pinned_known_hosts(dest_key, hostname, &lines.iter().map(String::as_str).collect::<Vec<_>>(), fp)?;
+            pin_cache().lock().insert(dest_key.to_string(), path.clone());
+            tracing::info!("[ssh-tofu] host key pinned: {dest_key} -> {}", path.display());
+            broadcast_host_event_raw(
+                "SshHostKeyPinned",
+                serde_json::json!({
+                    "host": dest_key,
+                    "fingerprint": got_fp,
+                    "known_hosts": path.display().to_string(),
+                }),
+            );
+            Ok(HostKeyPolicy::Pinned { known_hosts: path })
+        }
+        None => {
+            let first = tofu_seen_targets().lock().insert(seen_key.to_string());
+            if !first {
+                return Ok(HostKeyPolicy::Tofu);
+            }
+            // 尽力而为取指纹进事件（失败不阻塞 spawn——TOFU 本来就是宽松路径）
+            let fp = match ssh_keyscan(hostname, port).await {
+                Ok(lines) => lines.iter().find_map(|l| {
+                    parse_keyscan_line(l).and_then(|(_, _, k)| compute_key_fingerprint(&k))
+                }),
+                Err(e) => {
+                    tracing::warn!("[ssh-tofu] keyscan for FirstSeen event failed: {e}");
+                    None
+                }
+            };
+            tracing::warn!(
+                "[ssh-tofu] 首次以 accept-new 连接 {dest_key}（TOFU）：host key 抢注窗口存在，建议配置 host_key_fingerprint pin"
+            );
+            let mut data = serde_json::json!({
+                "host": dest_key,
+                "policy": "accept-new",
+                "hint": "config remote_workers.<name>.host_key_fingerprint = 'SHA256:...' 以精确 pin",
+            });
+            if let Some(fp) = fp {
+                data["fingerprint"] = serde_json::Value::String(fp);
+            }
+            broadcast_host_event_raw("SshHostKeyFirstSeen", data);
+            Ok(HostKeyPolicy::Tofu)
+        }
+    }
+}
+
+/// 从 ssh 目标（`user@host` / `host`）提取 known_hosts 匹配用的主机名。
+fn known_hosts_hostname(dest: &str) -> &str {
+    dest.rsplit('@').next().unwrap_or(dest)
+}
+
 /// 构造远程 worker 的 ssh 命令行（argv 形式，argv[0] = "ssh"）。
 ///
 /// 远端命令形状：`cd <cwd> && export K=V; …; exec <worker_bin> --mode rpc …`
@@ -114,6 +410,7 @@ fn build_remote_worker_argv(
     host: &crate::config::RemoteWorkerHost,
     cmd_args: &[String],
     envs: &[(String, String)],
+    key_policy: &HostKeyPolicy,
 ) -> Vec<String> {
     let mut argv: Vec<String> = vec!["ssh".into()];
     if let Some(p) = host.port
@@ -126,9 +423,21 @@ fn build_remote_worker_argv(
         argv.push("-i".into());
         argv.push(host.key.clone());
     }
-    // 首连自动接受 host key（TOFU）：无人值守 spawn 不能卡交互确认
-    argv.push("-o".into());
-    argv.push("StrictHostKeyChecking=accept-new".into());
+    // host key 策略（C3 TOFU 加固）：
+    // - pin：临时 known_hosts + 严格校验（MITM 无法出示指纹匹配的 key）
+    // - TOFU：首连自动接受 host key——无人值守 spawn 不能卡交互确认
+    match key_policy {
+        HostKeyPolicy::Pinned { known_hosts } => {
+            argv.push("-o".into());
+            argv.push("StrictHostKeyChecking=yes".into());
+            argv.push("-o".into());
+            argv.push(format!("UserKnownHostsFile={}", known_hosts.display()));
+        }
+        HostKeyPolicy::Tofu => {
+            argv.push("-o".into());
+            argv.push("StrictHostKeyChecking=accept-new".into());
+        }
+    }
     argv.push("-o".into());
     argv.push("ServerAliveInterval=30".into());
     // 容忍最长 ~5 分钟的网络瞬断（30s × 10 次才判死）——长任务任务中途
@@ -915,15 +1224,55 @@ impl WorkerRegistry {
                     format!("{}@{}", host_cfg.user, host_cfg.hostname)
                 }
             });
+            // host key 策略（C3）：管理通道主机名与 worker 通道一致才复用指纹
+            // pin——指纹 pin 的是**一台** host 的 key，refresh_dest 指向另一台
+            // （如 Windows sshd）时指纹不可复用，退回 TOFU + 首连事件。
+            let refresh_policy = if known_hosts_hostname(&dest) == host_cfg.hostname.as_str() {
+                match resolve_host_key_policy(
+                    &format!("refresh:{dest}"),
+                    known_hosts_hostname(&dest),
+                    None,
+                    host_cfg.host_key_fingerprint.as_deref(),
+                    &format!("refresh:{dest}"),
+                )
+                .await
+                {
+                    Ok(p) => p,
+                    Err(e) => {
+                        // 管理通道 pin 失败同样是 MITM 信号：fail-closed
+                        return Err(format!("[ssh-tofu] refresh 通道 host key 校验失败: {e}"));
+                    }
+                }
+            } else {
+                let _ = resolve_host_key_policy(
+                    &format!("refresh:{dest}"),
+                    known_hosts_hostname(&dest),
+                    None,
+                    None,
+                    &format!("refresh:{dest}"),
+                )
+                .await;
+                HostKeyPolicy::Tofu
+            };
             let mut argv = vec![
                 "ssh".to_string(),
                 "-o".into(),
                 "ConnectTimeout=8".into(),
                 "-o".into(),
                 "BatchMode=yes".into(),
-                "-o".into(),
-                "StrictHostKeyChecking=accept-new".into(),
             ];
+            match &refresh_policy {
+                HostKeyPolicy::Pinned { known_hosts } => {
+                    argv.push("-o".into());
+                    argv.push("StrictHostKeyChecking=yes".into());
+                    argv.push("-o".into());
+                    argv.push(format!("UserKnownHostsFile={}", known_hosts.display()));
+                }
+                HostKeyPolicy::Tofu => {
+                    argv.push("-o".into());
+                    argv.push("StrictHostKeyChecking=accept-new".into());
+                }
+            }
             if !host_cfg.key.is_empty() {
                 argv.push("-i".into());
                 argv.push(host_cfg.key.clone());
@@ -1047,7 +1396,16 @@ impl WorkerRegistry {
         let mut child_cmd = if let Some((host_name, host_cfg)) = &remote_host {
             // 远程执行端：ssh <dest> 'cd …; export …; exec ion --mode rpc …'
             // stdio 管道语义与本地完全一致 → 注册/事件泵/死亡检测零改动
-            let argv = build_remote_worker_argv(host_cfg, &cmd_args, &child_envs);
+            // host key 策略（C3 TOFU 加固）：pin 失败/指纹不匹配 → 拒绝 spawn
+            let key_policy = resolve_host_key_policy(
+                host_cfg.hostname.trim(),
+                host_cfg.hostname.trim(),
+                host_cfg.port,
+                host_cfg.host_key_fingerprint.as_deref(),
+                &format!("worker:{}", host_cfg.hostname.trim()),
+            )
+            .await?;
+            let argv = build_remote_worker_argv(host_cfg, &cmd_args, &child_envs, &key_policy);
             tracing::info!("[remote-worker] spawn on '{host_name}': {:?}", argv);
             let mut c = tokio::process::Command::new(&argv[0]);
             c.args(&argv[1..])
@@ -6278,6 +6636,7 @@ mod tests {
             refresh: None,
             refresh_dest: None,
             grants: None,
+            host_key_fingerprint: None,
         }
     }
 
@@ -6293,7 +6652,7 @@ mod tests {
         );
         let args = vec!["--mode".to_string(), "rpc".to_string()];
         let envs = vec![("ION_SPAWN_RELATION".to_string(), "child".to_string())];
-        let argv = build_remote_worker_argv(&host, &args, &envs);
+        let argv = build_remote_worker_argv(&host, &args, &envs, &HostKeyPolicy::Tofu);
         assert_eq!(argv[0], "ssh");
         assert!(argv.contains(&"sshuser@win38".to_string()));
         assert!(argv.contains(&"StrictHostKeyChecking=accept-new".to_string()));
@@ -6312,7 +6671,7 @@ mod tests {
     fn test_remote_worker_argv_port_key_defaults() {
         // 空 user → dest=hostname；非 22 端口加 -p；key 加 -i；空 bin/cwd 用默认
         let host = rh("", "192.168.0.38", Some(2222), "~/.ssh/id_ed25519", "", "");
-        let argv = build_remote_worker_argv(&host, &[], &[]);
+        let argv = build_remote_worker_argv(&host, &[], &[], &HostKeyPolicy::Tofu);
         assert!(argv.contains(&"-p".to_string()) && argv.contains(&"2222".to_string()));
         assert!(
             argv.contains(&"-i".to_string()) && argv.contains(&"~/.ssh/id_ed25519".to_string())
@@ -6323,7 +6682,7 @@ mod tests {
         assert!(rc.starts_with("exec '/usr/local/bin/ion'"), "rc = {rc}");
         // 22 端口不加 -p（交给 ~/.ssh/config）
         let host22 = rh("u", "h", Some(22), "", "", "");
-        let argv22 = build_remote_worker_argv(&host22, &[], &[]);
+        let argv22 = build_remote_worker_argv(&host22, &[], &[], &HostKeyPolicy::Tofu);
         assert!(!argv22.contains(&"-p".to_string()));
     }
 
@@ -6346,6 +6705,190 @@ mod tests {
         assert_eq!(lint_portability("all Users must comply"), None);
     }
 
+    // ── C3 TOFU 加固：指纹校验 / keyscan 解析 / pin 流程（全本地，不 ssh）─────
+
+    /// ssh-keygen 真实输出向量（临时 ed25519 key 生成后即删）：
+    /// pub = AAAAC3NzaC1lZDI1NTE5AAAAIMRn8IYJaov2qDwO1NGj2FeHf++gJpqGXDmmCk2ieSin
+    /// fp  = SHA256:DM98oAaAK8j1rpG9dgnQ8x/uG+wMfmk45KRxE1ZzJQg
+    const TEST_KEY_B64: &str =
+        "AAAAC3NzaC1lZDI1NTE5AAAAIMRn8IYJaov2qDwO1NGj2FeHf++gJpqGXDmmCk2ieSin";
+    const TEST_FP: &str = "SHA256:DM98oAaAK8j1rpG9dgnQ8x/uG+wMfmk45KRxE1ZzJQg";
+
+    #[test]
+    fn test_fingerprint_validation_accepts_ssh_keygen_form() {
+        assert_eq!(validate_host_key_fingerprint(TEST_FP), Ok(()));
+        // 容忍人为补 padding 的写法
+        let padded = format!("{TEST_FP}=");
+        assert_eq!(validate_host_key_fingerprint(&padded), Ok(()));
+    }
+
+    #[test]
+    fn test_fingerprint_validation_rejects_bad_forms() {
+        // 缺前缀
+        assert!(
+            validate_host_key_fingerprint("DM98oAaAK8j1rpG9dgnQ8x/uG+wMfmk45KRxE1ZzJQg").is_err()
+        );
+        // 错误哈希前缀（md5 形态）
+        assert!(validate_host_key_fingerprint("MD5:ab:cd").is_err());
+        // 主体太短/太长
+        assert!(validate_host_key_fingerprint("SHA256:tooshort").is_err());
+        assert!(validate_host_key_fingerprint(&format!("SHA256:{}", "A".repeat(44))).is_err());
+        // 非法字符（base64 标准集外）
+        assert!(
+            validate_host_key_fingerprint(&format!("SHA256:{}", "A".repeat(42) + "!A")).is_err()
+        );
+        // 空
+        assert!(validate_host_key_fingerprint("").is_err());
+        assert!(validate_host_key_fingerprint("SHA256:").is_err());
+    }
+
+    #[test]
+    fn test_compute_key_fingerprint_matches_ssh_keygen() {
+        assert_eq!(
+            compute_key_fingerprint(TEST_KEY_B64).as_deref(),
+            Some(TEST_FP)
+        );
+        // 不同 key → 不同指纹
+        let other = "AAAAC3NzaC1lZDI1NTE5AAAAIHZzQ0h6RVZiY0ZqUXJlUXZmb29iYXIgYmF6IGNhbA";
+        assert_ne!(
+            compute_key_fingerprint(other).as_deref(),
+            Some(TEST_FP),
+            "不同 key 撞指纹 = 校验失效"
+        );
+        // 非 base64 → None
+        assert_eq!(compute_key_fingerprint("not base64!!"), None);
+    }
+
+    #[test]
+    fn test_parse_keyscan_line() {
+        // 标准三字段行
+        let (h, t, k) =
+            parse_keyscan_line(&format!("myhost ssh-ed25519 {TEST_KEY_B64}")).unwrap();
+        assert_eq!(
+            (h.as_str(), t.as_str(), k.as_str()),
+            ("myhost", "ssh-ed25519", TEST_KEY_B64)
+        );
+        // 非标端口的 host 字段形态（[host]:port）
+        let (h, _, _) =
+            parse_keyscan_line(&format!("[10.0.0.8]:2222 ssh-rsa {TEST_KEY_B64}")).unwrap();
+        assert_eq!(h, "[10.0.0.8]:2222");
+        // 注释行 / 空行 → None
+        assert!(parse_keyscan_line("# myhost SSH-2.0").is_none());
+        assert!(parse_keyscan_line("").is_none());
+        // 字段不足 → None
+        assert!(parse_keyscan_line("onlyhost").is_none());
+        // key 只取第 3 段（后续尾巴不混入）
+        let (_, _, k) =
+            parse_keyscan_line(&format!("host ssh-ed25519 {TEST_KEY_B64} extra trailing"))
+                .unwrap();
+        assert_eq!(k, TEST_KEY_B64);
+    }
+
+    #[test]
+    fn test_known_hosts_line_rewrites_host_field() {
+        // keyscan 不读 ssh config：条目 host 字段必须重写为命令行主机名
+        assert_eq!(
+            known_hosts_line("win38", "ssh-ed25519", TEST_KEY_B64),
+            format!("win38 ssh-ed25519 {TEST_KEY_B64}")
+        );
+    }
+
+    #[test]
+    fn test_write_pinned_known_hosts_filters_by_fingerprint() {
+        // 混合匹配/不匹配的 keyscan 输出：只有指纹匹配的行进 pin 文件
+        let other_key = "AAAAC3NzaC1lZDI1NTE5AAAAIHZzQ0h6RVZiY0ZqUXJlUXZmb29iYXIgYmF6IGNhbA";
+        let lines = vec![
+            format!("realhost ssh-ed25519 {other_key}"),
+            format!("realhost ssh-ed25519 {TEST_KEY_B64}"),
+            "# comment".to_string(),
+        ];
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let (path, fp) = write_pinned_known_hosts("t-filter", "win38", &refs, TEST_FP)
+            .expect("pin should write");
+        assert_eq!(fp, TEST_FP);
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content.trim(), format!("win38 ssh-ed25519 {TEST_KEY_B64}"));
+        // 权限 0600（pin 文件在共享 /tmp，收紧防篡改面）
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "pin 文件必须 0600");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_write_pinned_known_hosts_rejects_mismatch() {
+        // 没有任何 key 匹配配置指纹 → 拒绝（MITM/换机防线）
+        let other_key = "AAAAC3NzaC1lZDI1NTE5AAAAIHZzQ0h6RVZiY0ZqUXJlUXZmb29iYXIgYmF6IGNhbA";
+        let lines = vec![format!("realhost ssh-ed25519 {other_key}")];
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let err =
+            write_pinned_known_hosts("t-mismatch", "win38", &refs, TEST_FP).unwrap_err();
+        assert!(err.contains("指纹不匹配"), "err = {err}");
+        // 指纹格式本身非法 → 拒绝（fail-closed，不退化 TOFU）
+        let lines_ok = vec![format!("realhost ssh-ed25519 {TEST_KEY_B64}")];
+        let refs_ok: Vec<&str> = lines_ok.iter().map(String::as_str).collect();
+        assert!(
+            write_pinned_known_hosts("t-badfp", "win38", &refs_ok, "SHA256:bad").is_err(),
+            "非法指纹格式必须被拒"
+        );
+    }
+
+    #[test]
+    fn test_argv_tofu_vs_pinned_options() {
+        let host = rh("sshuser", "win38", None, "", "/usr/local/bin/ion", "/root/ws");
+        // TOFU：保持 accept-new（无人值守 spawn 不卡交互）
+        let tofu = build_remote_worker_argv(&host, &[], &[], &HostKeyPolicy::Tofu);
+        assert!(tofu.contains(&"StrictHostKeyChecking=accept-new".to_string()));
+        assert!(!tofu.iter().any(|a| a.contains("UserKnownHostsFile")));
+        // pin：严格校验 + 专属 known_hosts（隔离用户全局文件）
+        let pinned = build_remote_worker_argv(
+            &host,
+            &[],
+            &[],
+            &HostKeyPolicy::Pinned {
+                known_hosts: std::path::PathBuf::from("/tmp/ion-ssh-pin-x.known_hosts"),
+            },
+        );
+        assert!(pinned.contains(&"StrictHostKeyChecking=yes".to_string()));
+        assert!(
+            pinned
+                .iter()
+                .any(|a| a == "UserKnownHostsFile=/tmp/ion-ssh-pin-x.known_hosts"),
+            "argv = {pinned:?}"
+        );
+        assert!(!pinned.contains(&"StrictHostKeyChecking=accept-new".to_string()));
+        // 两种策略都保留 keepalive 参数（别在改 host key 选项时误删）
+        for argv in [&tofu, &pinned] {
+            assert!(argv.contains(&"ServerAliveInterval=30".to_string()));
+            assert!(argv.contains(&"ServerAliveCountMax=10".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_known_hosts_hostname_extracts_host_part() {
+        assert_eq!(known_hosts_hostname("root@win38"), "win38");
+        assert_eq!(known_hosts_hostname("win38"), "win38");
+        assert_eq!(known_hosts_hostname("a@b@c"), "c", "取最后一段（rsplit）");
+    }
+
+    #[test]
+    fn test_remote_worker_config_fingerprint_serde_compat() {
+        // 旧配置（无 host_key_fingerprint 字段）→ 反序列化为 None（零破坏）
+        let old = r#"{"hostname":"win38"}"#;
+        let h: crate::config::RemoteWorkerHost = serde_json::from_str(old).unwrap();
+        assert_eq!(h.host_key_fingerprint, None);
+        // 新配置 → 正确读取
+        let new = r#"{"hostname":"win38","host_key_fingerprint":"SHA256:DM98oAaAK8j1rpG9dgnQ8x/uG+wMfmk45KRxE1ZzJQg"}"#;
+        let h: crate::config::RemoteWorkerHost = serde_json::from_str(new).unwrap();
+        assert_eq!(
+            h.host_key_fingerprint.as_deref(),
+            Some("SHA256:DM98oAaAK8j1rpG9dgnQ8x/uG+wMfmk45KRxE1ZzJQg")
+        );
+        // 序列化：None 不落盘（skip_serializing_if）
+        let none_json = serde_json::to_string(&rh("", "h", None, "", "", "")).unwrap();
+        assert!(!none_json.contains("host_key_fingerprint"));
+    }
+
     /// 转义正确性的终极验证：把构造出的远端命令交给真实 /bin/sh 执行，
     /// export 的值必须逐字节还原（覆盖单引号/双引号/换行/$/反引号/&/反斜杠）。
     /// 这是防 shell 注入的回归闸门——任何人改 sh_quote_remote 都会在此翻车。
@@ -6354,7 +6897,7 @@ mod tests {
         let val = "line1\nit's \"quoted\" & $HOME `cmd` \\path";
         let host = rh("u", "h", None, "", "", "");
         let envs = vec![("TEST_V".to_string(), val.to_string())];
-        let argv = build_remote_worker_argv(&host, &[], &envs);
+        let argv = build_remote_worker_argv(&host, &[], &envs, &HostKeyPolicy::Tofu);
         let rc = argv.last().unwrap();
         // 把 exec ion 替换成回显，模拟远端 shell 对 export 的解释
         let echo = rc.replace("exec '/usr/local/bin/ion'", "printf %s \"$TEST_V\"");
@@ -6385,7 +6928,7 @@ mod tests {
         host.wrapper = "wsl -d ion --".into();
         let args = vec!["--mode".to_string(), "rpc".to_string()];
         let envs = vec![("ION_SPAWN_RELATION".to_string(), "child".to_string())];
-        let argv = build_remote_worker_argv(&host, &args, &envs);
+        let argv = build_remote_worker_argv(&host, &args, &envs, &HostKeyPolicy::Tofu);
         let joined = argv.join(" ");
         // wrapper 词原样出现在 dest 之后
         let dest_pos = joined.find("sshuser@win38").unwrap();
@@ -6439,7 +6982,7 @@ mod tests {
     fn test_remote_worker_argv_wrapper_preserves_stdin() {
         let mut host = rh("u", "h", None, "", "/bin/cat", "/tmp");
         host.wrapper = "wsl -d ion --".into();
-        let argv = build_remote_worker_argv(&host, &[], &[]);
+        let argv = build_remote_worker_argv(&host, &[], &[], &HostKeyPolicy::Tofu);
         let transport = argv.last().unwrap();
         // 模拟远端：原始 stdin → sh -c <transport>（$() 在 sh 层展开为解码脚本）
         let line = format!("printf HELLO_STDIN | sh -c {transport}");

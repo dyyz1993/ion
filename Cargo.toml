@@ -30,6 +30,7 @@ wasmtime = "44.0.3"
 serde_yaml = "0.9.34"
 which = "8.0.4"
 base64 = "0.22"
+sha2 = "0.10"
 similar = "2"
 rmcp = { version = "1", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 zstd = "0.13"
