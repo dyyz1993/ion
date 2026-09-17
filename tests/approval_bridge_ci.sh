@@ -112,14 +112,14 @@ echo "$MISS_OUT" | grep -q "ION_APPROVAL_WEBHOOK" && pass "A3.2 报错提示含�
 
 echo ""
 echo "A4: --test-push --with-url（v2 url 探针 → mock webhook）"
-TP_OUT=$(ION_APPROVAL_WEBHOOK="$MOCKHOOK_URL" timeout 15 python3 "$BRIDGE_PY" --test-push --with-url 2>&1)
+TP_OUT=$(ION_APPROVAL_WEBHOOK="$MOCKHOOK_URL" timeout 15 python3 "$BRIDGE_PY" --test-push --with-url --no-serve 2>&1)
 TP_RC=$?
 [ "$TP_RC" -eq 0 ] && pass "A4.1 test-push 退出码 0" || fail "A4.1 退出码 $TP_RC: $TP_OUT"
 echo "$TP_OUT" | grep -q "测试推送成功" && pass "A4.2 报告成功" || fail "A4.2: $TP_OUT"
 TP_LINE=$(head -1 "$MH_ROOT/dump.jsonl" 2>/dev/null || echo "")
 [ "$(jget "$TP_LINE" "'TEST' in d['title']")" = "True" ] && pass "A4.3 标题含 TEST" || fail "A4.3: $TP_LINE"
-[ "$(jget "$TP_LINE" "d.get('url') == 'https://example.com/approval-test'")" = "True" ] \
-    && pass "A4.4 url 探针字段在 payload（v2 可点击链接探测）" || fail "A4.4: $TP_LINE"
+[ "$(jget "$TP_LINE" "str(d.get('url','')).startswith('http://') and '/p/' in d.get('url','')")" = "True" ] \
+    && pass "A4.4 url 指向本机审批页 /p/<token>（v2 可点击审批）" || fail "A4.4: $TP_LINE"
 [ "$(jget "$TP_LINE" "d.get('group')")" = "ion-approvals" ] && pass "A4.5 group=ion-approvals" || fail "A4.5: $TP_LINE"
 [ "$(jget "$TP_LINE" "d.get('markdown')")" = "true" ] && pass "A4.6 markdown=true" || fail "A4.6: $TP_LINE"
 [ "$(jget "$TP_LINE" "d.get('level')")" = "warning" ] && pass "A4.7 ui_ask 样例 level=warning" || fail "A4.7: $TP_LINE"

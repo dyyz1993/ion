@@ -44,6 +44,8 @@
 #   ion approvals approve <id>   # 或 reject；webui 按钮走 approval_respond RPC
 
 import argparse
+import html as _html
+import secrets
 import hashlib
 import json
 import os
@@ -54,7 +56,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 DEFAULT_SOCKET = os.path.expanduser("~/.ion/host.sock")
 DEFAULT_LOG = "/tmp/approval_bridge.log"
@@ -137,8 +139,8 @@ def extract_approval(frame):
     }
 
 
-def build_payload(entry: dict, with_url: bool = False) -> dict:
-    """ApprovalEntry → 推送网关 payload（APPROVAL_BUS 桥 v1 规格）。"""
+def build_payload(entry: dict, page_url: str | None = None) -> dict:
+    """ApprovalEntry → 推送网关 payload（v2：page_url 存在时附可点击审批页链接）。"""
     kind = entry.get("kind", "")
     label = KIND_LABELS.get(kind, kind or "未知类型")
     sid = entry.get("sessionId", "")
@@ -159,8 +161,8 @@ def build_payload(entry: dict, with_url: bool = False) -> dict:
         "level": KIND_LEVELS.get(kind, "warning"),
         "group": "ion-approvals",
     }
-    if with_url:
-        payload["url"] = "https://example.com/approval-test"
+    if page_url:
+        payload["url"] = page_url
     return payload
 
 
@@ -189,6 +191,165 @@ def post_webhook(url: str, payload: dict, timeout: float = 10.0):
 
 
 # ---------------------------------------------------------------------------
+# v2：本机 HTTP 审批页——推送 url 指向 /p/<token>，手机点开即批准/拒绝
+# ---------------------------------------------------------------------------
+
+PAGE_TTL_SECONDS = 1800.0
+_PAGES: dict[str, dict] = {}
+_PAGES_LOCK = threading.Lock()
+_RPC_SOCK = {"path": ""}
+_LOG = {"path": ""}
+PAGE_HTTPD = None
+PAGE_PORT = 0
+
+
+def lan_ip() -> str:
+    """探测本机局域网 IP（UDP connect 惯用法，不真正发包）。"""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("10.255.255.255", 1))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except OSError:
+        return "127.0.0.1"
+
+
+def register_page_token(entry: dict) -> str:
+    """审批条目 → 一次性页面 token（30 分钟有效，用后即焚）。"""
+    token = secrets.token_hex(16)
+    with _PAGES_LOCK:
+        now = time.monotonic()
+        for t in [t for t, v in _PAGES.items() if now - v["exp_start"] > PAGE_TTL_SECONDS]:
+            _PAGES.pop(t, None)
+        _PAGES[token] = {
+            "id": str(entry.get("id", "")),
+            "label": KIND_LABELS.get(entry.get("kind", ""), str(entry.get("kind", "")) or "未知类型"),
+            "summary": str(entry.get("summary", "")),
+            "exp_start": now,
+        }
+    return token
+
+
+def _take_page(token: str) -> dict | None:
+    with _PAGES_LOCK:
+        v = _PAGES.pop(token, None)
+    if v is None or time.monotonic() - v["exp_start"] > PAGE_TTL_SECONDS:
+        return None
+    return v
+
+
+def rpc_once(method: str, params: dict, timeout: float = 8.0):
+    """对 host socket 的一次性 RPC。返回 (success, data_or_error_text)。"""
+    path = _RPC_SOCK["path"] or DEFAULT_SOCKET
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect(path)
+        rid = "rpc" + secrets.token_hex(4)
+        s.sendall((json.dumps({"id": rid, "method": method, "params": params}) + "\n").encode())
+        deadline = time.monotonic() + timeout
+        s.settimeout(timeout)
+        while time.monotonic() < deadline:
+            line = s.makefile("r", encoding="utf-8", newline="\n").readline()
+            if not line:
+                break
+            try:
+                v = json.loads(line.strip())
+            except ValueError:
+                continue
+            if v.get("id") == rid:
+                return bool(v.get("success")), v.get("data") if v.get("success") else str(v.get("error", ""))
+        return False, "host 未在超时内应答"
+    except OSError as e:
+        return False, f"{type(e).__name__}: {e}"
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
+def _page_html(title: str, body_html: str) -> bytes:
+    return (f"<!doctype html><html><head><meta charset=\"utf-8\">"
+            f"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            f"<title>{_html.escape(title)}</title>"
+            f"<style>body{{font-family:-apple-system,sans-serif;max-width:640px;margin:32px auto;"
+            f"padding:0 16px}}.btn{{display:inline-block;padding:14px 28px;margin:8px 12px 8px 0;"
+            f"border-radius:10px;text-decoration:none;font-size:17px}}"
+            f".ok{{background:#1a7f37;color:#fff}}.no{{background:#c62828;color:#fff}}"
+            f"pre{{background:#f4f4f4;padding:10px;border-radius:8px;white-space:pre-wrap}}</style>"
+            f"</head><body>{body_html}</body></html>").encode("utf-8")
+
+
+class _ApprovalPageHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        parts = self.path.strip("/").split("/")
+        if len(parts) < 2 or parts[0] != "p":
+            self._send(404, _page_html("未找到", "<p>路径无效</p>"))
+            return
+        token = parts[1]
+        decision = parts[2] if len(parts) > 2 else ""
+        if decision not in ("", "approve", "reject"):
+            self._send(404, _page_html("未找到", "<p>路径无效</p>"))
+            return
+        info = _take_page(token) if decision else (lambda: (
+            (lambda v: v if v is not None and time.monotonic() - v["exp_start"] <= PAGE_TTL_SECONDS else None)(
+                _PAGES.get(token))))()
+        if info is None:
+            self._send(404, _page_html("链接无效", "<p>该审批链接不存在、已使用或已过期。</p>"))
+            return
+        esc = _html.escape
+        if decision == "":
+            body = (f"<h2>🔴 {esc(info['label'])}</h2>"
+                    f"<pre>{esc(info['summary'])}</pre>"
+                    f"<p>审批 ID：<code>{esc(info['id'])}</code></p>"
+                    f"<a class=\"btn ok\" href=\"/p/{token}/approve\">✔ 批准</a>"
+                    f"<a class=\"btn no\" href=\"/p/{token}/reject\">✘ 拒绝</a>"
+                    f"<p style=\"color:#888\">链接一次性有效（防误触后不可回退）</p>")
+            self._send(200, _page_html(f"审批 {info['id']}", body))
+            return
+        ok, data = rpc_once("approval_respond", {
+            "id": info["id"],
+            "decision": "approve" if decision == "approve" else "reject",
+        })
+        log_line(_LOG["path"], f"[page] {decision} {info['id']} rpc_ok={ok}")
+        if ok:
+            remain = ""
+            if isinstance(data, dict) and "remaining" in data:
+                remain = f"（剩余待审批 {data['remaining']} 条）"
+            verb = "已批准" if decision == "approve" else "已拒绝"
+            body = f"<h2>{'✔' if decision == 'approve' else '🚫'} {verb} {esc(info['id'])}</h2><p>{esc(verb)}{remain}</p>"
+            self._send(200, _page_html(verb, body))
+        else:
+            body = (f"<h2>✘ 操作失败</h2><pre>{esc(str(data))}</pre>"
+                    f"<p>该链接已消耗；若审批仍待处理请用 ion approvals 命令或 webui 重试。</p>")
+            self._send(200, _page_html("操作失败", body))
+
+    def _send(self, code: int, body: bytes):
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt, *args):
+        pass
+
+
+def start_page_server(sock_path: str, log_path: str, port: int = 0,
+                      host: str = "0.0.0.0") -> int:
+    """启动审批页 HTTP 服务（daemon 线程）。port=0 → 随机端口。返回实际端口。"""
+    global PAGE_HTTPD, PAGE_PORT
+    _RPC_SOCK["path"] = sock_path
+    _LOG["path"] = log_path
+    PAGE_HTTPD = ThreadingHTTPServer((host, port), _ApprovalPageHandler)
+    PAGE_PORT = PAGE_HTTPD.server_address[1]
+    threading.Thread(target=PAGE_HTTPD.serve_forever, daemon=True).start()
+    return PAGE_PORT
+
+
+# ---------------------------------------------------------------------------
 # 主循环：连接 → 握手 → 订阅 → 读帧 → 冷却去重 → 推送 → 断线重连
 # ---------------------------------------------------------------------------
 
@@ -198,8 +359,14 @@ def dedupe_key(entry: dict) -> str:
 
 
 def run_bridge(sock_path: str, webhook_url: str, log_path: str,
-               stop_after_events: int | None = None) -> int:
-    """长驻主循环。stop_after_events 仅 selftest 用：处理满 N 条审批事件后正常返回。"""
+               stop_after_events: int | None = None, http_port: int = 0) -> int:
+    """长驻主循环。stop_after_events 仅 selftest 用：处理满 N 条审批事件后正常返回。
+    http_port > 0 时本机起审批页（推送附可点击 url，手机直达批准/拒绝）。"""
+    page_base = None
+    if http_port != 0:
+        real_port = start_page_server(sock_path, log_path, port=http_port)
+        page_base = f"http://{lan_ip()}:{real_port}/p/"
+        log_line(log_path, f"[page] approval page serving at {page_base}<token>")
     backoff = 1.0
     processed = 0
     last_push: dict[str, float] = {}  # dedupe_key -> monotonic ts
@@ -271,7 +438,8 @@ def run_bridge(sock_path: str, webhook_url: str, log_path: str,
                              f"same (kind+summary) within {COOLDOWN_SECONDS:.0f}s, skipped")
                 else:
                     last_push[key] = now
-                    payload = build_payload(entry)
+                    page_url = (page_base + register_page_token(entry)) if page_base else None
+                    payload = build_payload(entry, page_url=page_url)
                     status, body = post_webhook(webhook_url, payload)
                     log_line(log_path, f"[pushed] {entry['id']} kind={entry['kind']} "
                              f"session={entry['sessionId']} webhook={status}")
@@ -300,23 +468,34 @@ def run_bridge(sock_path: str, webhook_url: str, log_path: str,
 # --test-push：样例推送（人工验证手机可达 / v2 url 探针）
 # ---------------------------------------------------------------------------
 
-def cmd_test_push(webhook_url: str, with_url: bool) -> int:
+def cmd_test_push(webhook_url: str, with_url: bool, sock_path: str = "",
+                  serve_minutes: float = 10.0) -> int:
     entry = {
         "id": "apr_testpush1",
         "kind": "ui_ask",
-        "summary": "TEST 样例推送（approval bridge probe）— 无需处理",
+        "summary": "TEST 样例推送（approval bridge probe）— 点链接可体验完整审批页",
         "sessionId": "sess_testpush01",
         "raisedAtMs": int(time.time() * 1000),
     }
-    payload = build_payload(entry, with_url=with_url)
+    page_url = None
+    if with_url:
+        port = start_page_server(sock_path or DEFAULT_SOCKET, DEFAULT_LOG)
+        page_url = f"http://{lan_ip()}:{port}/p/{register_page_token(entry)}"
+    payload = build_payload(entry, page_url=page_url)
+    payload["title"] = f"🔴审批待待处理 TEST {entry['id']}"
     payload["title"] = f"🔴审批待处理 TEST {entry['id']}"
     status, body = post_webhook(webhook_url, payload)
     if status is not None and 200 <= status < 300:
         print(f"✔ 测试推送成功 (HTTP {status})")
         print(json.dumps(payload, ensure_ascii=False, indent=2))
-        if with_url:
-            print("ℹ payload 已附 url 字段——若手机通知可点击跳转，说明网关支持"
-                  "可点击链接（v2 可在通知上挂 webui 审批按钮）")
+        if page_url and serve_minutes > 0:
+            print(f"ℹ 手机点开通知 → 审批页（批准/拒绝按钮）。TEST 的 id 在总线中不存在，"
+                  f"点击按钮应看到诚实的失败页——这正好验证全链路。"
+                  f"页面服务 {serve_minutes:.0f} 分钟后自动退出（Ctrl-C 提前结束）。")
+            try:
+                time.sleep(serve_minutes * 60)
+            except KeyboardInterrupt:
+                pass
         return 0
     print(f"✘ 测试推送失败 status={status} body={body}", file=sys.stderr)
     return 1
@@ -383,15 +562,8 @@ def mock_host_server(sock_path: str, ready: threading.Event):
     """起 mock unix socket：按协议回 hello/subscribe ack，再吐 3 条事件帧
     （两条唯一 + 一条重复）。daemon 线程；selftest 结束随进程退出。"""
 
-    def serve():
+    def handle_conn(conn):
         try:
-            if os.path.exists(sock_path):
-                os.unlink(sock_path)
-            srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            srv.bind(sock_path)
-            srv.listen(1)
-            ready.set()
-            conn, _ = srv.accept()
             conn.settimeout(10)
             reader = conn.makefile("r", encoding="utf-8", newline="\n")
             while True:
@@ -408,15 +580,37 @@ def mock_host_server(sock_path: str, ready: threading.Event):
                         "type": "response", "id": req.get("id", "b1"), "success": True,
                         "data": {"protocolVersion": 1, "hostId": "selftest-mock-host"},
                     }) + "\n").encode())
+                elif method == "approval_respond":
+                    conn.sendall((json.dumps({
+                        "type": "response", "id": req.get("id", "r1"), "success": True,
+                        "data": {"id": (req.get("params") or {}).get("id"),
+                                 "kind": "file_snapshot", "decision":
+                                 (req.get("params") or {}).get("decision"), "remaining": 0},
+                    }) + "\n").encode())
                 elif method == "subscribe":
                     conn.sendall(b'{"type":"subscribed","stream":"ui"}\n')
                     for spec in MOCK_FRAMES_SPEC:
                         time.sleep(0.3)
                         conn.sendall((json.dumps(bus_frame(*spec)) + "\n").encode())
-            # 保持连接打开直到客户端退出（stop_after_events 触发）
-            time.sleep(5)
-            conn.close()
-            srv.close()
+        except OSError:
+            pass
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    def serve():
+        try:
+            if os.path.exists(sock_path):
+                os.unlink(sock_path)
+            srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            srv.bind(sock_path)
+            srv.listen(4)
+            ready.set()
+            while True:
+                conn, _ = srv.accept()
+                threading.Thread(target=handle_conn, args=(conn,), daemon=True).start()
         except OSError:
             pass
         finally:
@@ -446,7 +640,12 @@ def cmd_selftest() -> int:
             print("✘ selftest: mock host 未就绪", file=sys.stderr)
             return 1
 
-        rc = run_bridge(sock_path, webhook_url, log_path, stop_after_events=3)
+        # 自测用空闲端口起审批页（run_bridge 的 http_port=0 语义是关闭）
+        _probe = socket.socket()
+        _probe.bind(("127.0.0.1", 0))
+        free_port = _probe.getsockname()[1]
+        _probe.close()
+        rc = run_bridge(sock_path, webhook_url, log_path, stop_after_events=3, http_port=free_port)
         server.shutdown()
         if rc != 0:
             failures.append(f"run_bridge 返回 {rc}（预期 0）")
@@ -514,6 +713,35 @@ def cmd_selftest() -> int:
                 pass
             else:
                 failures.append(f"payload#2 形状不符: {json.dumps(p1, ensure_ascii=False)}")
+
+        # 断言 5（v2）：推送携带可点击审批页 url + 页面/批准/一次性全链
+        tokens = list(_PAGES.keys())
+        if PAGE_PORT == 0 or not tokens:
+            failures.append(f"v2 审批页未生效（port={PAGE_PORT}, tokens={len(tokens)}）")
+        else:
+            if not all(str(pp.get("url", "")).startswith(f"http://") and "/p/" in str(pp.get("url", ""))
+                       for pp in pushes):
+                failures.append("推送缺少 /p/<token> 形式的 url 字段")
+            tk = tokens[0]
+            base = f"http://127.0.0.1:{PAGE_PORT}"
+            try:
+                with urllib.request.urlopen(f"{base}/p/{tk}", timeout=5) as r:
+                    page1 = r.read().decode("utf-8")
+                if "批准" not in page1 or "拒绝" not in page1 or "bus_a.txt" not in page1:
+                    failures.append("审批页缺按钮或摘要未转义呈现")
+                with urllib.request.urlopen(f"{base}/p/{tk}/approve", timeout=8) as r:
+                    page2 = r.read().decode("utf-8")
+                if "已批准" not in page2 or "apr_deadbeef" not in page2:
+                    failures.append(f"批准结果页异常: {page2[:200]}")
+                import urllib.error as _ue
+                try:
+                    urllib.request.urlopen(f"{base}/p/{tk}/approve", timeout=8)
+                    failures.append("一次性链接被重复使用（第二次应 404）")
+                except _ue.HTTPError as e:
+                    if e.code != 404:
+                        failures.append(f"重复使用应 404，实际 {e.code}")
+            except Exception as e:
+                failures.append(f"审批页链路异常: {type(e).__name__}: {e}")
         return finish(failures, tmp, log_path, dump)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -556,6 +784,10 @@ def main() -> int:
     ap.add_argument("--socket", default=None, help="覆盖 ION_HOST_SOCKET")
     ap.add_argument("--webhook", default=None, help="覆盖 ION_APPROVAL_WEBHOOK")
     ap.add_argument("--log", default=None, help="覆盖 ION_APPROVAL_BRIDGE_LOG")
+    ap.add_argument("--no-serve", action="store_true",
+                    help="配合 --test-push --with-url：推送后不驻留页面服务（CI 用）")
+    ap.add_argument("--http-port", type=int, default=None,
+                    help="审批页端口（默认 env ION_APPROVAL_BRIDGE_PORT 或 8793；0=关闭）")
     args = ap.parse_args()
 
     webhook = args.webhook or os.environ.get("ION_APPROVAL_WEBHOOK", "")
@@ -573,12 +805,17 @@ def main() -> int:
         return 2
 
     if args.test_push:
-        return cmd_test_push(webhook, args.with_url)
+        return cmd_test_push(webhook, args.with_url, sock_path=os.environ.get(
+            "ION_HOST_SOCKET", "").strip() or DEFAULT_SOCKET,
+            serve_minutes=0.0 if args.no_serve else 10.0)
 
     sock_path = args.socket or os.environ.get("ION_HOST_SOCKET", "").strip() or DEFAULT_SOCKET
-    print(f"approval bridge: socket={sock_path} webhook={webhook} log={log_path}")
+    http_port = args.http_port
+    if http_port is None:
+        http_port = int(os.environ.get("ION_APPROVAL_BRIDGE_PORT", "8793") or 0)
+    print(f"approval bridge: socket={sock_path} webhook={webhook} log={log_path} page_port={http_port}")
     try:
-        return run_bridge(sock_path, webhook, log_path)
+        return run_bridge(sock_path, webhook, log_path, http_port=http_port)
     except KeyboardInterrupt:
         print("bye")
         return 0
