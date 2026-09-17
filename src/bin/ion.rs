@@ -12191,9 +12191,8 @@ mod router_attach_race_tests {
     /// $HOME/.ion/agent/sessions.index.json——绝不碰真实 ~/.ion）。
     /// 与 scene1_fs_gate_tests 共用同一把 env 锁（--test-threads>1 必需）。
     fn isolate_home(tag: &str) -> HomeIsolation {
-        let guard = scene1_fs_gate_tests::SCENE1_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        // X2 已把 SCENE1_ENV_LOCK 收编为全进程唯一 test_env::ENV_LOCK（跨分支对齐）
+        let guard = test_env::lock();
         let tmp = std::env::temp_dir().join(format!(
             "ion-x1-router-{}-{}-{}",
             tag,

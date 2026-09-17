@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# 兼容 3.8：注解惰性求值（str | None 等 3.10+ 语法在签名里 def 时求值会炸）
+from __future__ import annotations
 # approval_push_bridge.py — ION 统一审批总线 → 手机推送桥（v3：状态同步/撤回跟进）
 #
 # 订阅 host 的 UI 事件流（subscribe {ui:true}），把 ApprovalRequest（统一审批
