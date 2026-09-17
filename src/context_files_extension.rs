@@ -306,6 +306,8 @@ mod tests {
 
     #[test]
     fn test_truncation_respects_char_boundary() {
+        // ION_CONTEXT_FILES_MAX_CHARS 全进程生效——持 env_test_lock 串行
+        let _guard = crate::paths::env_test_lock();
         let big: String = "中".repeat(5000);
         let f = ContextFile {
             path: PathBuf::from("/tmp/AGENTS.md"),
@@ -321,6 +323,8 @@ mod tests {
 
     #[test]
     fn test_is_disabled_by_env() {
+        // ION_NO_CONTEXT_FILES 全进程生效——持 env_test_lock 串行
+        let _guard = crate::paths::env_test_lock();
         unsafe {
             std::env::remove_var("ION_NO_CONTEXT_FILES");
         }
@@ -494,6 +498,8 @@ mod tests {
         write(&root.join("AGENTS.md"), &big);
         let ext = ContextFilesExtension::with_project_dir(root.clone());
         let files = ext.load_context_files();
+        // ION_CONTEXT_FILES_MAX_CHARS 全进程生效——持 env_test_lock 串行
+        let _guard = crate::paths::env_test_lock();
         unsafe {
             std::env::set_var("ION_CONTEXT_FILES_MAX_CHARS", "50000");
         }
@@ -517,6 +523,8 @@ mod tests {
         let ext = ContextFilesExtension::with_project_dir(sub);
         let files = ext.load_context_files();
         assert_eq!(files.len(), 2);
+        // ION_CONTEXT_FILES_MAX_CHARS 全进程生效——持 env_test_lock 串行
+        let _guard = crate::paths::env_test_lock();
         unsafe {
             std::env::set_var("ION_CONTEXT_FILES_MAX_CHARS", "500");
         }

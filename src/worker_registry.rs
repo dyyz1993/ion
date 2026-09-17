@@ -9051,12 +9051,12 @@ mod tests {
     }
 
     /// K4 测试隔离：ION_SESSION_DIR 指向临时目录（进程级 env + 串行锁）。
+    /// 锁统一走 `paths::env_test_lock`——此前 K4 自带独立 K4_LOCK，与
+    /// export/session_gc/skill_distillation 等持 env_test_lock 改同一变量的
+    /// 测试互不互斥，属于"同变量两把锁"的潜在竞态（X2 flake 审计收编）。
+    /// SAFETY: set_var 走 unsafe；持 env_test_lock 串行，良性。
     fn k4_env_guard(tag: &str) -> (std::sync::MutexGuard<'static, ()>, std::path::PathBuf) {
-        static K4_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-        let guard = K4_LOCK
-            .get_or_init(|| std::sync::Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let guard = crate::paths::env_test_lock();
         let root = std::env::temp_dir().join(format!(
             "ion_k4_{}_{}_{}",
             std::process::id(),

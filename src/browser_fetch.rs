@@ -451,6 +451,9 @@ mod tests {
 
     #[tokio::test]
     async fn missing_binary_reports_install_guidance() {
+        // ION_BROWSER_PATH 全进程生效——持 env_test_lock 串行（其他测试的
+        // resolve_browser_binary 也读该 env，防 remove 窗口并发污染）
+        let _guard = crate::paths::env_test_lock();
         // 仅当环境确实解析不到任何 browser 二进制时才断言安装指引
         // （PATH 里装了 browser 的机器上会走成功路径，跳过）
         let saved = std::env::var("ION_BROWSER_PATH").ok();

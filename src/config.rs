@@ -1581,9 +1581,9 @@ pub fn default_model_for_provider(provider: &str) -> &'static str {
 mod merge_tests {
     use super::*;
 
-    /// ION_REMOTE_WORKERS env 测试互斥（set_var/remove_var 全进程生效，
-    /// 与其他读该 env 的测试并行会竞态——统一走这把锁）。
-    static ENV_RW_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // ION_REMOTE_WORKERS env 测试互斥（set_var/remove_var 全进程生效）——
+    // 统一收编到 `paths::env_test_lock`（X2 flake 审计：不再保留独立锁，
+    // 与其他改 HOME/ION_* env 的测试同锁串行，避免"同进程多把 env 锁"）。
 
     // ── M4 动词表：grant glob 匹配语义 ──────────────────────────────────────
 
@@ -1619,7 +1619,7 @@ mod merge_tests {
 
     #[test]
     fn test_remote_worker_grants_parse() {
-        let _env_guard = ENV_RW_LOCK.lock().unwrap();
+        let _env_guard = crate::paths::env_test_lock();
         let json = r#"{"remote_workers": {"w": {"hostname": "h",
             "grants": {"fs_read": ["/p/**"], "http_fetch": ["x.com"]}}}}"#;
         let cfg: IonConfig = serde_json::from_str(json).unwrap();
@@ -1637,7 +1637,7 @@ mod merge_tests {
 
     #[test]
     fn test_remote_workers_parse_and_env_override() {
-        let _env_guard = ENV_RW_LOCK.lock().unwrap();
+        let _env_guard = crate::paths::env_test_lock();
         let json = r#"{"remote_workers": {"win38": {"hostname": "win38", "user": "sshuser",
             "worker_bin": "/usr/local/bin/ion", "cwd": "/root/ws"}}}"#;
         let cfg: IonConfig = serde_json::from_str(json).unwrap();

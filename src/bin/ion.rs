@@ -10774,12 +10774,8 @@ mod tests {
     #[test]
     fn load_session_raw_content_falls_through_to_by_id_path() {
         use std::fs;
-        // HOME env 操作互斥：本测试 set_var("HOME")，与 scene1_fs_gate_tests 的
-        // HOME 隔离测试并行会竞态——统一走同一把锁（--test-threads>1 必需）。
-        let _env = scene1_fs_gate_tests::SCENE1_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // 临时 HOME，隔离 SessionIndex
+        // 临时 HOME，隔离 SessionIndex。经 test_env::HomeGuard 持全局 env 锁 +
+        // RAII 恢复（--test-threads>1 时与其他 HOME 测试互斥，panic 也兜底）。
         let tmp = std::env::temp_dir().join(format!(
             "ion-test-{}-{}",
             std::process::id(),
@@ -10789,10 +10785,7 @@ mod tests {
                 .as_nanos()
         ));
         fs::create_dir_all(&tmp).unwrap();
-        let prev_home = std::env::var("HOME").ok();
-        unsafe {
-            std::env::set_var("HOME", &tmp);
-        }
+        let _home = test_env::HomeGuard::set(&tmp);
 
         // 项目目录 + 主 session.jsonl（header.id = main-sid，内容是 MAIN 标记）
         let project = tmp.join("proj");
@@ -10880,15 +10873,8 @@ mod tests {
         let got_main = load_session_raw_content(main_sid).expect("main session 应能读到");
         assert!(got_main.contains("MAIN"));
 
-        // 恢复 HOME
-        unsafe {
-            if let Some(h) = prev_home {
-                std::env::set_var("HOME", h);
-            } else {
-                std::env::remove_var("HOME");
-            }
-        }
         let _ = fs::remove_dir_all(&tmp);
+        // _home 在作用域尾 drop：先恢复 HOME 再释放 env 锁
     }
 
     // ── color_ansi tests (commit d5b636a) ──
@@ -10970,20 +10956,14 @@ mod tests {
         )
         .unwrap();
 
-        // SAFETY: edition 2024 要求 set_var 走 unsafe。本二进制测试模块只有
-        // CLI 参数解析测试，无其他测试消费 HOME；改写→调用→恢复全在本线程
-        // 同步完成。
-        let old_home = std::env::var("HOME").ok();
-        unsafe { std::env::set_var("HOME", &tmp) };
+        // 持全局 env 锁切 HOME（RAII 恢复）。此前本测试不持锁改 HOME，与
+        // scene1 fs gate 测试并发时撞 SecuredRuntime 动态读 HOME 的窗口，
+        // 是 bin 测试 --test-threads=8 偶发失败的根因——详见 test_env 模块注释。
+        let _home = test_env::HomeGuard::set(&tmp);
         let result = host_idle_session_read(
             &serde_json::json!({ "session": "sess_host_gs_redact" }),
             "get_settings",
         );
-        // 无论断言成败都先恢复 HOME（避免污染后续测试）
-        match old_home {
-            Some(h) => unsafe { std::env::set_var("HOME", h) },
-            None => unsafe { std::env::remove_var("HOME") },
-        }
 
         let out = result.expect("host get_settings should succeed");
         let raw = serde_json::to_string(&out).unwrap();
@@ -11195,31 +11175,55 @@ fn epoch_days_to_ymd(days: i64) -> (i64, u32, u32) {
     (year, month, day)
 }
 
-/// 场景 1 ctx.fs 安全基线（复现测试）：受保护路径写/读必须被拒，项目内路径照常。
+/// 测试进程级 env（HOME 等）互斥 + 恢复兜底。
+///
+/// `std::env::set_var/remove_var` 全进程生效（且非线程安全）：bin 测试二进制里
+/// **任何**改 env 的测试都必须经 [`test_env::lock()`] 串行执行；改 HOME 一律用
+/// [`test_env::HomeGuard`]（构造时取锁 + 记旧值 + 切换，drop 时先恢复 HOME 再
+/// 还锁，panic 路径同样兜底）。
+///
+/// 历史教训（X2 flake 根治，2026-09-17）：`host_idle_get_settings_masks_all_
+/// secret_locations` 曾不持锁改 HOME，与 scene1 fs gate 测试并发时，
+/// SecuredRuntime 的受保护路径检查内部动态调 `paths::root()` 读 HOME env，
+/// 撞上切换窗口 → 保护判定落到真实 HOME → 临时 home 下的 config.json 不再
+/// 受保护但仍在 allowed_roots（构造时快照的旧 HOME）内 → 读/写放行 →
+/// `--test-threads=8` 全量跑偶发 "read of ~/.ion/config.json must be denied,
+/// got Ok(\"{}\")"（预修二进制实测 3/20 复现）。
 #[cfg(test)]
-mod scene1_fs_gate_tests {
-    use super::*;
-    use ion::agent::extension::FileSystemCapability;
+pub(crate) mod test_env {
+    /// 全测试进程唯一的 env 互斥锁（原 `SCENE1_ENV_LOCK` 收编升级，不另设
+    /// 第二把锁）。lib 侧同类锁见 `ion::paths::env_test_lock`——lib/bin 是
+    /// 两个独立测试进程，互不干扰。
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// HOME 操作互斥（set_var 全进程生效，--test-threads>1 时防并发污染）。
-    /// 其他操作 HOME 的测试也必须取这把锁。
-    pub(crate) static SCENE1_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub(crate) fn lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
-    /// HOME 隔离守卫：构造时切到私有 HOME，drop 时恢复（不触碰真实 ~/.ion）
-    struct HomeGuard {
+    /// HOME 隔离守卫：构造时取锁 + 记录旧 HOME + 切到私有 HOME（不触碰真实
+    /// ~/.ion）；drop 时先恢复 HOME 再释放锁（RAII，断言 panic 也恢复）。
+    pub(crate) struct HomeGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
         prev: Option<String>,
     }
+
     impl HomeGuard {
-        fn set(home: &std::path::Path) -> Self {
+        pub(crate) fn set(home: &std::path::Path) -> Self {
+            let _lock = lock();
             let prev = std::env::var("HOME").ok();
+            // SAFETY: edition 2024 要求 set_var 走 unsafe；持 ENV_LOCK 串行，良性。
             unsafe {
                 std::env::set_var("HOME", home);
             }
-            Self { prev }
+            // _lock 声明在 prev 之前：drop 先跑本结构体的 Drop（恢复 HOME），
+            // 再按声明序丢字段，锁最后释放——恢复 HOME 时必然仍持锁。
+            Self { _lock, prev }
         }
     }
+
     impl Drop for HomeGuard {
         fn drop(&mut self) {
+            // SAFETY: 同上；此刻仍持 ENV_LOCK。
             unsafe {
                 match self.prev.take() {
                     Some(h) => std::env::set_var("HOME", h),
@@ -11228,14 +11232,18 @@ mod scene1_fs_gate_tests {
             }
         }
     }
+}
+
+/// 场景 1 ctx.fs 安全基线（复现测试）：受保护路径写/读必须被拒，项目内路径照常。
+#[cfg(test)]
+mod scene1_fs_gate_tests {
+    use super::*;
+    use ion::agent::extension::FileSystemCapability;
 
     /// 场景 1 构造的扩展 fs：~/.ion/config.json 写/读被拒（protected_paths 生效），
     /// 项目内路径读写正常（不破坏场景 1 正常扩展能力）。
     #[test]
     fn test_scene1_fs_blocks_protected_paths_allows_project_files() {
-        let _lock = SCENE1_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = std::env::temp_dir().join(format!(
             "ion-scene1-fs-{}-{}",
             std::process::id(),
@@ -11252,7 +11260,10 @@ mod scene1_fs_gate_tests {
         let config_json = home.join(".ion").join("config.json");
         std::fs::write(&config_json, "{}").unwrap();
 
-        let _home = HomeGuard::set(&home);
+        // 持全局 env 锁切 HOME。SecuredRuntime 的受保护检查在每次 read/write
+        // 时动态读 HOME（paths::root()），allowed_roots 则是构造时快照——
+        // 全程必须保证 HOME 稳定，否则保护判定与白名单坐标系分裂（flake 根因）。
+        let _home = test_env::HomeGuard::set(&home);
 
         // 与 cmd_run 场景 1 相同的构造：build_scene1_fs_runtime + default_allowed_roots
         let fs = ion::agent::extension::RuntimeFileSystem::new(
