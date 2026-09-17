@@ -8,6 +8,8 @@
 #   Group C  全链 mock：桥子进程连隔离 host（subscribe {ui:true}）→ faux write
 #            产生真实 ApprovalRequest 总线事件 → 桥推 mock webhook → 断言
 #            payload 含真实 apr_ id / kind 中文 / 应答提示行 → CLI approve 收口
+#            → C4 状态同步：ApprovalResolved 广播 → 桥补发跟进推送
+#            （level=quiet，title 含 id 已被处理）——v3 撤回降级路径真链验证
 #
 # 🔴 隔离铁律：全程 mock/隔离——桥只连 selftest 的 mock socket 或隔离三件套
 # （私有 HOME + 私有 ION_HOST_SOCKET + 私有 ION_SESSION_DIR）；绝不连生产
@@ -66,7 +68,7 @@ echo "A1: --selftest（mock socket + mock webhook + 冷却断言）"
 ST_OUT=$(timeout 60 python3 "$BRIDGE_PY" --selftest 2>&1)
 ST_RC=$?
 if [ "$ST_RC" -eq 0 ]; then pass "A1.1 selftest 退出码 0"; else fail "A1.1 selftest 退出码 $ST_RC: $ST_OUT"; fi
-echo "$ST_OUT" | grep -q "selftest PASS" && pass "A1.2 selftest 报告 PASS（2 推送 + 1 去重）" || fail "A1.2: $ST_OUT"
+echo "$ST_OUT" | grep -q "selftest PASS" && pass "A1.2 selftest 报告 PASS（2 请求推送 + 1 跟进 + token 作废 404）" || fail "A1.2: $ST_OUT"
 
 echo ""
 echo "A2: .sh 一行包装（同 selftest）"
@@ -280,6 +282,45 @@ if [ -n "$C_APR" ] && [ "$C_APR" != "null" ]; then
 else
     fail "C3.1 skipped（无条目）"
 fi
+
+echo ""
+echo "C4: 状态同步——收口后桥补发跟进推送（ApprovalResolved → 状态推送）"
+C4_LINE=""
+if [ -n "$C_APR" ] && [ "$C_APR" != "null" ]; then
+    for i in $(seq 1 20); do
+        C4_LINE=$(python3 - "$MH_ROOT/dump.jsonl" "$C_APR" <<'PYEOF'
+import sys, json
+try:
+    for l in open(sys.argv[1], encoding="utf-8"):
+        try:
+            d = json.loads(l)
+        except Exception:
+            continue
+        t = str(d.get("title", ""))
+        if sys.argv[2] in t and "已被处理" in t:
+            print(l.strip())
+            break
+except OSError:
+    pass
+PYEOF
+)
+        [ -n "$C4_LINE" ] && break
+        sleep 1
+    done
+fi
+[ -n "$C4_LINE" ] \
+    && pass "C4.1 收口后跟进推送到达（title 含 ${C_APR} 已被处理）" \
+    || fail "C4.1 未见跟进推送（期待 title 含 ${C_APR}/已被处理）"
+[ "$(jget "$C4_LINE" "d.get('level')")" = "quiet" ] \
+    && pass "C4.2 跟进 level=quiet（不打扰）" || fail "C4.2: $C4_LINE"
+[ "$(jget "$C4_LINE" "d.get('group')")" = "ion-approvals" ] \
+    && pass "C4.3 跟进 group 同 ion-approvals" || fail "C4.3: $C4_LINE"
+[ "$(jget "$C4_LINE" "'已批准' in d['body'] and '由用户' in d['body']")" = "True" ] \
+    && pass "C4.4 body 含决定（已批准）与操作者（由用户）" || fail "C4.4: $C4_LINE"
+# 页面端口被占（如生产桥在跑）→ 非致命降级；空闲 → 正常起页。两条路径都算过。
+grep -qE "\[page\] (bind failed|approval page serving)" "$C_LOG" 2>/dev/null \
+    && pass "C4.5 页面服务要么正常要么非致命降级（桥未崩）" \
+    || fail "C4.5: $(tail -3 "$C_LOG" 2>/dev/null)"
 
 kill "$BRIDGE_PID" 2>/dev/null
 SUB_PIDS=("${SUB_PIDS[@]/$BRIDGE_PID/}")
