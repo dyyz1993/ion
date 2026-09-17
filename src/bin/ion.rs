@@ -667,7 +667,11 @@ impl SessionRouter {
     fn build_snapshot(&self) -> serde_json::Value {
         let worker = {
             let inner = self.reg.lock();
-            inner.workers.values().find(|w| w.session_id == self.sid).map(|w| SnapshotWorker {
+            // 与 attach_session_sub 同一纪律：Dead（crash 保留）记录不是活 worker，
+            // 不进快照（overview 统计本就排除 Dead，见 gc/overview 口径）
+            inner.workers.values().find(|w| {
+                w.session_id == self.sid && w.status != ion::worker_registry::WorkerStatus::Dead
+            }).map(|w| SnapshotWorker {
                 worker_id: w.worker_id.clone(),
                 status: w.status.to_string(),
                 model: w.model.clone(),
@@ -7747,6 +7751,13 @@ async fn handle_manager_command(
 
 /// session 级订阅挂接：等 worker 出现（wait_polls × 500ms）并 subscribe。
 /// 返回 None = 超时未出现。锁在每轮短持，不跨 await。
+///
+/// ⚠️ 必须跳过 Dead 记录：crash 路径会保留 Dead record（CRASH_RECOVERY"Dead 保留"），
+/// 其 event_subscribers 里的 Sender 在 GC（心跳 30s tick）前不会 drop——挂接上去
+/// 得到一条"永不结束也永不来事件"的流：router 不推进 epoch、不发 stale_route、
+/// 不重绑，客户端静默挂死。同一 session 存在 Dead+活两条记录时（prompt 复活窗口）
+/// HashMap 顺序还可能选错，故一律只认非 Dead 记录——Dead 不可订阅与
+/// kill_worker（记录直接移除）语义对齐。
 async fn attach_session_sub(
     reg: &std::sync::Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>>,
     sid: &str,
@@ -7763,7 +7774,7 @@ async fn attach_session_sub(
             let wid_opt = inner_reg
                 .workers
                 .values()
-                .find(|w| w.session_id == sid)
+                .find(|w| w.session_id == sid && w.status != ion::worker_registry::WorkerStatus::Dead)
                 .map(|w| w.worker_id.clone());
             if let Some(wid) = wid_opt
                 && let Ok((rx, ev)) = inner_reg.subscribe_with_replay(&wid, replay)
@@ -12106,5 +12117,351 @@ mod router_exit_redispatch_tests {
                 other => panic!("排队订阅 #{} 被丢弃（drop 型回复）: {:?}", i + 1, other),
             }
         }
+    }
+}
+
+// ── X1: SessionRouter 挂接/退出竞态边界回归锁 ────────────────────────────────
+// 覆盖三个窗口（对照报告）：
+// ① handle_subscribe await attach 期间/之后 worker 死亡 → ack+snapshot+stale_route
+//    时序自洽；attach 决不选中 crash 保留的 Dead 记录（否则挂出一条永不结束也
+//    永不来事件的流——epoch 不推进、无 stale_route，客户端静默挂死到 GC）。
+// ② router ev-break（重绑失败退出）时排队的 Subscribe → drain 重派给新 router，
+//    单次有界回复（redispatch 链深度=1：重派的 cmd 是新 router 的第一条命令，
+//    必在其 handle_subscribe 内被回复，而退出只可能发生在那之后——无乒乓）。
+// ③ 各 break 路径 oneshot 必有回音：attach 失败内联 Err / break 路径 drain 重派 /
+//    struct 丢弃后信道关闭 → 客户端 recv None；stale tx 再 send 得 SendError。
+#[cfg(test)]
+mod router_attach_race_tests {
+    use super::*;
+    use ion::worker_registry::{WorkerRecord, WorkerStatus};
+    use std::collections::VecDeque;
+
+    /// 构造最小 WorkerRecord（字段全 pub，镜像 worker_registry 测试的 make_minimal_record）
+    fn test_record(wid: &str, sid: &str, status: WorkerStatus) -> WorkerRecord {
+        WorkerRecord {
+            worker_id: wid.into(),
+            session_id: sid.into(),
+            project: "p".into(),
+            project_path: "/tmp".into(),
+            model: "glm-test".into(),
+            agent: "build".into(),
+            status,
+            channels: vec![],
+            parent: None,
+            children: vec![],
+            host: None,
+            approval_policy: None,
+            notify_parent: false,
+            started_at: 0,
+            last_heartbeat: 0,
+            status_since: 0,
+            died_at: None,
+            stdin: None,
+            pending: Default::default(),
+            event_subscribers: vec![],
+            parent_event_tx: None,
+            ready_tx: None,
+            stdout_rx: None,
+            response_rx: None,
+            child_process: None,
+            worktree: None,
+            latest_output: VecDeque::new(),
+            log_short: None,
+            model_size: None,
+            exit_code: None,
+            exit_reason: None,
+            stderr_path: None,
+            event_history: VecDeque::new(),
+            event_history_cap: 200,
+        }
+    }
+
+    /// HOME 隔离（handle_subscribe → build_snapshot → SessionIndex::load 读
+    /// $HOME/.ion/agent/sessions.index.json——绝不碰真实 ~/.ion）。
+    /// 与 scene1_fs_gate_tests 共用同一把 env 锁（--test-threads>1 必需）。
+    fn isolate_home(tag: &str) -> HomeIsolation {
+        let guard = scene1_fs_gate_tests::SCENE1_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "ion-x1-router-{}-{}-{}",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe {
+            std::env::set_var("HOME", &tmp);
+        }
+        HomeIsolation { _guard: guard, tmp, prev }
+    }
+
+    struct HomeIsolation {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        tmp: std::path::PathBuf,
+        prev: Option<String>,
+    }
+
+    impl Drop for HomeIsolation {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(h) => unsafe { std::env::set_var("HOME", h) },
+                None => unsafe { std::env::remove_var("HOME") },
+            }
+            let _ = std::fs::remove_dir_all(&self.tmp);
+        }
+    }
+
+    /// 测试收尾：把 sid 从全局路由表摘除（其 tx 随之 drop → router 任务 recv None
+    /// 自行退出），避免 parked task / 表项泄漏影响同进程后续测试。
+    fn drop_router_entry(sid: &str) {
+        routers().lock().unwrap().remove(sid);
+    }
+
+    /// 窗口①（主链路自洽）：attach 到活 worker → ack(epoch1) → snapshot → replay
+    /// → 实时事件（盖 epoch 章）→ worker 死亡 → stale_route(1→2) → 信道关闭；
+    /// 重派后新订阅 epoch=2（单调）。死亡发生在 attach 返回之后也算自洽：
+    /// 客户端拿到的是"完整一段历史 + 显式作废信号"，无静默、无错序。
+    #[tokio::test(start_paused = true)]
+    async fn attach_then_worker_death_is_self_consistent() {
+        let _home = isolate_home("self_consistent");
+        let sid = "sess_x1_alive_death";
+        let reg: Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>> =
+            Arc::new(parking_lot::Mutex::new(
+                ion::worker_registry::WorkerRegistry::new(),
+            ));
+        // 活 worker W1，历史里预置 1 条事件（replay 用）
+        let mut w1 = test_record("w-x1-1", sid, WorkerStatus::Idle);
+        w1.event_history
+            .push_back(serde_json::json!({"type":"agent_start"}));
+        reg.lock().workers.insert("w-x1-1".into(), w1);
+
+        let (mut out_rx, ack) =
+            subscribe_session_routed(&reg, sid, 2).await.expect("attach 活 worker 应成功");
+        assert_eq!(ack["type"], "subscribed");
+        assert_eq!(ack["epoch"], 1);
+
+        // 帧1：快照先行
+        let snap = out_rx.recv().await.expect("snapshot 帧必达");
+        assert_eq!(snap["snapshot"], true);
+        assert_eq!(snap["event"]["customType"], "snapshot");
+        assert_eq!(snap["epoch"], 1);
+        assert_eq!(snap["event"]["data"]["worker"]["workerId"], "w-x1-1");
+        // 帧2：replay 历史（replayed:true）
+        let rep = out_rx.recv().await.expect("replay 帧必达");
+        assert_eq!(rep["replayed"], true);
+        assert_eq!(rep["event"]["type"], "agent_start");
+        // 实时增量（push_session_event 注入 → 盖 epoch 章）
+        reg.lock()
+            .push_session_event(sid, serde_json::json!({"type":"text_delta","delta":"hi"}))
+            .expect("活记录可投递");
+        let live = out_rx.recv().await.expect("实时帧必达");
+        assert_eq!(live["event"]["type"], "text_delta");
+        assert_eq!(live["epoch"], 1);
+
+        // worker 死亡（kill_worker 同款：记录整体移除 → Sender drop → rx 结束）
+        reg.lock().workers.remove("w-x1-1");
+        // 旧订阅收 stale_route（epoch 1 → 2），且其后信道关闭
+        let stale = out_rx.recv().await.expect("stale_route 帧必达");
+        assert_eq!(stale["type"], "stale_route");
+        assert_eq!(stale["epoch"], 1);
+        assert_eq!(stale["currentEpoch"], 2);
+        assert!(
+            out_rx.recv().await.is_none(),
+            "stale_route 后信道必须关闭（作废语义）"
+        );
+
+        // 重派（新 worker 出现）→ 新订阅 epoch=2（host 级表保证单调）
+        reg.lock()
+            .workers
+            .insert("w-x1-2".into(), test_record("w-x1-2", sid, WorkerStatus::Idle));
+        let (mut out2, ack2) = subscribe_session_routed(&reg, sid, 0).await.expect("重派后可订阅");
+        assert_eq!(ack2["epoch"], 2, "epoch 必须跨 router 生命周期单调");
+        let snap2 = out2.recv().await.expect("第二段订阅也有快照");
+        assert_eq!(snap2["epoch"], 2);
+
+        drop_router_entry(sid);
+    }
+
+    /// 窗口①（洞修复锁）：session 只剩 crash 保留的 Dead 记录时，attach 决不能
+    /// 挂接它——修前行为：subscribe_with_replay 对 Dead 记录照样成功，客户端拿到
+    /// ack+snapshot 后进入"永不来事件也永不结束"的静默流（epoch 不推进、无
+    /// stale_route，直到 30s 心跳 GC 删记录才解围）。修后：Dead 不可订阅，走
+    /// 60s 等待语义（respawn 到来则挂上，否则可诊断错误）。
+    #[tokio::test(start_paused = true)]
+    async fn attach_skips_retained_dead_record() {
+        let _home = isolate_home("skip_dead");
+        let sid = "sess_x1_only_dead";
+        let reg: Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>> =
+            Arc::new(parking_lot::Mutex::new(
+                ion::worker_registry::WorkerRegistry::new(),
+            ));
+        reg.lock().workers.insert(
+            "w-x1-dead".into(),
+            test_record("w-x1-dead", sid, WorkerStatus::Dead),
+        );
+
+        let res = tokio::time::timeout(
+            std::time::Duration::from_secs(600),
+            subscribe_session_routed(&reg, sid, 3),
+        )
+        .await
+        .expect("60s 虚拟挂接等待必须自动推进，不得真实挂死");
+        match res {
+            Err(msg) => {
+                assert!(
+                    msg.contains("no worker for session"),
+                    "应报可诊断的 no-worker 错误，而非挂上 Dead 流: {msg}"
+                );
+            }
+            Ok(_) => panic!(
+                "挂接到了 Dead 记录的流——静默黑洞（修前行为）：客户端将无事件也无 stale_route"
+            ),
+        }
+        drop_router_entry(sid);
+    }
+
+    /// 窗口①（洞修复锁·混存场景）：prompt 复活窗口内同 session 存在 Dead+活两条
+    /// 记录（push_session_event 注释确认的现实形态），HashMap 顺序不定——attach
+    /// 与 snapshot 必须确定性选中活记录。
+    #[tokio::test(start_paused = true)]
+    async fn attach_prefers_live_over_dead_in_mixed_registry() {
+        let _home = isolate_home("prefer_live");
+        let sid = "sess_x1_mixed";
+        let reg: Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>> =
+            Arc::new(parking_lot::Mutex::new(
+                ion::worker_registry::WorkerRegistry::new(),
+            ));
+        // 先插 Dead 再插活（顺序不代表 HashMap 遍历序，修复后与序无关）
+        reg.lock().workers.insert(
+            "w-x1-old-dead".into(),
+            test_record("w-x1-old-dead", sid, WorkerStatus::Dead),
+        );
+        reg.lock().workers.insert(
+            "w-x1-new-live".into(),
+            test_record("w-x1-new-live", sid, WorkerStatus::Busy),
+        );
+
+        let (mut out_rx, ack) = subscribe_session_routed(&reg, sid, 0)
+            .await
+            .expect("混存场景必须挂上活记录");
+        assert_eq!(ack["epoch"], 1);
+        let snap = out_rx.recv().await.expect("快照帧必达");
+        assert_eq!(
+            snap["event"]["data"]["worker"]["workerId"],
+            "w-x1-new-live",
+            "快照必须呈现活 worker（Dead 不是活 worker）"
+        );
+        // 事件只投给活记录也能到达客户端（证明挂的是活流）
+        reg.lock()
+            .push_session_event(sid, serde_json::json!({"type":"agent_end"}))
+            .expect("投递");
+        let ev = out_rx.recv().await.expect("活流事件必达");
+        assert_eq!(ev["event"]["type"], "agent_end");
+        drop_router_entry(sid);
+    }
+
+    /// 窗口②+③：router ev-break（重绑 10s 内无 worker → break 退出）期间排队的
+    /// Subscribe 被 drain 重派给懒创建的新 router，客户端拿到**单次有界回复**
+    /// （no-worker 可诊断错误），绝非 drop 型 RecvError，也非无限乒乓——
+    /// 重派的 cmd 是新 router 的第一条命令，必在其 handle_subscribe 内被回复；
+    /// 新 router 的退出只能发生在那之后（需真实 worker 死亡周期），链深=1。
+    #[tokio::test(start_paused = true)]
+    async fn ev_break_redispatches_queued_subscribe_with_single_bounded_reply() {
+        let _home = isolate_home("break_redispatch");
+        let sid = "sess_x1_break_redispatch";
+        let reg: Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>> =
+            Arc::new(parking_lot::Mutex::new(
+                ion::worker_registry::WorkerRegistry::new(),
+            ));
+        reg.lock().workers.insert(
+            "w-x1-brk".into(),
+            test_record("w-x1-brk", sid, WorkerStatus::Idle),
+        );
+
+        let (mut out_rx, ack) = subscribe_session_routed(&reg, sid, 0).await.expect("首订成功");
+        assert_eq!(ack["epoch"], 1);
+        let _snap = out_rx.recv().await.expect("快照必达");
+
+        // worker 死亡 → router 进 ev 分支（推进 epoch + stale_route + 10s 重绑等待）
+        reg.lock().workers.remove("w-x1-brk");
+        let stale = out_rx.recv().await.expect("stale_route 必达");
+        assert_eq!(stale["type"], "stale_route");
+        assert_eq!(stale["currentEpoch"], 2);
+
+        // 此刻 router 正卡在重绑 attach（20×500ms）——命令进 cmd_rx 排队。
+        // stale_route 已到 ⟹ 已过 epoch 推进点 ⟹ 本 send 必然落在重绑窗口内。
+        let res2 = tokio::time::timeout(
+            std::time::Duration::from_secs(600),
+            subscribe_session_routed(&reg, sid, 0),
+        )
+        .await
+        .expect("重派链必须终止（单次有界回复），不得乒乓挂死");
+        match res2 {
+            Err(msg) => assert!(
+                msg.contains("no worker for session"),
+                "break→drain→重派后应收到可诊断错误: {msg}"
+            ),
+            Ok(_) => panic!("无 worker 场景重派后不应拿到订阅"),
+        }
+        // 旧订阅信道随后关闭（struct 丢弃 = 作废收尾）
+        assert!(out_rx.recv().await.is_none(), "router 退出后旧信道必须关闭");
+        drop_router_entry(sid);
+    }
+
+    /// 窗口③（stale-tx 竞态锁）：客户端从路由表/直接 spawn 拿走的 tx 在 router
+    /// 走向退出途中才使用——订阅撞进 ev 分支的重绑等待窗口时序：
+    /// stale_route 发出时 clients 已 drain（客户端信道立即关闭），但 router 仍在
+    /// 重绑 attach 中活着 → 持有的 tx 再 send **成功入队**；随后重绑失败 break →
+    /// drain 捞到这条排队订阅 → 重派新 router → 客户端拿到单次有界可诊断回复。
+    /// 若时序再晚（router 已退出）则 tx.send 得 SendError / RecvError 映射错误——
+    /// 三种落点全部有回音，无悬挂。（SendError 分支的映射文本由
+    /// subscribe_session_routed 的 map_err 锁定；本测试锁"成功入队也有回音"。）
+    #[tokio::test(start_paused = true)]
+    async fn stale_router_tx_send_after_exit_errors_not_dangles() {
+        let _home = isolate_home("stale_tx");
+        let sid = "sess_x1_stale_tx";
+        let reg: Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>> =
+            Arc::new(parking_lot::Mutex::new(
+                ion::worker_registry::WorkerRegistry::new(),
+            ));
+        reg.lock().workers.insert(
+            "w-x1-stale".into(),
+            test_record("w-x1-stale", sid, WorkerStatus::Idle),
+        );
+
+        // 直连 spawn（绕过路由表）：持有 tx 让它穿过 router 的整个生命周期
+        let (_id, tx) = SessionRouter::spawn(sid.to_string(), Arc::clone(&reg));
+        let (rtx, mut rrx) = tokio::sync::oneshot::channel();
+        tx.send(RouterCmd::Subscribe { replay: 0, reply: rtx })
+            .expect("活 router 可收命令");
+        let (mut out_rx, _ack) = rrx.await.expect("回复必达").expect("attach 成功");
+        let _snap = out_rx.recv().await.expect("快照必达");
+
+        // worker 死亡 → ev 分支：stale_route（clients drain → 信道关闭）→ 重绑等待
+        reg.lock().workers.remove("w-x1-stale");
+        let stale = out_rx.recv().await.expect("stale_route 必达");
+        assert_eq!(stale["type"], "stale_route");
+        assert!(out_rx.recv().await.is_none(), "drain 后旧信道立即关闭");
+
+        // 信道已关但 router 仍在重绑窗口内：stale tx 再 send 成功入队
+        let (rtx2, rrx2) = tokio::sync::oneshot::channel();
+        if tx.send(RouterCmd::Subscribe { replay: 0, reply: rtx2 }).is_ok() {
+            // 入队了 → break 时必被 drain 重派 → 必有单次有界回复（绝不悬挂）
+            let r = tokio::time::timeout(std::time::Duration::from_secs(600), rrx2)
+                .await
+                .expect("排队订阅必须被回复（drain→重派链终止）");
+            let msg = r.expect("oneshot 必达").expect_err("无 worker 场景应为可诊断错误");
+            assert!(
+                msg.contains("no worker for session"),
+                "重派后应收到可诊断错误: {msg}"
+            );
+        }
+        // send 失败（SendError）分支：命令连同 oneshot 原样退回调用方，同样无悬挂
+        drop_router_entry(sid);
     }
 }
