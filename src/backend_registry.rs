@@ -912,7 +912,9 @@ mod tests {
 
     #[test]
     fn test_canonicalize_tilde() {
-        // SAFETY: save and restore HOME to avoid test pollution
+        // SAFETY: 改 HOME 全进程生效——持 env_test_lock 串行（与 export/session_gc
+        // 等同样改 HOME/ION_* env 的测试互斥），restore 走下方 match 兜底。
+        let _guard = crate::paths::env_test_lock();
         let original_home = std::env::var("HOME").ok();
         unsafe {
             std::env::set_var("HOME", "/Users/test");
