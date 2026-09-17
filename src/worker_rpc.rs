@@ -679,6 +679,12 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         initial_system_prompt.push_str(&skill_hint);
     }
 
+    // ── 内置 skill 正文注入（"默认加载"层）──
+    // create-hooks / create-subagent 等内化技能随每个会话/worker 启动注入 system prompt，
+    // 不依赖文件系统（编译进二进制）、不受 skills.disabled 影响。正在运行的会话不热更新。
+    initial_system_prompt.push_str("\n\n");
+    initial_system_prompt.push_str(&crate::agent::builtin_skills::builtin_skills_prompt());
+
     // ── system prompt 覆盖（skill fork 模式用）──
     // ION_SYSTEM_PROMPT 环境变量由 create_worker 设置（config.system_prompt_override），
     // 覆盖 agent.md 的 system prompt。用于 skill fork——把 skill 内容注入 system prompt，

@@ -2573,6 +2573,13 @@ async fn cmd_run(
             sys_prompt.push_str(&agents_outline);
         }
     }
+
+    // ── 内置 skill 正文注入（"默认加载"层，三场景统一）──
+    // create-hooks / create-subagent 等内化技能：编译进二进制、不可禁用，
+    // 正文随 system prompt 默认注入（worker 模式的同款注入见 worker_rpc.rs）。
+    sys_prompt.push_str("\n\n");
+    sys_prompt.push_str(&ion::agent::builtin_skills::builtin_skills_prompt());
+
     // Apply skill prompts (--skill 指定的完整 skill 正文)
     for skill_path in &eff.skill {
         if let Ok(content) = std::fs::read_to_string(skill_path) {

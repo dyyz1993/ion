@@ -2017,6 +2017,11 @@ impl SkillTool {
     /// 列出所有可用 skill（扫描 skill_dirs 下的 .md 文件 + 子目录/SKILL.md）
     pub fn list_skills(&self) -> String {
         let mut entries: Vec<(String, String, String, Option<String>)> = Vec::new(); // (name, source, description, context_mode)
+        // 内置 skill（编译进二进制，不可禁用）——永远在场，排最前
+        for b in crate::agent::builtin_skills::BUILTIN_SKILLS {
+            let desc = parse_skill_description(b.content);
+            entries.push((b.name.to_string(), "builtin".into(), desc, None));
+        }
         for dir in &self.skill_dirs {
             let source = Self::source_label(dir);
             let Ok(read) = std::fs::read_dir(dir) else {
@@ -2061,10 +2066,13 @@ impl SkillTool {
         }
 
         // Apply blacklist: skip disabled skills (from config skills.disabled)
+        // 内置 skill 豁免——编译进二进制的内化能力不可被 config 禁用
         if !self.disabled.is_empty() {
             let dis: std::collections::HashSet<&str> =
                 self.disabled.iter().map(|s| s.as_str()).collect();
-            entries.retain(|(name, _, _, _)| !dis.contains(name.as_str()));
+            entries.retain(|(name, _, _, _)| {
+                crate::agent::builtin_skills::is_builtin_skill(name) || !dis.contains(name.as_str())
+            });
         }
 
         // 按名字去重：同名 skill 可能从多个来源发现（agents/ vs superpowers/ vs plugins/）。
@@ -2293,6 +2301,15 @@ impl Tool for SkillTool {
             return Ok(self.list_skills());
         }
 
+        // 内置 skill 优先：编译进二进制的内容（文件系统同名文件不覆盖内置）
+        if let Some(b) = crate::agent::builtin_skills::BUILTIN_SKILLS
+            .iter()
+            .find(|s| s.name == name)
+        {
+            let (_frontmatter, body) = parse_skill_content(b.content);
+            return Ok(format!("Skill '{name}' loaded (builtin):\n\n{body}"));
+        }
+
         // 查找 skill 文件
         let skill_path = self.find_skill(name).ok_or_else(|| {
             AgentError::Tool(format!("skill '{name}' not found in {:?}", self.skill_dirs))
@@ -2503,7 +2520,10 @@ mod skill_tests {
             disabled: vec![],
         };
         let out = tool.list_skills();
-        assert!(out.contains("No skills available"));
+        // 空目录仍有内置 skill（编译进二进制，永远在场）
+        assert!(out.contains("create-hooks"), "builtin skill 应始终列出");
+        assert!(out.contains("create-subagent"), "builtin skill 应始终列出");
+        assert!(out.contains("builtin"));
     }
 
     #[test]
@@ -2550,6 +2570,24 @@ mod skill_tests {
             "disabled skill should be filtered out"
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_builtin_skills_immune_to_disabled() {
+        // 内置 skill（内化能力）即使被 config skills.disabled 点名也禁不掉
+        let tool = SkillTool {
+            skill_dirs: vec![PathBuf::from("/nonexistent/path")],
+            disabled: vec!["create-hooks".into(), "create-subagent".into()],
+        };
+        let result = tool.list_skills();
+        assert!(
+            result.contains("create-hooks"),
+            "内置 skill 不受 disabled 影响"
+        );
+        assert!(
+            result.contains("create-subagent"),
+            "内置 skill 不受 disabled 影响"
+        );
     }
 
     #[test]
