@@ -1,8 +1,24 @@
 #!/usr/bin/env python3
-# approval_push_bridge.py — ION 统一审批总线 → 手机推送桥（v1）
+# approval_push_bridge.py — ION 统一审批总线 → 手机推送桥（v3：状态同步/撤回跟进）
 #
 # 订阅 host 的 UI 事件流（subscribe {ui:true}），把 ApprovalRequest（统一审批
 # 总线事件，APPROVAL_BUS.md §5）推送到手机推送网关（webhook）。
+#
+# v3 新增（状态同步）：
+#   - 订阅帧处理扩展到 ApprovalResolved / ApprovalRemoved（APPROVAL_BUS.md §5）
+#   - 已推审批 id 集合（内存）：Resolved/Removed 时若该 id 推送过 → 补发一条
+#     轻量跟进推送（level=quiet，group 同 ion-approvals），告知手机上的旧推送
+#     已失效（"✔ apr_xxx 已被处理（by=user/pump）" / "⚪ apr_xxx 已过期"），
+#     未推送过的 id 不跟进（不打扰）。
+#   - 同步作废该审批的一次性审批页 token（手机旧链接点开即 404，防对已处理
+#     审批误操作）。
+#   - drel 撤回能力探测结论（2026-09-17，WebBridgeKit 源码 + 实测）：简单 relay
+#     路径（POST /<deviceKey>）无真撤回——无 delete/cancel HTTP 端点；客户端
+#     PushRelayManager 解析 "delete" 字段但 NSE 从不消费（死代码）；传输为
+#     APNs（无撤回原语）且网关不设 apns-collapse-id（无法顶掉旧 banner）。
+#     故降级为"状态跟进推送"。将来若迁 managed-push 管线（message-v1 schema
+#     带 state/revision，state 枚举含 approved/rejected/cancelled/expired），
+#     可升级为应用内条目状态翻转，届时替换 build_lifecycle_payload 即可。
 #
 # ══ 部署方法 ══
 #
@@ -29,9 +45,11 @@
 # ══ 自测（CI 用，不起真实网络/不碰真实 ~/.ion）══
 #
 #   python3 scripts/approval_push_bridge.py --selftest
-#   # 本地起 mock unix socket（按协议吐 hello/ack/3 条事件帧，其中 1 条重复）
+#   # 本地起 mock unix socket（按协议吐 hello/ack：3 条 ApprovalRequest（1 条重复）
+#   # + 1 条 ApprovalRemoved（未推送过的 id）+ 1 条 ApprovalResolved（已推送 id））
 #   # + mock HTTP webhook（落盘收到的 POST），跑完整链路后断言：
-#   #   恰好 2 条推送（重复帧被 30s 冷却吞掉）、payload 形状正确。
+#   #   恰好 3 条推送（2 条请求 + 1 条跟进；重复帧被 30s 冷却吞掉；未推送 id
+#   #   不跟进）、payload 形状正确、resolved 对应审批页 token 已作废（页面 404）。
 #   # 退出码 0=通过 / 1=失败。
 #
 # 协议依据：docs/design/APPROVAL_BUS.md（§5 事件规格）+
@@ -90,38 +108,48 @@ def log_line(log_path: str, msg: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 帧解析：从 subscribe(ui) 流的帧里提取总线 ApprovalRequest 条目
+# 帧解析：从 subscribe(ui) 流的帧里提取总线审批事件
+#         （ApprovalRequest / ApprovalResolved / ApprovalRemoved，§5）
 # ---------------------------------------------------------------------------
 
-def extract_approval(frame):
-    """识别总线统一审批事件，返回扁平条目 dict；非审批事件返回 None。
+BUS_EVENT_TYPES = ("ApprovalRequest", "ApprovalResolved", "ApprovalRemoved")
+
+
+def extract_bus_event(frame):
+    """识别总线统一审批事件，返回 (etype, entry, extra)；非审批事件返回 None。
 
     兼容三种帧形（SUBSCRIBE_PROTOCOL.md §2）：
       1. ui 流：        {"type":"ui_event","ui_type":"ApprovalRequest",...,"data":{...}}
       2. extension 流：  {"type":"extension_event","customType":"ApprovalRequest",...}
       3. worker 原始壳： {"type":"event","event":{"type":"extension_event",...}}
+
+    etype ∈ BUS_EVENT_TYPES（APPROVAL_BUS.md §5）。
+    entry（扁平条目）：id/kind/summary/sessionId/raisedAtMs。
+    extra（生命周期附加字段，仅 Resolved/Removed 用）：decision/by/cause。
     """
     if not isinstance(frame, dict):
         return None
     ev = None
-    if frame.get("type") == "ui_event" and frame.get("ui_type") == "ApprovalRequest":
-        ev = frame
-    elif frame.get("type") == "extension_event" and frame.get("customType") == "ApprovalRequest":
-        ev = frame
-    elif frame.get("type") == "event":
+    t = frame.get("type")
+    if t in ("ui_event", "extension_event"):
+        key = "ui_type" if t == "ui_event" else "customType"
+        if frame.get(key) in BUS_EVENT_TYPES:
+            ev = frame
+    elif t == "event":
         inner = frame.get("event")
         if (isinstance(inner, dict)
                 and inner.get("type") == "extension_event"
-                and inner.get("customType") == "ApprovalRequest"):
+                and inner.get("customType") in BUS_EVENT_TYPES):
             ev = inner
     if ev is None:
         return None
+    etype = str(ev.get("ui_type") or ev.get("customType") or "")
     data = ev.get("data")
     if not isinstance(data, dict):
         return None
     # 总线统一事件判据：data.approval 存在（APPROVAL_BUS.md §5）。
     # worker 原生 file-approval 事件（ext=file-approval，data 含 files/requestId，
-    # 无 kind 无 approval）在此被过滤——桥只推统一 id（apr_ 前缀）。
+    # 无 kind 无 approval）在此被过滤——桥只认统一 id（apr_ 前缀）。
     entry = data.get("approval")
     if isinstance(entry, dict) and entry.get("id"):
         src = entry
@@ -130,13 +158,19 @@ def extract_approval(frame):
     else:
         return None
     sid = str(src.get("sessionId") or "")
-    return {
+    flat = {
         "id": str(src.get("id") or ""),
         "kind": str(src.get("kind") or ""),
         "summary": str(src.get("summary") or ""),
         "sessionId": sid,
         "raisedAtMs": src.get("raisedAtMs"),
     }
+    extra = {
+        "decision": data.get("decision", src.get("decision")),
+        "by": data.get("by", src.get("by")),
+        "cause": data.get("cause", src.get("cause")),
+    }
+    return etype, flat, extra
 
 
 def build_payload(entry: dict, page_url: str | None = None) -> dict:
@@ -164,6 +198,48 @@ def build_payload(entry: dict, page_url: str | None = None) -> dict:
     if page_url:
         payload["url"] = page_url
     return payload
+
+
+# 跟进推送文案（任务规格：✔ id 已被处理（by=user/pump）/ ⚪ 已过期；level=quiet；
+# group 同 ion-approvals 不打扰）
+RESOLVE_DECISION_LABELS = {"approve": "已批准", "reject": "已拒绝"}
+RESOLVE_BY_LABELS = {"user": "由用户", "pump": "由审批泵", "system": "由系统"}
+REMOVE_CAUSE_LABELS = {"expired": "已过期", "reset": "已重置", "source_gone": "来源已消失"}
+
+
+def build_lifecycle_payload(etype: str, entry: dict, extra: dict) -> dict:
+    """ApprovalResolved/ApprovalRemoved → 状态跟进推送 payload（手机旧推送失效提示）。
+
+    仅对桥推送过的 id 调用（run_bridge 保证）；level=quiet + 同 group 不打扰。"""
+    aid = entry.get("id", "")
+    kind = entry.get("kind", "")
+    label = KIND_LABELS.get(kind, kind or "未知类型")
+    sid = entry.get("sessionId", "")
+    short = sid[-8:] if len(sid) > 8 else sid
+    if etype == "ApprovalResolved":
+        dec = str(extra.get("decision") or "")
+        verb = RESOLVE_DECISION_LABELS.get(dec, f"decision={dec}" if dec else "已处理")
+        by = str(extra.get("by") or "")
+        by_s = RESOLVE_BY_LABELS.get(by, f"by={by}" if by else "")
+        title = f"✔ {aid} 已被处理"
+        lines = [f"**{label}** · {verb}"]
+        if by_s:
+            lines.append(by_s)
+    else:  # ApprovalRemoved
+        cause = str(extra.get("cause") or "")
+        cause_s = REMOVE_CAUSE_LABELS.get(cause, f"cause={cause}" if cause else "已失效")
+        title = f"⚪ {aid} {cause_s}"
+        lines = [f"**{label}** · {cause_s}"]
+    if short:
+        lines.append(f"会话 `{short}`")
+    lines.append("该审批已收口，手机上之前的推送无需操作")
+    return {
+        "title": title,
+        "body": "\n".join(lines),
+        "markdown": "true",
+        "level": "quiet",
+        "group": "ion-approvals",
+    }
 
 
 def post_webhook(url: str, payload: dict, timeout: float = 10.0):
@@ -197,6 +273,7 @@ def post_webhook(url: str, payload: dict, timeout: float = 10.0):
 PAGE_TTL_SECONDS = 1800.0
 _PAGES: dict[str, dict] = {}
 _PAGES_LOCK = threading.Lock()
+_PUSHED: dict[str, str] = {}  # apr id -> 审批页 token（"" 表示推送时无审批页）
 _RPC_SOCK = {"path": ""}
 _LOG = {"path": ""}
 PAGE_HTTPD = None
@@ -237,6 +314,17 @@ def _take_page(token: str) -> dict | None:
     if v is None or time.monotonic() - v["exp_start"] > PAGE_TTL_SECONDS:
         return None
     return v
+
+
+def invalidate_page(apr_id: str) -> bool:
+    """按审批 id 作废其审批页 token（Resolved/Removed 时调用）。
+
+    作废后手机旧链接点开即 404（_take_page 取不到 → 链接无效页）。"""
+    with _PAGES_LOCK:
+        for t in [t for t, v in _PAGES.items() if v.get("id") == apr_id]:
+            _PAGES.pop(t, None)
+            return True
+    return False
 
 
 def rpc_once(method: str, params: dict, timeout: float = 8.0):
@@ -339,11 +427,21 @@ class _ApprovalPageHandler(BaseHTTPRequestHandler):
 
 def start_page_server(sock_path: str, log_path: str, port: int = 0,
                       host: str = "0.0.0.0") -> int:
-    """启动审批页 HTTP 服务（daemon 线程）。port=0 → 随机端口。返回实际端口。"""
+    """启动审批页 HTTP 服务（daemon 线程）。port=0 → 随机端口。返回实际端口。
+
+    端口被占（如生产桥已监听 8793）→ 记日志返回 0，桥继续跑（无审批页模式，
+    推送不带 url）——v3 起绑定失败不再致命。"""
     global PAGE_HTTPD, PAGE_PORT
     _RPC_SOCK["path"] = sock_path
     _LOG["path"] = log_path
-    PAGE_HTTPD = ThreadingHTTPServer((host, port), _ApprovalPageHandler)
+    try:
+        PAGE_HTTPD = ThreadingHTTPServer((host, port), _ApprovalPageHandler)
+    except OSError as e:
+        log_line(_LOG["path"], f"[page] bind failed port={port}: {e} "
+                               f"（无审批页模式继续：推送不带 url）")
+        PAGE_HTTPD = None
+        PAGE_PORT = 0
+        return 0
     PAGE_PORT = PAGE_HTTPD.server_address[1]
     threading.Thread(target=PAGE_HTTPD.serve_forever, daemon=True).start()
     return PAGE_PORT
@@ -365,8 +463,9 @@ def run_bridge(sock_path: str, webhook_url: str, log_path: str,
     page_base = None
     if http_port != 0:
         real_port = start_page_server(sock_path, log_path, port=http_port)
-        page_base = f"http://{lan_ip()}:{real_port}/p/"
-        log_line(log_path, f"[page] approval page serving at {page_base}<token>")
+        if real_port > 0:
+            page_base = f"http://{lan_ip()}:{real_port}/p/"
+            log_line(log_path, f"[page] approval page serving at {page_base}<token>")
     backoff = 1.0
     processed = 0
     last_push: dict[str, float] = {}  # dedupe_key -> monotonic ts
@@ -425,11 +524,32 @@ def run_bridge(sock_path: str, webhook_url: str, log_path: str,
                 if frame.get("type") == "subscribed":
                     log_line(log_path, f"[subscribe] ack stream={frame.get('stream')}")
                     continue
-                entry = extract_approval(frame)
-                if entry is None:
+                ev = extract_bus_event(frame)
+                if ev is None:
+                    continue
+                etype, entry, extra = ev
+                processed += 1
+
+                if etype != "ApprovalRequest":
+                    # v3 状态同步：Resolved/Removed → 只对推送过的 id 补发跟进推送
+                    # + 作废审批页 token（先 pop 防同帧序重复跟进）
+                    aid = entry["id"]
+                    token = _PUSHED.pop(aid, None)
+                    if token is None:
+                        log_line(log_path, f"[skip-lifecycle] {etype} {aid} "
+                                 f"未推送过或已收口，不跟进")
+                    else:
+                        invalidated = invalidate_page(aid) if token else False
+                        payload = build_lifecycle_payload(etype, entry, extra)
+                        status, body = post_webhook(webhook_url, payload)
+                        log_line(log_path, f"[recall] {etype} {aid} "
+                                 f"token_invalidated={invalidated} webhook={status}")
+                        if status is None or not (200 <= status < 300):
+                            log_line(log_path, f"[push-fail] status={status} body={body[:200]}")
+                    if stop_after_events is not None and processed >= stop_after_events:
+                        return 0
                     continue
 
-                processed += 1
                 key = dedupe_key(entry)
                 now = time.monotonic()
                 last = last_push.get(key)
@@ -438,9 +558,11 @@ def run_bridge(sock_path: str, webhook_url: str, log_path: str,
                              f"same (kind+summary) within {COOLDOWN_SECONDS:.0f}s, skipped")
                 else:
                     last_push[key] = now
-                    page_url = (page_base + register_page_token(entry)) if page_base else None
+                    token = register_page_token(entry) if page_base else ""
+                    page_url = (page_base + token) if token else None
                     payload = build_payload(entry, page_url=page_url)
                     status, body = post_webhook(webhook_url, payload)
+                    _PUSHED[entry["id"]] = token  # 登记已推（供 Resolved/Removed 跟进）
                     log_line(log_path, f"[pushed] {entry['id']} kind={entry['kind']} "
                              f"session={entry['sessionId']} webhook={status}")
                     if status is None or not (200 <= status < 300):
@@ -505,25 +627,39 @@ def cmd_test_push(webhook_url: str, with_url: bool, sock_path: str = "",
 # --selftest：mock 全链（mock unix socket + mock HTTP webhook），CI 靠它
 # ---------------------------------------------------------------------------
 
+# v3 帧序列：(etype, apr_id, kind, summary, session, extra)
+#   1/2 两条唯一 Request（各推 1 条 + 各注册审批页 token）
+#   3   与 1 同 kind+summary（重复帧 → 30s 冷却吞掉）
+#   4   Removed 未推送过的 id（ghost → 不跟进，验证"只跟已推送"）
+#   5   Resolved 已推送的 id（→ 恰 1 条跟进推送 + token 作废 404）
 MOCK_FRAMES_SPEC = [
-    # (apr_id, kind, summary, session)——第 3 条与第 1 条同 kind+summary（重复帧）
-    # session 短码 = 最后 8 位（sess_bridge01 → bridge01）
-    ("apr_deadbeef", "file_snapshot", "1 file(s) pending review: bus_a.txt", "sess_bridge01"),
-    ("apr_cafef00d", "ui_ask", "Ask: 允许执行 bash?", "sess_bridge01"),
-    ("apr_deadbeef", "file_snapshot", "1 file(s) pending review: bus_a.txt", "sess_bridge01"),
+    ("ApprovalRequest", "apr_deadbeef", "file_snapshot",
+     "1 file(s) pending review: bus_a.txt", "sess_bridge01", {}),
+    ("ApprovalRequest", "apr_cafef00d", "ui_ask",
+     "Ask: 允许执行 bash?", "sess_bridge01", {}),
+    ("ApprovalRequest", "apr_deadbeef", "file_snapshot",
+     "1 file(s) pending review: bus_a.txt", "sess_bridge01", {}),
+    ("ApprovalRemoved", "apr_ghost9999", "ui_ask",
+     "Ask: 已过期样例（从未推送）", "sess_bridge01", {"cause": "expired"}),
+    ("ApprovalResolved", "apr_cafef00d", "ui_ask",
+     "Ask: 允许执行 bash?", "sess_bridge01", {"decision": "approve", "by": "pump"}),
 ]
 
 
-def bus_frame(apr_id: str, kind: str, summary: str, session: str) -> dict:
-    """按 SUBSCRIBE_PROTOCOL.md §1.2 + APPROVAL_BUS.md §5 的真实帧形构造。"""
+def bus_frame(etype: str, apr_id: str, kind: str, summary: str, session: str,
+              extra: dict | None = None) -> dict:
+    """按 SUBSCRIBE_PROTOCOL.md §1.2 + APPROVAL_BUS.md §5 的真实帧形构造。
+
+    extra：Resolved 的 decision/by / Removed 的 cause（data 顶层 + approval 镜像）。"""
     entry = {
         "id": apr_id, "kind": kind, "sessionId": session, "summary": summary,
         "payload": {"nativeRequestId": f"req_{apr_id}"}, "raisedAtMs": int(time.time() * 1000),
     }
+    extra = extra or {}
     return {
-        "type": "ui_event", "ui_type": "ApprovalRequest", "extension": "host",
+        "type": "ui_event", "ui_type": etype, "extension": "host",
         "session": session, "route": "ui",
-        "data": {**entry, "approval": entry},
+        "data": {**entry, **extra, "approval": {**entry, **extra}},
     }
 
 
@@ -559,8 +695,9 @@ def mock_webhook_server(dump_path: str):
 
 
 def mock_host_server(sock_path: str, ready: threading.Event):
-    """起 mock unix socket：按协议回 hello/subscribe ack，再吐 3 条事件帧
-    （两条唯一 + 一条重复）。daemon 线程；selftest 结束随进程退出。"""
+    """起 mock unix socket：按协议回 hello/subscribe ack，再吐 5 条事件帧
+    （3 Request（1 重复）+ 1 Removed（未推送 id）+ 1 Resolved（已推送 id））。
+    daemon 线程；selftest 结束随进程退出。"""
 
     def handle_conn(conn):
         try:
@@ -645,7 +782,7 @@ def cmd_selftest() -> int:
         _probe.bind(("127.0.0.1", 0))
         free_port = _probe.getsockname()[1]
         _probe.close()
-        rc = run_bridge(sock_path, webhook_url, log_path, stop_after_events=3, http_port=free_port)
+        rc = run_bridge(sock_path, webhook_url, log_path, stop_after_events=5, http_port=free_port)
         server.shutdown()
         if rc != 0:
             failures.append(f"run_bridge 返回 {rc}（预期 0）")
@@ -664,11 +801,12 @@ def cmd_selftest() -> int:
         except OSError as e:
             failures.append(f"bridge log 读取失败: {e}")
 
-        # 断言 1：恰 2 条推送（重复帧被冷却吞）
-        if len(pushes) == 2:
+        # 断言 1：恰 3 条推送（2 请求 + 1 跟进；重复帧被冷却吞；ghost 不跟进）
+        if len(pushes) == 3:
             pass
         else:
-            failures.append(f"推送条数={len(pushes)}（预期 2：重复帧应被 30s 冷却吞掉）")
+            failures.append(f"推送条数={len(pushes)}（预期 3：2 请求 + 1 跟进；"
+                            f"重复帧冷却吞、未推送 id 不跟进）")
         # 断言 2：冷却日志留痕
         if "[dedupe]" in log_text:
             pass
@@ -720,8 +858,8 @@ def cmd_selftest() -> int:
             failures.append(f"v2 审批页未生效（port={PAGE_PORT}, tokens={len(tokens)}）")
         else:
             if not all(str(pp.get("url", "")).startswith(f"http://") and "/p/" in str(pp.get("url", ""))
-                       for pp in pushes):
-                failures.append("推送缺少 /p/<token> 形式的 url 字段")
+                       for pp in pushes if "已被处理" not in str(pp.get("title", ""))):
+                failures.append("请求推送缺少 /p/<token> 形式的 url 字段")
             tk = tokens[0]
             base = f"http://127.0.0.1:{PAGE_PORT}"
             try:
@@ -742,6 +880,51 @@ def cmd_selftest() -> int:
                         failures.append(f"重复使用应 404，实际 {e.code}")
             except Exception as e:
                 failures.append(f"审批页链路异常: {type(e).__name__}: {e}")
+
+        # 断言 6（v3）：跟进推送恰一条 + 形状（title/level=quiet/group/body 含决定与 by）
+        follow_ups = [p for p in pushes if "已被处理" in str(p.get("title", ""))]
+        if len(follow_ups) == 1:
+            f0 = follow_ups[0]
+            shape_f = [
+                ("title", "✔ apr_cafef00d 已被处理"),
+                ("markdown", "true"),
+                ("level", "quiet"),
+                ("group", "ion-approvals"),
+                ("body", "权限询问"),
+                ("body", "已批准"),
+                ("body", "由审批泵"),
+            ]
+            if has_all(f0, shape_f):
+                pass
+            else:
+                failures.append(f"跟进 payload 形状不符: {json.dumps(f0, ensure_ascii=False)}")
+        else:
+            failures.append(f"跟进推送条数={len(follow_ups)}（预期恰 1 条）")
+
+        # 断言 7（v3）：未推送过的 id 不跟进（ghost 无推送）+ 日志两路径留痕
+        if any("apr_ghost9999" in json.dumps(p, ensure_ascii=False) for p in pushes):
+            failures.append("未推送过的 ghost id 竟然触发推送")
+        if "[skip-lifecycle]" not in log_text:
+            failures.append("日志无 [skip-lifecycle]（ghost 未走跳过路径）")
+        if "[recall]" not in log_text:
+            failures.append("日志无 [recall]（resolved 未走跟进路径）")
+
+        # 断言 8（v3）：resolved 审批的页面 token 已作废（GET → 404）
+        #   token 从推送 #2（cafef00d 请求推送）的 url 提取（selftest 运行期间
+        #   _PAGES 内它已被 invalidate 弹出，只能从落盘 payload 拿）。
+        t2_url = str(pushes[1].get("url", "")) if len(pushes) >= 2 else ""
+        t2 = t2_url.rsplit("/", 1)[-1] if "/p/" in t2_url else ""
+        if not t2:
+            failures.append(f"推送#2 无 /p/<token> url，无法验 token 作废: {t2_url}")
+        else:
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{PAGE_PORT}/p/{t2}", timeout=5)
+                failures.append("resolved 审批页 token 未作废（GET 竟然 200）")
+            except urllib.error.HTTPError as e:
+                if e.code != 404:
+                    failures.append(f"resolved 后旧 token 应 404，实际 {e.code}")
+            except Exception as e:
+                failures.append(f"token 作废验证异常: {type(e).__name__}: {e}")
         return finish(failures, tmp, log_path, dump)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -761,7 +944,8 @@ def finish(failures: list, tmp: str, log_path: str, dump: str) -> int:
             except OSError:
                 pass
         return 1
-    print("✔ selftest PASS：2 推送 + 1 冷却去重 + 握手/订阅/payload 形状全对")
+    print("✔ selftest PASS：2 请求推送 + 1 跟进推送 + 1 冷却去重 + ghost 跳过"
+          "+ token 作废 404 + 握手/订阅/payload 形状全对")
     return 0
 
 
