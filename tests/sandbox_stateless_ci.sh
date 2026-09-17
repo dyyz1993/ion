@@ -10,6 +10,8 @@
 #   Win 穿透 : RW_HOST=192.168.0.38 RW_PORT=22 RW_USER=sshuser RW_KEY=~/.ssh/id_ed25519 \
 #              RW_WRAPPER='wsl -d ion -u root'
 #   可选     : RW_BIN=/usr/local/bin/ion RW_NAME=ci-sbx ION_BIN=target/debug/ion
+#   会话落盘 : ION_SESSION_DIR=<dir>（缺省 ~/.ion/agent/sessions；自定义时 host 与
+#              ④回流断言同步切换——演练/测试可整目录隔离，不碰真实会话）
 #
 # 端点不可达 → 整组 SKIP（nc 探测）。红线：cleanup 只 kill 本脚本 host PID，严禁宽泛 pkill ion。
 set -u
@@ -21,6 +23,7 @@ KEY="${RW_KEY:-}"
 RBIN="${RW_BIN:-/usr/local/bin/ion}"
 NAME="${RW_NAME:-ci-sbx}"
 WRAPPER="${RW_WRAPPER:-}"
+SESSION_DIR="${ION_SESSION_DIR:-$HOME/.ion/agent/sessions}"
 SOCK="/tmp/ion-sbx-ci-$$.sock"
 LOG="/tmp/ion-sbx-ci-$$.log"
 PASS=0; FAIL=0; SKIP=0
@@ -49,6 +52,10 @@ if os.environ['KEY_']: sb['key'] = os.path.expanduser(os.environ['KEY_'])
 if os.environ['WRAPPER_']: sb['wrapper'] = os.environ['WRAPPER_']
 print(json.dumps({os.environ['NAME_']: sb}))")
 export ION_REMOTE_WORKERS="$SANDBOX_JSON"
+if [ -n "${ION_SESSION_DIR:-}" ]; then
+  mkdir -p "$SESSION_DIR"
+  export ION_SESSION_DIR
+fi
 ION_HOST_SOCKET="$SOCK" "$ION" serve >"$LOG" 2>&1 &
 HOST_PID=$!
 for i in $(seq 1 20); do [ -S "$SOCK" ] && break; sleep 0.5; done
@@ -82,7 +89,7 @@ except Exception: print('ERR')" 2>/dev/null)
   [ "$ST" = "Idle" ] || [ "$ST" = "GONE" ] && break
   sleep 2
 done
-[ "$ST" = "Idle" ] && ok "②b 远端首轮完成（Idle，真 LLM 往返）" || bad "②b 状态: $ST（120s 未完成）"
+[ "$ST" = "Idle" ] && ok "②b 远端首轮完成（Idle，真 LLM 往返）" || bad "②b 状态: ${ST}（120s 未完成）"
 
 # ── ③ ssh 远端精确 kill -9（io[n] 括号技巧防 pkill 自匹配）──
 KEYOPT=""; [ -n "$KEY" ] && KEYOPT="-i $KEY"
@@ -100,7 +107,7 @@ fi
 # ── ④ Mac 侧会话回流断言：JSONL 存在且含 ToolResult 与 Assistant 回答 ──
 F=""
 for i in $(seq 1 15); do
-  F=$(find "$HOME/.ion/agent/sessions" -name "$SID.jsonl" 2>/dev/null | head -1)
+  F=$(find "$SESSION_DIR" -name "$SID.jsonl" 2>/dev/null | head -1)
   [ -n "$F" ] && break
   sleep 1
 done
