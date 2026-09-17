@@ -1189,6 +1189,38 @@ enum Commands {
         #[command(subcommand)]
         action: ExtensionAction,
     },
+    /// Approval quick actions (unified approval bus, APPROVAL_BUS.md)
+    ///   ion approvals list
+    ///   ion approvals approve <id> [--reason text]
+    ///   ion approvals reject <id> [--reason text]
+    Approvals {
+        #[command(subcommand)]
+        action: ApprovalsAction,
+    },
+}
+
+/// Approvals 子命令（统一审批总线的便捷入口：list = approvals_pending，
+/// approve/reject = approval_respond）
+#[derive(Subcommand)]
+enum ApprovalsAction {
+    /// List pending approvals (human-readable table)
+    List,
+    /// Approve a pending approval by unified id (apr_...)
+    Approve {
+        /// Unified approval id (apr_ prefix; native ids also accepted)
+        id: String,
+        /// Optional note (goes into ApprovalResolved event)
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Reject a pending approval by unified id (apr_...)
+    Reject {
+        /// Unified approval id (apr_ prefix; native ids also accepted)
+        id: String,
+        /// Optional note (goes into ApprovalResolved event)
+        #[arg(long)]
+        reason: Option<String>,
+    },
 }
 
 /// Session Tree 子命令
@@ -3616,6 +3648,217 @@ async fn cmd_rpc(session: Option<&str>, method: &str, params: &str) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Approvals 便捷 CLI（统一审批总线，APPROVAL_BUS.md §4）
+// ---------------------------------------------------------------------------
+
+/// 发一条 host 级 RPC 并等待响应帧（跳过事件帧），返回完整响应 Value。
+/// 失败返回 Err（人类可读原因）；调用方决定打印与退出码。
+/// （`ion approvals` 专用；`ion rpc` 走 cmd_rpc——直接打印原始响应。）
+async fn host_rpc_once(
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let sock_path = ion::paths::host_socket_path();
+    let mut stream = tokio::net::UnixStream::connect(&sock_path)
+        .await
+        .map_err(|e| {
+            format!(
+                "Cannot connect to Host at {}（先启动: ion serve）: {e}",
+                sock_path.display()
+            )
+        })?;
+    // hostId pin（P0.3）：与 `ion rpc` 同款可选校验
+    if let Ok(expected) = std::env::var("ION_EXPECT_HOST_ID") {
+        let expected = expected.trim().to_string();
+        if !expected.is_empty() {
+            verify_expected_host_id(&mut stream, &expected).await;
+        }
+    }
+
+    let req = ion_protocol::Request::rpc("rpc-client", method, params);
+    stream
+        .write_all(format!("{req}\n").as_bytes())
+        .await
+        .map_err(|e| format!("write socket failed: {e}"))?;
+    let _ = stream.flush().await;
+
+    let mut reader = BufReader::new(stream);
+    let mut attempts = 0;
+    loop {
+        let mut line = String::new();
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            reader.read_line(&mut line),
+        )
+        .await
+        {
+            Err(_) => return Err("RPC timeout (30s) — host did not respond".to_string()),
+            Ok(Ok(0)) => return Err("host closed connection without response".to_string()),
+            Ok(Ok(_)) => {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                    if ion_protocol::Request::has_request_id(&v) {
+                        return Ok(v);
+                    }
+                    continue; // 事件帧，跳过
+                }
+            }
+            Ok(Err(e)) => return Err(format!("read socket failed: {e}")),
+        }
+        attempts += 1;
+        if attempts > 100 {
+            return Err("rpc 超时：读了 100 行还没找到响应".to_string());
+        }
+    }
+}
+
+/// kind → 中文标签（表格显示用）
+fn approval_kind_label(kind: &str) -> &'static str {
+    match kind {
+        "file_snapshot" => "写文件审批",
+        "ui_ask" => "权限询问",
+        "remote_verb" => "远程动词",
+        _ => "未知类型",
+    }
+}
+
+/// raisedAtMs → 人类可读年龄（12s / 3m20s / 2h05m / 3d04h）；缺失显示 "-"
+fn format_approval_age(raised_at_ms: Option<u64>, now_ms: u64) -> String {
+    let Some(raised) = raised_at_ms else {
+        return "-".to_string();
+    };
+    let secs = now_ms.saturating_sub(raised) / 1000;
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    } else if secs < 86400 {
+        format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
+    } else {
+        format!("{}d{:02}h", secs / 86400, (secs % 86400) / 3600)
+    }
+}
+
+/// 截断过长的摘要（表格对齐用；中文按 char 数粗略处理）
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let cut: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{cut}…")
+    }
+}
+
+/// `ion approvals list` — approvals_pending 的人类可读表格
+async fn cmd_approvals_list() {
+    let resp = match host_rpc_once("approvals_pending", serde_json::json!({})).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("✘ {e}");
+            std::process::exit(1);
+        }
+    };
+    if resp["success"].as_bool() != Some(true) {
+        eprintln!(
+            "✘ approvals_pending 失败: {}",
+            resp["error"].as_str().unwrap_or("unknown error")
+        );
+        std::process::exit(1);
+    }
+    let requests = resp["data"]["requests"].as_array().cloned().unwrap_or_default();
+    if requests.is_empty() {
+        println!("无待审批");
+        return;
+    }
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    println!("待审批 {} 条：", requests.len());
+    println!(
+        "{:<16} {:<14} {:<44} {:>7}  {}",
+        "ID", "类型", "摘要", "年龄", "会话"
+    );
+    for r in &requests {
+        let id = r["id"].as_str().unwrap_or("").to_string();
+        let kind = r["kind"].as_str().unwrap_or("");
+        let summary = r["summary"].as_str().unwrap_or("");
+        let raised = r["raisedAtMs"].as_u64();
+        let sid = r["sessionId"].as_str().unwrap_or("");
+        let short_sid: String = if sid.len() > 8 {
+            sid[sid.len() - 8..].to_string()
+        } else {
+            sid.to_string()
+        };
+        println!(
+            "{:<16} {:<14} {:<44} {:>7}  {}",
+            id,
+            approval_kind_label(kind),
+            truncate_chars(summary, 42),
+            format_approval_age(raised, now_ms),
+            short_sid,
+        );
+    }
+    println!();
+    println!("应答：ion approvals approve <id> / ion approvals reject <id>");
+}
+
+/// `ion approvals approve|reject <id> [--reason text]` — approval_respond 路由
+async fn cmd_approval_respond(decision: &str, id: &str, reason: Option<&str>) {
+    // 应答前 best-effort 查一次统一表：只为展示 kind + nativeRequestId
+    //（查不到不阻塞应答——approval_respond 自身才是权威判定）
+    let mut native = String::new();
+    if let Ok(resp) = host_rpc_once("approvals_pending", serde_json::json!({})).await {
+        if let Some(entries) = resp["data"]["requests"].as_array() {
+            if let Some(entry) = entries.iter().find(|e| e["id"] == serde_json::json!(id)) {
+                native = entry["payload"]["nativeRequestId"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+            }
+        }
+    }
+
+    let mut params = serde_json::json!({"id": id, "decision": decision});
+    if let Some(r) = reason {
+        params["reason"] = serde_json::json!(r);
+    }
+    match host_rpc_once("approval_respond", params).await {
+        Ok(resp) => {
+            if resp["success"].as_bool() == Some(true) {
+                let d = &resp["data"];
+                let kind = d["kind"].as_str().unwrap_or("");
+                let remaining = d["remaining"].as_u64().unwrap_or(0);
+                print!("✔ 已 {decision} {id}（kind={}", approval_kind_label(kind));
+                if !kind.is_empty() {
+                    print!("/");
+                }
+                print!("{kind}");
+                if !native.is_empty() {
+                    print!(", nativeRequestId={native}");
+                }
+                println!(", 剩余待审批={remaining}）");
+            } else {
+                eprintln!(
+                    "✘ 审批失败: {}",
+                    resp["error"].as_str().unwrap_or("unknown error")
+                );
+                std::process::exit(1);
+            }
+        }
+        Err(e) => {
+            eprintln!("✘ {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// hostId pin 校验（P0.3）：在既有连接上发 hello，读响应比对 `data.hostId`。
 ///
 /// - 匹配 → 返回，连接继续用于正式请求（hello 不消费连接）；
@@ -5397,6 +5640,15 @@ async fn main() {
         }
         Some(Commands::ListModels { search }) => cmd_list_models(search).await,
         Some(Commands::Extension { action }) => cmd_extension(action.clone()).await,
+        Some(Commands::Approvals { action }) => match action {
+            ApprovalsAction::List => cmd_approvals_list().await,
+            ApprovalsAction::Approve { id, reason } => {
+                cmd_approval_respond("approve", &id, reason.as_deref()).await;
+            }
+            ApprovalsAction::Reject { id, reason } => {
+                cmd_approval_respond("reject", &id, reason.as_deref()).await;
+            }
+        },
         None => {
             println!("ion: AI Agent orchestration CLI");
             println!("Usage: ion <message>");
@@ -11568,6 +11820,260 @@ fn old_verb_review_path_syncs_bus_mirror() {
     assert!(ApprovalBus::global().pending().is_empty(), "旧通路同步收口");
     bus_test_teardown();
 }
+}
+
+#[cfg(test)]
+mod approval_cli_tests {
+    // ══ `ion approvals` 便捷 CLI 端到端（隔离 host 三件套 + faux provider）══
+    // 起真实 host 子进程（私有 HOME + ION_HOST_SOCKET + ION_SESSION_DIR，绝不碰
+    // 真实 ~/.ion、绝不连生产 socket），跑 list / approve / reject 三子命令断言
+    // 输出与退出码（含对不存在 id 的错误分支）。CI 侧 tests/approval_bridge_ci.sh
+    // 会先 `cargo build --bin ion`；二进制缺失时本测试跳过（打印提示，不失败）。
+    //
+    // 不 `use super::*`：本模块只测子进程行为（spawn 隔离 host + 跑 CLI 断言
+    // 输出），不引用宿主 bin 的任何符号。
+
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Child, Command, Stdio};
+
+    struct HostGuard {
+        child: Child,
+        sock: std::path::PathBuf,
+        root: std::path::PathBuf,
+    }
+
+    impl Drop for HostGuard {
+        fn drop(&mut self) {
+            // 精确 PID 清理：只杀自己拉起的 host；绝不 pkill
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            let _ = std::fs::remove_file(&self.sock);
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn find_ion_bin() -> Option<std::path::PathBuf> {
+        if let Ok(p) = std::env::var("ION_WORKER_BIN") {
+            let p = std::path::PathBuf::from(p);
+            return p.exists().then_some(p);
+        }
+        let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/ion");
+        p.exists().then_some(p)
+    }
+
+    fn spawn_isolated_host(project: &std::path::Path, faux: &std::path::Path) -> HostGuard {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos();
+        let root = std::env::temp_dir()
+            .join(format!("ion_appr_cli_{}_{nanos}", std::process::id()));
+        let home = root.join("home");
+        std::fs::create_dir_all(home.join(".ion")).unwrap();
+        std::fs::create_dir_all(root.join("sessions")).unwrap();
+        let sock = root.join("host.sock");
+        // 审批链依赖 file-snapshot；关 memory 系（防单例 worker 吸收 faux 队列）
+        std::fs::write(
+            home.join(".ion/config.json"),
+            r#"{"extensions":{"file-snapshot":{"enabled":true},"global-memory":{"enabled":false},"memory":{"enabled":false},"learning":{"enabled":false}}}"#,
+        )
+        .unwrap();
+
+        let log = std::fs::File::create(root.join("host.log")).unwrap();
+        let err_log = log.try_clone().unwrap();
+        let child = Command::new(find_ion_bin().unwrap())
+            .arg("serve")
+            .current_dir(project)
+            .env("HOME", &home)
+            .env("ION_HOST_SOCKET", &sock)
+            .env("ION_SESSION_DIR", root.join("sessions"))
+            .env("ION_FAUX_SCRIPT", faux)
+            .stdout(Stdio::from(log))
+            .stderr(Stdio::from(err_log))
+            .spawn()
+            .expect("spawn isolated host");
+        HostGuard { child, sock, root }
+    }
+
+    fn host_env(guard: &HostGuard) -> Vec<(String, std::ffi::OsString)> {
+        vec![
+            ("HOME".into(), guard.root.join("home").into_os_string()),
+            ("ION_HOST_SOCKET".into(), guard.sock.clone().into_os_string()),
+        ]
+    }
+
+    /// 跑一个 `ion approvals ...` 子命令，收集 (exit_code, stdout, stderr)
+    fn run_approvals(guard: &HostGuard, args: &[&str]) -> (i32, String, String) {
+        let mut cmd = Command::new(find_ion_bin().unwrap());
+        cmd.args(["approvals"]).args(args);
+        for (k, v) in host_env(guard) {
+            cmd.env(k, v);
+        }
+        let out = cmd.output().expect("spawn ion approvals");
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+            String::from_utf8_lossy(&out.stderr).to_string(),
+        )
+    }
+
+    /// 对隔离 host 发一条 RPC（std 阻塞 socket；跳过事件帧找同 id 响应）
+    fn host_rpc(guard: &HostGuard, method: &str, params: &serde_json::Value) -> serde_json::Value {
+        let id = format!("t{}", params.to_string().len());
+        let req = serde_json::json!({"id": id, "method": method, "params": params});
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            assert!(std::time::Instant::now() < deadline, "host_rpc timeout: {method}");
+            let stream = match std::os::unix::net::UnixStream::connect(&guard.sock) {
+                Ok(s) => s,
+                Err(_) => {
+                    std::thread::sleep(std::time::Duration::from_millis(400));
+                    continue; // host 未就绪
+                }
+            };
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(25)));
+            let mut w = stream.try_clone().unwrap();
+            w.write_all(format!("{req}\n").as_bytes()).unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut buf = String::new();
+            loop {
+                buf.clear();
+                match reader.read_line(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(buf.trim()) {
+                            if v.get("id").and_then(|i| i.as_str()) == Some(id.as_str()) {
+                                return v;
+                            }
+                        }
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        }
+    }
+
+    fn pending_file_snapshot_id(guard: &HostGuard) -> Option<String> {
+        let resp = host_rpc(guard, "approvals_pending", &serde_json::json!({}));
+        resp["data"]["requests"]
+            .as_array()?
+            .iter()
+            .find(|r| r["kind"] == "file_snapshot")
+            .and_then(|r| r["id"].as_str())
+            .map(str::to_string)
+    }
+
+    #[test]
+    fn approvals_cli_end_to_end_on_isolated_host() {
+        if find_ion_bin().is_none() {
+            eprintln!("skip: target/debug/ion 不存在（先 cargo build --bin ion，或跑 tests/approval_bridge_ci.sh）");
+            return;
+        }
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos();
+        let root = std::env::temp_dir()
+            .join(format!("ion_appr_cli_proj_{}_{nanos}", std::process::id()));
+        let proj = root.join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let marker = nanos; // faux 内容带随机后缀（file-snapshot 按 diff 判定，同内容=无审批）
+        let faux = root.join("faux.jsonl");
+        std::fs::write(
+            &faux,
+            format!(
+                "{{\"tool_call\":{{\"name\":\"write\",\"input\":{{\"file_path\":\"{}/cli_e2e.txt\",\"content\":\"approval cli e2e {marker}\"}}}}}}\n{{\"text\":\"done\"}}\n",
+                proj.display()
+            ),
+        )
+        .unwrap();
+
+        let guard = spawn_isolated_host(&proj, &faux);
+
+        // 等待 host 就绪（list_sessions 可用）
+        let ready_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            assert!(
+                std::time::Instant::now() < ready_deadline,
+                "isolated host 未在 30s 内就绪"
+            );
+            let resp = host_rpc(&guard, "list_sessions", &serde_json::json!({}));
+            if resp["success"] == serde_json::json!(true) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        }
+
+        // T1: 空表 → "无待审批" + exit 0
+        let (code, out, _err) = run_approvals(&guard, &["list"]);
+        assert_eq!(code, 0, "T1 exit: {out}");
+        assert!(out.contains("无待审批"), "T1 stdout: {out}");
+
+        // 登记 file_snapshot 审批：create_session + faux write prompt（后台跑）
+        let create = host_rpc(
+            &guard,
+            "create_session",
+            &serde_json::json!({"cwd": proj.display().to_string()}),
+        );
+        let sid = create["data"]["session_id"]
+            .as_str()
+            .expect("create_session 返回 session_id")
+            .to_string();
+        let mut prompt_child = {
+            let mut cmd = Command::new(find_ion_bin().unwrap());
+            cmd.args(["rpc", "--session", &sid, "--method", "prompt",
+                      "--params", "{\"text\":\"write file\"}"]);
+            for (k, v) in host_env(&guard) {
+                cmd.env(k, v);
+            }
+            cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap()
+        };
+
+        // T2: 等 faux write 进统一表（≤20s）
+        let apr_id = {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            loop {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "20s 内未等到 file_snapshot 条目"
+                );
+                if let Some(id) = pending_file_snapshot_id(&guard) {
+                    break id;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        };
+        assert!(apr_id.starts_with("apr_"), "T2 id 前缀: {apr_id}");
+
+        // T3: list 表格含 id / 中文 kind
+        let (code, out, _err) = run_approvals(&guard, &["list"]);
+        assert_eq!(code, 0, "T3 exit: {out}");
+        assert!(out.contains(&apr_id), "T3 含 id: {out}");
+        assert!(out.contains("写文件审批"), "T3 含中文 kind: {out}");
+
+        // T4: approve → ✔ + kind + nativeRequestId；随后表清空
+        let (code, out, err) = run_approvals(&guard, &["approve", &apr_id, "--reason", "cli e2e"]);
+        assert_eq!(code, 0, "T4 approve exit: out={out} err={err}");
+        assert!(out.contains(&apr_id), "T4 含 id: {out}");
+        assert!(out.contains("file_snapshot"), "T4 含 kind: {out}");
+        assert!(out.contains("nativeRequestId=appr_"), "T4 含 nativeRequestId: {out}");
+        let (code, out, _err) = run_approvals(&guard, &["list"]);
+        assert_eq!(code, 0, "T4.1 exit: {out}");
+        assert!(out.contains("无待审批"), "T4.1 审批后表清空: {out}");
+
+        // T5: 对不存在 id 的 reject → 非零退出 + approval not found
+        let (code, out, err) = run_approvals(&guard, &["reject", "apr_nope00"]);
+        assert_ne!(code, 0, "T5 未知 id 应失败: out={out} err={err}");
+        let combined = format!("{out}{err}");
+        assert!(
+            combined.contains("approval not found: apr_nope00"),
+            "T5 错误文案: {combined}"
+        );
+
+        let _ = prompt_child.kill();
+        let _ = prompt_child.wait();
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 #[cfg(test)]
