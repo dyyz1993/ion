@@ -169,7 +169,11 @@ def post_webhook(url: str, payload: dict, timeout: float = 10.0):
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         url, data=data,
-        headers={"Content-Type": "application/json; charset=utf-8"},
+        headers={
+            "Content-Type": "application/json; charset=utf-8",
+            # Cloudflare 类网关会封 python 默认 UA（实测 drel 403 error 1010）
+            "User-Agent": "ion-approval-bridge/1.0",
+        },
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
