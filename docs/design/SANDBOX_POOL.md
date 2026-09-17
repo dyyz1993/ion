@@ -1,6 +1,6 @@
 # SANDBOX_POOL 沙盒池 — 无状态远程执行端的统一管理
 
-> **状态：Phase 1 已实现（2026-09-13，commit 0c7a26e）+ §3.3 审批停摆机制性解决已实现（2026-09-16，`sandbox_policy` RPC + 审批泵，`tests/sandbox_policy_ci.sh` 27/0）** — sandbox_pool 模块 + list_sandboxes / sandbox_probe / host=auto / sandbox_policy 四 RPC；五步试炼 `tests/sandbox_stateless_ci.sh` 8/0（真机，勿在开发机直跑——默认端点即生产 win38）。§4.2 跨沙盒重派已被 fix4 覆盖（commit 8110919，`failover_decision` + `auto_recovered` 事件）；Phase 3 UI 面板待开工。目标：远程服务无状态、会话统一在 Mac 管理、任意沙盒即派即跑。
+> **状态：Phase 1 已实现（2026-09-13，commit 0c7a26e）+ §3.3 审批停摆机制性解决已实现（2026-09-16，`sandbox_policy` RPC + 审批泵，`tests/sandbox_policy_ci.sh` 27/0）** — sandbox_pool 模块 + list_sandboxes / sandbox_probe / host=auto / sandbox_policy 四 RPC；五步试炼 `tests/sandbox_stateless_ci.sh` 8/0（真机，勿在开发机直跑——默认端点即生产 win38）。**K5 真机验证待办三件的零准备演练已就绪**（`tests/sandbox_live_readiness.sh` --check/--plan/--run 双确认 + `tests/sandbox_live_readiness_ci.sh` 42/0，见 §4.3 授权窗口演练手册）。§4.2 跨沙盒重派已被 fix4 覆盖（commit 8110919，`failover_decision` + `auto_recovered` 事件）；Phase 3 UI 面板待开工。目标：远程服务无状态、会话统一在 Mac 管理、任意沙盒即派即跑。
 
 ## 0. 一句话
 
@@ -135,6 +135,47 @@ ion rpc --method sandbox_policy --params '{"host":"win38","policy":"auto_approve
 - 事件 `auto_recovered` 带 failover 三态 mode（`pool_pick` 原沙盒仍健康选回自身 / `pool_failover` 换节点 / `fallback_no_healthy` 全不健康回落），UI 可见
 - 全部不健康时保持 Dead 保留语义，等 `recover_tree` 手动触发
 - 验证：`src/sandbox_pool.rs` 单测 failover 三态 5 条 + `tests/heartbeat_ci.sh`
+
+### 4.3 授权窗口演练手册（K5 真机验证待办三件的零准备执行）
+
+> **状态：就绪脚本已完成（2026-09-17）**——三套件的执行体全部就位并经 mock CI 验证（`tests/sandbox_live_readiness_ci.sh` 36/0），只等授权窗口一键真跑。
+
+Phase 1/2 落地后有三件**只能真机做**的验证一直欠着。环境准备成本已压缩到零：
+
+| # | 套件 | 验证什么 | 执行体 | 预计时长 |
+|---|------|---------|--------|---------|
+| ① | `stateless` | 无状态五步试炼（§4.1）：真任务→ssh kill -9→会话回流 Mac→host 直读 | `tests/sandbox_stateless_ci.sh` | 2-4 分钟 |
+| ② | `pump-e2e` | 真沙盒审批泵（§3.3）：auto_approve 沙盒 worker 真实写文件→ApprovalRequest→泵自动放行→`SandboxAutoApproved`+`review_pending` 归零 | `tests/sandbox_live_drill.sh pump-e2e` | 2-4 分钟 |
+| ③ | `policy-rpc` | `sandbox_policy` RPC 真机设置（§3.4）：list_sandboxes/sandbox_probe 真 ssh 体检（可达+版本）/GET→SET→回读→非法拒绝 | `tests/sandbox_live_drill.sh policy-rpc` | ~30 秒 |
+
+**用法（推荐路径）：**
+
+```bash
+bash tests/sandbox_live_readiness.sh --check          # 平时摸底：零副作用（不 ssh/不写盘/不读 auth.json/不打印密钥）
+bash tests/sandbox_live_readiness.sh --plan           # 给人看：三套件步骤/影响面/时长
+
+# 授权窗口到：
+cargo build --bin ion                                 # 或 ION_BIN 指向已构建产物
+export SANDBOX_LIVE_CONFIRM=YES                       # 第一重确认
+bash tests/sandbox_live_readiness.sh --run all        # 第二重确认：终端输入 yes；①→②→③ 依次执行
+# 或单套件: --run stateless / --run pump-e2e / --run policy-rpc
+```
+
+**换非生产端点**（缺省端点=生产 win38，脚本会🔴提示）：
+
+```bash
+RW_HOST=<host> RW_PORT=<port> RW_USER=<user> [RW_KEY=~/.ssh/xxx] [RW_WRAPPER='wsl -d ion -u root'] \
+  bash tests/sandbox_live_readiness.sh --check        # 先 --check 探测新端点
+RW_HOST=<host> ... bash tests/sandbox_live_readiness.sh --run policy-rpc   # RW_* 原样透传给执行体
+```
+
+**`--check` 就绪判定项**（每套件独立结论"可执行/缺什么"）：ion 二进制已构建、nc/ssh/python3/jq 齐备、端点 TCP 可达（nc 端口探测，绝不 ssh）、LLM 配置就绪（①②需要；③隔离 HOME 不需要）、`extensions.file-snapshot.enabled=true`（②需要，否则写文件不触发 ApprovalRequest）、RW_KEY 文件存在。
+
+**安全门（缺一即拒，exit 2）**：`SANDBOX_LIVE_CONFIRM=YES` + 终端交互输入 yes；非交互环境（CI/脚本管道）一律拒绝——防误触真机。端点 TCP 不可达在确认前即拒（exit 3）。缺确认时只打印"将要做的事"，绝不执行。
+
+**影响面**（授权窗口内已知且可控的副作用）：①②各产生 1 个真实 LLM 会话（本机 JSONL 正常落盘）+ 远端 /tmp 1 个时间戳文件；①的 ssh 仅精确 kill 本套件自己的 worker；③零持久化（隔离 HOME 用完即删，远端仅只读 `--version`）。
+
+**已验证**：`bash tests/sandbox_live_readiness_ci.sh`（42 断言：--plan 三套件可见/--check 零副作用+清单+缺项判定/--run 四种拒绝路径/三执行体不可达整组 SKIP 回归/Phase F fake-ion 全链 mock——policy-rpc 的 15 项真机断言逻辑在 mock 下全数走通，真机窗口只剩环境变量差异）。端点参数化补齐：`sandbox_stateless_ci.sh` 新增 `ION_SESSION_DIR` 支持（host 与 ④回流断言同步切换，演练可整目录隔离会话落盘）；RW_HOST/RW_PORT/RW_USER/RW_KEY/RW_BIN/RW_NAME/RW_WRAPPER/ION_BIN 原已支持。
 
 ## 5. Phase 3 — ion-web 沙盒管理面板
 
