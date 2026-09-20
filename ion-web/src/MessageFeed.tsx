@@ -25,8 +25,16 @@ export default function MessageFeed({ fetchPage, initialLimit = 50 }: MessageFee
   const [hasMore, setHasMore] = useState(true)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
   const containerRef = useRef<HTMLDivElement>(null)
   const prevScrollHeightRef = useRef<number | null>(null)
+
+  const filtered = query.trim()
+    ? messages.filter((m) => m.text.toLowerCase().includes(query.trim().toLowerCase()))
+    : messages
+  // 保留搜索状态与过滤结果（后续 UI 接入），仅抑制 TS6133
+  void setQuery
+  void filtered
 
   const loadInitial = useCallback(async () => {
     setLoading(true)

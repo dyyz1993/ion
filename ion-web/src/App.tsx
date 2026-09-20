@@ -1,5 +1,6 @@
 import { useCallback } from 'react'
 import MessageFeed, { FetchPageParams, Message, Page } from './MessageFeed'
+import InterruptedPanel from './InterruptedPanel'
 
 // mock: 生成 500 条假消息, id 1..500, 500 最新
 const MOCK_MESSAGES: Message[] = Array.from({ length: 500 }, (_, i) => ({
@@ -24,6 +25,7 @@ export default function App() {
   return (
     <div style={{ maxWidth: 640, margin: '0 auto', height: '100vh', display: 'flex', flexDirection: 'column' }}>
       <h3 style={{ margin: '8px 0' }}>ION Web — 消息流</h3>
+      <InterruptedPanel />
       <div style={{ flex: 1, minHeight: 0 }}>
         <MessageFeed fetchPage={fetchPage} />
       </div>
