@@ -9326,11 +9326,40 @@ async fn handle_manager_command_write(
                         }
                     }
                     match ion::worker_registry::WorkerRegistry::send_to_session(
-                        &registry, &sid, method, params,
+                        &registry, &sid, method, params.clone(),
                     )
                     .await
                     {
-                        Ok(_) => Ok(serde_json::json!({"status": "forwarded", "session": sid})),
+                        Ok(_) => {
+                            // 远程 worker 的进程侧索引补丁（SessionIndex::set_model /
+                            // set_agent 等）落在执行端文件系统，Mac 侧索引读不到——
+                            // 转发成功后 host 镜像补写本地索引保持两侧一致。
+                            // 本地 worker 场景重复 patch 同值，幂等无害。
+                            match method {
+                                "set_model" => {
+                                    let model = params.get("modelId").and_then(|v| v.as_str());
+                                    let provider = params
+                                        .get("provider")
+                                        .and_then(|v| v.as_str())
+                                        .map(String::from)
+                                        .or_else(|| {
+                                            ion::session_index::SessionIndex::load()
+                                                .get(&sid)
+                                                .and_then(|m| Some(m.provider.clone()))
+                                        });
+                                    if let (Some(m), Some(p)) = (model, provider) {
+                                        ion::session_index::SessionIndex::set_model(&sid, &p, m);
+                                    }
+                                }
+                                "set_agent" => {
+                                    if let Some(a) = params.get("agent").and_then(|v| v.as_str()) {
+                                        ion::session_index::SessionIndex::set_agent(&sid, a);
+                                    }
+                                }
+                                _ => {}
+                            }
+                            Ok(serde_json::json!({"status": "forwarded", "session": sid}))
+                        }
                         Err(e) => Err(e),
                     }
                 }
