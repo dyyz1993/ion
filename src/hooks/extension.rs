@@ -512,10 +512,13 @@ impl Extension for HookExtension {
     }
 
     async fn on_agent_end(&self, ctx: &AgentContext) -> AgentResult<()> {
-        let last_msg = format!(
-            "agent ended (turns={}, tools={})",
-            ctx.turn_index, ctx.tool_call_count
-        );
+        // last_content：真实最后 assistant 文本（内核 agent_loop 填充）；无则回退统计摘要
+        let last_msg = ctx.last_content.clone().unwrap_or_else(|| {
+            format!(
+                "agent ended (turns={}, tools={})",
+                ctx.turn_index, ctx.tool_call_count
+            )
+        });
         let stdin = stdin_builder::subagent_stop(&last_msg, 0);
         let outcome = self.process_event("SubagentStop", stdin).await;
         if outcome.block {

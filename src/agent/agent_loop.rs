@@ -68,6 +68,9 @@ pub struct AgentContext {
     pub message_count: usize,
     pub tool_call_count: u64,
     pub last_stop_reason: Option<StopReason>,
+    /// 最后一条 assistant 文本（on_agent_end 时供 hooks 摘取，如推送/审计）。
+    /// None = 本轮无 assistant 文本输出。
+    pub last_content: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2631,11 +2634,28 @@ impl Agent {
     }
 
     fn build_ctx(&self) -> AgentContext {
+        // 提取最后一条 assistant 文本（hooks on_agent_end 用；无则 None）
+        let last_content = self.messages.iter().rev().find_map(|m| {
+            if let Message::Assistant(am) = m {
+                let txt = am
+                    .content
+                    .iter()
+                    .filter_map(|c| match c {
+                        AssistantContentBlock::Text(t) => Some(t.text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                if !txt.trim().is_empty() { return Some(txt); }
+            }
+            None
+        });
         AgentContext {
             turn_index: self.turn_index,
             message_count: self.messages.len(),
             tool_call_count: 0,
             last_stop_reason: None,
+            last_content,
         }
     }
 }
