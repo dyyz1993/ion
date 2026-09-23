@@ -1149,7 +1149,6 @@ impl WorkerRegistry {
         let mut child_envs: Vec<(String, String)> = Vec::new();
         // 会话 id 透传：hooks common_fields / 会话路径解析等依赖（此前从未设置——恒空）
         child_envs.push(("ION_SESSION_ID".into(), session_id.clone()));
-        child_envs.push(("ION_SESSION_CWD".into(), config.project_path.clone().unwrap_or_default()));
         // 远程执行端连接级环境变量（remote_workers.<name>.env）——对本地 worker 无意义
         if let Some((_, ref host_cfg)) = remote_host {
             // 远程 worker 强制 fork 模式（独立 <sid>.jsonl）：远端非 fork 写共享
