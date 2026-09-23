@@ -121,6 +121,34 @@ pub fn subagent_stop(last_message: &str, loop_count: u32) -> Value {
     )
 }
 
+/// hooks 六要素上下文（on_agent_end 时随 Stop/SubagentStop 一起下发）
+#[derive(Clone, Debug, Default)]
+pub struct AgentEndContext {
+    pub project_name: Option<String>,
+    pub session_name: Option<String>,
+    pub session_id: Option<String>,
+    pub model: Option<String>,
+    pub tokens_input: u64,
+    pub tokens_output: u64,
+    pub tokens_cache_read: u64,
+    pub tokens_cache_write: u64,
+}
+
+/// 给 Stop/SubagentStop 的 stdin 追加六要素字段（原字段不动，纯增量）
+pub fn with_agent_end_ctx(mut stdin: Value, ctx: &AgentEndContext) -> Value {
+    if let Some(obj) = stdin.as_object_mut() {
+        obj.insert("project_name".into(), json!(ctx.project_name));
+        obj.insert("session_name".into(), json!(ctx.session_name));
+        obj.insert("session_id".into(), json!(ctx.session_id));
+        obj.insert("model".into(), json!(ctx.model));
+        obj.insert("tokens_input".into(), json!(ctx.tokens_input));
+        obj.insert("tokens_output".into(), json!(ctx.tokens_output));
+        obj.insert("tokens_cache_read".into(), json!(ctx.tokens_cache_read));
+        obj.insert("tokens_cache_write".into(), json!(ctx.tokens_cache_write));
+    }
+    stdin
+}
+
 pub fn stop(last_message: &str, loop_count: u32) -> Value {
     build(
         "Stop",

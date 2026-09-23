@@ -71,6 +71,22 @@ pub struct AgentContext {
     /// 最后一条 assistant 文本（on_agent_end 时供 hooks 摘取，如推送/审计）。
     /// None = 本轮无 assistant 文本输出。
     pub last_content: Option<String>,
+    // ── hooks 六要素（on_agent_end 推送/审计用）──
+    /// 项目名（目录名，如 "ion"）
+    pub project_name: Option<String>,
+    /// 会话名（SessionIndex 标题；无则 sid 前 8 位）
+    pub session_name: Option<String>,
+    /// 会话 id
+    pub session_id: Option<String>,
+    /// 当前模型 "provider/model"
+    pub model: Option<String>,
+    /// 本轮 token 入仓（input，含 cache_read/write 分开记）
+    pub tokens_input: u64,
+    /// 本轮 token 出仓（output）
+    pub tokens_output: u64,
+    /// cache 命中读 / 写（入仓的细分）
+    pub tokens_cache_read: u64,
+    pub tokens_cache_write: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +122,8 @@ pub enum DeliverAs {
 
 pub struct Agent {
     messages: Vec<Message>,
+    /// 当前 run() 起点时的消息数（build_ctx 求本轮 token 增量用）
+    turn_start_msg_count: usize,
     steering_queue: VecDeque<Message>,
     follow_up_queue: VecDeque<Message>,
     /// NextTurn 投递的消息：等 agent.run 完成后才触发新 turn。
@@ -185,6 +203,7 @@ impl Agent {
         let (pause_tx, pause_rx) = watch::channel(false);
         Self {
             messages: Vec::new(),
+            turn_start_msg_count: 0,
             steering_queue: VecDeque::new(),
             bg_pending: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             follow_up_queue: VecDeque::new(),
@@ -963,6 +982,8 @@ impl Agent {
         // turn_index 是 agent loop 内部计数器（每次 run 从 0 开始，用于 max_turns 限制）
         // 快照用独立的全局唯一 turnId（ts_xxxxxx），不依赖 turn_index
         self.turn_index = 0;
+        // 本轮起点消息数：build_ctx 求本轮 token 入/出仓增量用（hooks 六要素）
+        self.turn_start_msg_count = self.messages.len();
 
         // ── 生命周期顺序 (对齐 pi) ──
         // 1. session_start (会话启动)
@@ -2650,12 +2671,51 @@ impl Agent {
             }
             None
         });
+        // ── hooks 六要素填充 ──
+        // 项目名：cwd 目录名
+        let project_name = std::env::current_dir()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
+        // 会话名：优先 SessionIndex 标题，回退 sid 短码
+        let (session_name, model) = {
+            let sid = self.session_id.as_deref();
+            let name = sid.and_then(|s| {
+                crate::session_index::SessionIndex::load()
+                    .get(s)
+                    .and_then(|m| m.name.clone())
+                    .or_else(|| sid.map(|s| s.chars().take(8).collect::<String>()))
+            });
+            let m = self.model().provider.clone() + "/" + &self.model().id;
+            (name, m)
+        };
+        // 本轮 token 入仓/出仓：本 run 期间新增 assistant 消息的 usage 累计
+        // （last_run_start_msg_count 由 run() 记录起点，build_ctx 求其后增量）
+        let mut tokens_input = 0u64;
+        let mut tokens_output = 0u64;
+        let mut tokens_cache_read = 0u64;
+        let mut tokens_cache_write = 0u64;
+        for m in self.messages.iter().skip(self.turn_start_msg_count.min(self.messages.len())) {
+            if let Message::Assistant(am) = m {
+                tokens_input += am.usage.input;
+                tokens_output += am.usage.output;
+                tokens_cache_read += am.usage.cache_read;
+                tokens_cache_write += am.usage.cache_write;
+            }
+        }
         AgentContext {
             turn_index: self.turn_index,
             message_count: self.messages.len(),
             tool_call_count: 0,
             last_stop_reason: None,
             last_content,
+            project_name,
+            session_name,
+            session_id: self.session_id.clone(),
+            model: Some(model),
+            tokens_input,
+            tokens_output,
+            tokens_cache_read,
+            tokens_cache_write,
         }
     }
 }

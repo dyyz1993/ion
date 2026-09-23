@@ -512,6 +512,7 @@ impl Extension for HookExtension {
     }
 
     async fn on_agent_end(&self, ctx: &AgentContext) -> AgentResult<()> {
+        tracing::info!("[hooks] on_agent_end fired: last_content_len={}", ctx.last_content.as_ref().map(|s| s.len()).unwrap_or(0));
         // last_content：真实最后 assistant 文本（内核 agent_loop 填充）；无则回退统计摘要
         let last_msg = ctx.last_content.clone().unwrap_or_else(|| {
             format!(
@@ -520,6 +521,18 @@ impl Extension for HookExtension {
             )
         });
         let stdin = stdin_builder::subagent_stop(&last_msg, 0);
+        // hooks 六要素：项目/会话名/模型/本轮 token 入出仓（hooks 推送与审计直接可读）
+        let end_ctx = stdin_builder::AgentEndContext {
+            project_name: ctx.project_name.clone(),
+            session_name: ctx.session_name.clone(),
+            session_id: ctx.session_id.clone(),
+            model: ctx.model.clone(),
+            tokens_input: ctx.tokens_input,
+            tokens_output: ctx.tokens_output,
+            tokens_cache_read: ctx.tokens_cache_read,
+            tokens_cache_write: ctx.tokens_cache_write,
+        };
+        let stdin = stdin_builder::with_agent_end_ctx(stdin, &end_ctx);
         let outcome = self.process_event("SubagentStop", stdin).await;
         if outcome.block {
             self.inject_follow_up(
