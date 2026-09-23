@@ -88,11 +88,25 @@ async fn run_command(
 
     // 优先用 Runtime（复用沙箱/权限），否则直接 tokio::spawn bash
     let (stdout, stderr, exit_code) = if let Some(ref rt) = ctx.runtime {
-        // Runtime::execute_command 不支持 stdin，我们用环境变量传 hook context
-        // （对齐 pi 的 PI_HOOK_* 环境变量方式）
-        match rt
-            .execute_command(&cmd, handler.timeout.unwrap_or(30) as u64)
-            .await
+        // Runtime::execute_command 不支持 stdin——把 hook context（stdin JSON）
+        // 落临时文件，命令改为 `< file` 重定向读取（对齐 spawn 路径的 stdin 语义；
+        // 此前远端 worker hooks 全部拿不到 stdin，静默失效）
+        let stdin_file = std::env::temp_dir().join(format!(
+            "ion-hook-stdin-{}.json",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = std::fs::write(&stdin_file, stdin_data.to_string());
+        let cmd_with_redirect = format!("{} < {}", cmd, stdin_file.display());
+        // 命令结束后清理临时文件（防堆积；失败不阻塞 hook 结果）
+        let cleanup = stdin_file.clone();
+        let result = rt
+            .execute_command(&cmd_with_redirect, handler.timeout.unwrap_or(30) as u64)
+            .await;
+        let _ = std::fs::remove_file(cleanup);
+        match result
         {
             Ok(result) => result,
             Err(e) => {
