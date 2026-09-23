@@ -2688,18 +2688,19 @@ impl Agent {
             let m = self.model().provider.clone() + "/" + &self.model().id;
             (name, m)
         };
-        // 本轮 token 入仓/出仓：本 run 期间新增 assistant 消息的 usage 累计
-        // （last_run_start_msg_count 由 run() 记录起点，build_ctx 求其后增量）
+        // token 口径：SessionIndex 会话累计（对本地/远端 worker 都准——远端
+        // increment_turn_stats 经 manager 通道回传 Mac；messages 增量在 llm_bridge
+        // 模式下 usage 可能缺失导致恒 0，已实证弃用）
         let mut tokens_input = 0u64;
         let mut tokens_output = 0u64;
         let mut tokens_cache_read = 0u64;
         let mut tokens_cache_write = 0u64;
-        for m in self.messages.iter().skip(self.turn_start_msg_count.min(self.messages.len())) {
-            if let Message::Assistant(am) = m {
-                tokens_input += am.usage.input;
-                tokens_output += am.usage.output;
-                tokens_cache_read += am.usage.cache_read;
-                tokens_cache_write += am.usage.cache_write;
+        if let Some(ref sid) = self.session_id {
+            if let Some(m) = crate::session_index::SessionIndex::load().get(sid) {
+                tokens_input = m.token_input;
+                tokens_output = m.token_output;
+                tokens_cache_read = m.token_cache_read;
+                tokens_cache_write = m.token_cache_write;
             }
         }
         AgentContext {
