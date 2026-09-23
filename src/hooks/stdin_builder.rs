@@ -23,8 +23,10 @@ pub fn common_fields(event: &str) -> Value {
     } else {
         String::new()
     };
+    let agent = std::env::var("ION_SESSION_AGENT").unwrap_or_default();
     let mut obj = serde_json::Map::new();
     obj.insert("session_id".into(), json!(session_id));
+    obj.insert("agent".into(), json!(agent));
     obj.insert("cwd".into(), json!(cwd.clone()));
     obj.insert("transcript_path".into(), json!(transcript_path));
     obj.insert("hook_event_name".into(), json!(event));
