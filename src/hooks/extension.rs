@@ -571,6 +571,19 @@ impl Extension for HookExtension {
             }
         }
         let stdin = stdin_builder::stop(&last_msg, 0);
+        // Stop（turn 级）同样带六要素：与 SubagentStop 口径一致，hook 脚本可统一消费
+        let end_ctx = stdin_builder::AgentEndContext {
+            project_name: std::env::current_dir().ok()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string())),
+            session_name: None, // turn 级无 AgentContext；session_id 兜底（脚本回退 sid 短码）
+            session_id: std::env::var("ION_SESSION_ID").ok(),
+            model: None,
+            tokens_input: 0,
+            tokens_output: 0,
+            tokens_cache_read: 0,
+            tokens_cache_write: 0,
+        };
+        let stdin = stdin_builder::with_agent_end_ctx(stdin, &end_ctx);
         let outcome = self.process_event("Stop", stdin).await;
         if outcome.block {
             self.inject_follow_up(

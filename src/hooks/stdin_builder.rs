@@ -137,10 +137,12 @@ pub struct AgentEndContext {
 /// 给 Stop/SubagentStop 的 stdin 追加六要素字段（原字段不动，纯增量）
 pub fn with_agent_end_ctx(mut stdin: Value, ctx: &AgentEndContext) -> Value {
     if let Some(obj) = stdin.as_object_mut() {
-        obj.insert("project_name".into(), json!(ctx.project_name));
-        obj.insert("session_name".into(), json!(ctx.session_name));
-        obj.insert("session_id".into(), json!(ctx.session_id));
-        obj.insert("model".into(), json!(ctx.model));
+        // Option 字段 None 不覆盖（保住 common_fields 已填的 session_id 等）；
+        // token 计数无条件写（0 也是有效值）
+        if let Some(ref v) = ctx.project_name { obj.insert("project_name".into(), json!(v)); }
+        if let Some(ref v) = ctx.session_name { obj.insert("session_name".into(), json!(v)); }
+        if let Some(ref v) = ctx.session_id { obj.insert("session_id".into(), json!(v)); }
+        if let Some(ref v) = ctx.model { obj.insert("model".into(), json!(v)); }
         obj.insert("tokens_input".into(), json!(ctx.tokens_input));
         obj.insert("tokens_output".into(), json!(ctx.tokens_output));
         obj.insert("tokens_cache_read".into(), json!(ctx.tokens_cache_read));
