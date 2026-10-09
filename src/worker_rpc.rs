@@ -2999,16 +2999,46 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 );
             }
             "get_available_models" => {
-                let models: Vec<serde_json::Value> = model_reg
+                let mut models: Vec<serde_json::Value> = model_reg
                     .list_models()
                     .iter()
                     .map(|m| {
                         serde_json::json!({
                             "id": m.id, "name": m.name, "provider": m.provider,
                             "reasoning": m.reasoning, "contextWindow": m.context_window,
+                            "maxTokens": m.max_tokens,
                         })
                     })
                     .collect();
+                // config.json 的 providers（pi models.json 兼容格式）必须进发现列表：
+                // 默认模型可能只定义在这里（bridge_resolve_model 运行时可解析、
+                // 可实际调用，但选择器看不到 →「模型跟预期不对」）。
+                // 内置 (provider, id) 优先，用户定义只补缺。
+                let mut seen: std::collections::HashSet<(String, String)> = model_reg
+                    .list_models()
+                    .iter()
+                    .map(|m| (m.provider.clone(), m.id.clone()))
+                    .collect();
+                let cfg = crate::config::IonConfig::load();
+                let mut provider_names: Vec<&String> = cfg.providers.keys().collect();
+                provider_names.sort();
+                for pname in provider_names {
+                    let p = &cfg.providers[pname];
+                    for m in &p.models {
+                        if seen.contains(&(pname.clone(), m.id.clone())) {
+                            continue;
+                        }
+                        seen.insert((pname.clone(), m.id.clone()));
+                        models.push(serde_json::json!({
+                            "id": m.id,
+                            "name": m.name.clone().unwrap_or_else(|| m.id.clone()),
+                            "provider": pname,
+                            "reasoning": m.reasoning.unwrap_or(false),
+                            "contextWindow": m.context_window.unwrap_or(128000),
+                            "maxTokens": m.max_tokens.unwrap_or(8192),
+                        }));
+                    }
+                }
                 output_response(&id, "get_available_models", &serde_json::json!(models));
             }
             "get_tier_models" => {
