@@ -572,6 +572,7 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/subsystems/session-index.md](./docs/subsystems/session-index.md) | **Session Index 现状** — sessions.index.json 跨进程读写协议：flock 写事务 / 原子写 / 墓碑 / 损坏隔离（读侧空视图≠数据没了）/ 启动对账 / 空闲合成读 / upsert 全量替换约束 + 新字段四步（已验证，lib 8/8 + 集成 2/2 + health_ci 5/5，2026-10-14） |
 | [docs/subsystems/approval-bus.md](./docs/subsystems/approval-bus.md) | **Approval Bus 现状** — 三来源统一审批表：dedupe 幂等 + 30s 墓碑 / 四分支单一路由（apr_/native 双前缀兼容）/ 三事件出口 + snapshot 水合 / 审批泵（冷却 (worker,kind) 2s，by=pump）/ 旧 API 镜像收口 / worker 死后条目三态收尾（已验证，lib 41/41 + approval_bus_ci 70/0，2026-10-14） |
 | [docs/subsystems/worker-supervision.md](./docs/subsystems/worker-supervision.md) | **Worker 监护现状** — heartbeat 判死（last_heartbeat never status_since，Idle 180s Stale / Busy 600s Dead）+ 死亡分类四象限 + AUTO-RECOVERY（门禁/每 session 配额 3 次/agent-model 继承/接力纪律/注入防劫持/沙盒故障转移三态/两处 max_turns 200）（已验证，lib 25/25 + heartbeat_ci 14/0 + 双 harness 8/8，2026-10-14） |
+| [docs/subsystems/worker-rpc.md](./docs/subsystems/worker-rpc.md) | **Worker RPC 命令面现状** — 双臂分发（163 空闲臂 + ~16 bg 臂）/ 输出汇聚（output_response 统一 rpc_response 事件）/ 执行域四命令两臂语义（prompt 活递 vs steer 排队）/ append 白名单四种 type / spawn 协议（current_exe --mode rpc + env 透传）/ bridge 超时矩阵 30/70/320s（已验证，unit_rpc 20/20 + schema 5/5 + lib 12/12，2026-10-14；u16 fork 漂移同批修复） |
 
 ### 使用指南（docs/guides/）
 

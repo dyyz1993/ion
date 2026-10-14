@@ -643,7 +643,9 @@ fn u16_all_supported_commands() {
         // Session management
         "switch_session",
         "clone",
-        "fork",
+        // fork 不在此列：aa38d53 起为真实现，要求 turnId + 会话内真实 turn，
+        // 无参冒烟必失败；下方专项断言验分发与参数校验，完整行为见
+        // tests/branch_tree_ci.sh。
         "navigate_tree",
         "delete_entries",
         "summarize_entries",
@@ -697,6 +699,22 @@ fn u16_all_supported_commands() {
             errors.join("\n  ")
         );
     }
+
+    // fork 专项：无参调用应走到参数校验（证明命令分发存活），
+    // 完整 fork 行为由 branch_tree_ci.sh 用真实 turn 覆盖。
+    let fork_resp = wp.send_command("fork", None);
+    assert_eq!(
+        fork_resp["success"], false,
+        "fork without params should fail validation"
+    );
+    assert!(
+        fork_resp["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("turnId"),
+        "fork error should mention turnId, got: {}",
+        fork_resp["error"]
+    );
 }
 
 // ---------------------------------------------------------------------------

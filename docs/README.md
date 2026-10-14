@@ -134,6 +134,7 @@ docs/
 | Session Index（sessions.index.json） | [subsystems/session-index.md](subsystems/session-index.md) |
 | 统一审批总线（Approval Bus） | [subsystems/approval-bus.md](subsystems/approval-bus.md) |
 | Worker 监护（heartbeat + AUTO-RECOVERY） | [subsystems/worker-supervision.md](subsystems/worker-supervision.md) |
+| Worker RPC 命令面 | [subsystems/worker-rpc.md](subsystems/worker-rpc.md) |
 
 ### 我想写新功能的设计文档
 

@@ -92,6 +92,11 @@ ION 的错题本：复盘**已合并/已修复**的工作——返工的、不�
 - 证据：`4604b12` 撤 `5509206`（同日加撤对，lib 1196/0 验证）。
 - Seen 1× (2026-09-23)
 
+**改命令签名（新增必填参数）必须同步 u16 全覆盖冒烟表——无参冒烟表与签名漂移会红得无声（直推只跑 lib 测试，集成测试仅 PR 才跑）。**
+- Before, `fork` 自 `aa38d53`（2026-08-25）变真实现要求 turnId，`u16_all_supported_commands` 无参表红了一个半月无人见——ci.yml 直推 master 只跑 `cargo test --lib`，`cargo test --tests` 仅 pr-gate 跑，直推绕过了它。
+- 证据：u16 失败复现（tests/unit_rpc_test.rs:693 报 "fork: missing param: turnId"，2026-10-14 发现）；修复 = fork 移出无参冒烟 + 专项断言验分发与校验（完整行为归 branch_tree_ci）；缺口对照 `.github/workflows/ci.yml` vs `pr-gate.yml`（`cargo test --tests` 仅后者有）。
+- Seen 1× (2026-10-14)
+
 ## 文档与证据
 
 **引用 commit SHA / 测试名 / 文档名之前，先在正确的仓库 `git log` / grep 验伪——凭记忆引证必错。**
