@@ -82,6 +82,17 @@ WASM 模块导出的 C 函数必须使用 `extension_` 前缀：
 
 ---
 
+## ⚠️ 改码前对照与错题本（硬性要求）
+
+1. **改核心子系统前，先读它的现状文档**：[docs/subsystems/](./docs/subsystems/)（已有 session-index / approval-bus / worker-supervision，全列表见快速导航；用 [SUBSYSTEM_DOC_TEMPLATE](./docs/templates/SUBSYSTEM_DOC_TEMPLATE.md)）。改码时发现现状文档与代码不符——**以代码为准、同 commit 改文档**，不许迁就文档改代码。
+2. **契约变更同 commit 更新现状文档**：改动触及职责、接口、状态转换、运行路径、兼容性规则、失败行为任一项 → 同一个 commit 更新对应 `docs/subsystems/` 文档并刷新状态行的基准 commit。纯内部重构不用。
+3. **踩坑/返工/验证太薄的修复，收进错题本**：[docs/LESSONS.md](./docs/LESSONS.md)——一句祈使句规则 + 证据（commit SHA / 测试名 / AGENTS.md 修复批+日期）。**没有证据的教训不存在**；引用 SHA 前先 `git log` 验伪。
+4. **三振转正**：同一条教训在错题本被复盘发现 ≥3 个不同日期 → 搬进本文件对应章节成为评审强制项，错题本正文只留指针。
+5. 复盘是判断型工作，**手动启动**（每完成一个修复批/特性后，从错题本书签 `reviewed-through` 接着读增量 commit），不做 cron。
+6. **文档链接守卫**：`bash tests/docs_links_ci.sh`（AGENTS.md + docs/ 相对链接全量可解析，360+ 条，违反就红；排除项清单见脚本头注释）。CI 三层自动执行：代码提交走 ci-matrix 自动发现（`ls tests/*_ci.sh`）/ PR 走 pr-gate 快速步（checkout 后 ~1s）/ 纯文档直推走 `docs.yml`（ci.yml 对 docs/** 是 paths-ignore，靠它补位）；本地提交前跑一遍可提前拦截。
+
+---
+
 ## 内核 vs 扩展：功能设计指导方针
 
 当讨论一个新功能放在哪时，按这个顺序思考：
@@ -139,9 +150,11 @@ ION 对标 pi 的全部能力。遇到不确定的设计决策时：
 ```
 docs/
 ├── README.md                  ← 文档总导航
-├── templates/                  ← 5 个文档模板
+├── LESSONS.md                 ← 错题本（复盘已合并工作；三振转正进 AGENTS.md）
+├── templates/                  ← 6 个文档模板
 ├── guides/                     ← 使用指南
 ├── design/                     ← 功能设计文档
+├── subsystems/                 ← 核心子系统现状文档（写现状不写提案，改码前对照）
 ├── testing/                    ← 测试用例
 └── archive/                    ← 已归档（被合并/被替代）
 ```
@@ -156,6 +169,7 @@ docs/
 - **开发中** — 正在实现
 - **暂不开发** — 已设计但未排期
 - **待定** — 有想法但未形成设计
+- **现状快照** — 子系统现状文档专用（`docs/subsystems/`）：标注基准 commit + 验证情况，契约变更时同 commit 刷新
 
 格式：
 
@@ -327,18 +341,19 @@ CLI subscribe / Web UI / IDE（所有 subscriber 都收到）
 
 ### 模板触发时机（写新文档前必读）
 
-写新文档前**必须先查模板**。5 个模板对应 5 种触发场景：
+写新文档前**必须先查模板**。6 个模板对应 6 种触发场景：
 
 | 触发场景 | 用哪个模板 | 模板路径 |
 |---------|----------|---------|
 | 启动新功能开发、或对某个子系统做完整设计 | **DESIGN_TEMPLATE** | [docs/templates/DESIGN_TEMPLATE.md](./docs/templates/DESIGN_TEMPLATE.md) |
+| 为已实现的核心子系统写**现状文档**（改码前对照真实行为/契约/验证，写现状不写提案） | **SUBSYSTEM_DOC_TEMPLATE** | [docs/templates/SUBSYSTEM_DOC_TEMPLATE.md](./docs/templates/SUBSYSTEM_DOC_TEMPLATE.md) |
 | 功能完成需要写 CLI 验证用例（Group A/B/C/D 格式 + 完整请求/响应 JSON） | **CLI_TEST_TEMPLATE** | [docs/templates/CLI_TEST_TEMPLATE.md](./docs/templates/CLI_TEST_TEMPLATE.md) |
 | 功能需要外部评审 / 给 QA 的验收规格（P0/P1/XFail 分级） | **TEST_SPEC_TEMPLATE** | [docs/templates/TEST_SPEC_TEMPLATE.md](./docs/templates/TEST_SPEC_TEMPLATE.md) |
 | 调研 pi 某项能力并规划对齐方案 | **PI_ALIGNMENT_TEMPLATE** | [docs/templates/PI_ALIGNMENT_TEMPLATE.md](./docs/templates/PI_ALIGNMENT_TEMPLATE.md) |
 | 写新的 WASM 扩展手册 | **EXTENSION_MANUAL_TEMPLATE** | [docs/templates/EXTENSION_MANUAL_TEMPLATE.md](./docs/templates/EXTENSION_MANUAL_TEMPLATE.md) |
 
 **写文档前的自查清单**：
-1. ✅ 这个文档属于哪个子目录？（design / guides / testing / templates）
+1. ✅ 这个文档属于哪个子目录？（design / guides / subsystems / testing / templates）
 2. ✅ 该用哪个模板？
 3. ✅ 状态标注写了吗？
 4. ✅ 术语规范：用 "extension" 不用 "plugin" / "插件"？
@@ -365,6 +380,7 @@ CLI subscribe / Web UI / IDE（所有 subscriber 都收到）
 | 新功能是已有功能的补充（如 restore 是 File Snapshot 的延伸）| **更新已有文档**（FILE_SNAPSHOT.md 加新章节），不新建 |
 | 新功能是 RPC 对齐（如 tier_models）| 更新 `docs/design/PI_RPC_ALIGNMENT.md`，不新建 |
 | 新功能是扩展能力（如 on_model_select &mut）| 更新 `docs/design/EXTENSION_SYSTEM.md` + AGENTS.md 已完成段 |
+| 为已实现的核心子系统补现状文档 | 用 **SUBSYSTEM_DOC_TEMPLATE** 新建 `docs/subsystems/<name>.md`，与设计文档**互链不复制**（一个事实只写一处） |
 
 **第三步：选模板 + 写文档**
 
@@ -375,6 +391,7 @@ CLI subscribe / Web UI / IDE（所有 subscriber 都收到）
 | 验收规格（给评审方）| TEST_SPEC_TEMPLATE | `docs/testing/` |
 | WASM 扩展手册 | EXTENSION_MANUAL_TEMPLATE | `{extension}/MANUAL.md` |
 | pi 对齐调研 | PI_ALIGNMENT_TEMPLATE | `docs/design/` |
+| 核心子系统现状文档（改码前对照） | SUBSYSTEM_DOC_TEMPLATE | `docs/subsystems/`（只写核心，不搞全量覆盖） |
 
 **第四步：写 CLI 验证（Group A/B/C 格式 + 完整命令 + 响应 JSON）**
 
@@ -436,6 +453,7 @@ ion rpc --session sess_xxx --method get_flags \
 - 测试统计表加新测试的数量
 - 源码导航加新模块（如果有）
 - 路线图标 ✅
+- 过程中踩的坑/返工记入错题本 [docs/LESSONS.md](./docs/LESSONS.md)（祈使句 + SHA，同 commit）
 
 ### 扩展手册规范
 
@@ -452,7 +470,7 @@ ion rpc --session sess_xxx --method get_flags \
 现有扩展手册：
 - [extensions/todo-extension/MANUAL.md](./extensions/todo-extension/MANUAL.md) — 待办任务管理 (WASM)
 - **plan 工具**（内核内置，非 WASM）— plan_enter/exit/add/list/done/approve，支持 strict_mode 强制用户审批
-- MEMORY 扩展手册（内核内置，见 [docs/design/MEMORY_EXTENSION.md](./docs/design/MEMORY_EXTENSION.md)）
+- MEMORY 扩展手册（内核内置，见 [docs/archive/MEMORY_EXTENSION.md](./docs/archive/MEMORY_EXTENSION.md)）
 
 #### plan 工具（内核内置，commit 501697e/25b009e/10d4761）
 
@@ -491,7 +509,7 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/design/ARCHITECTURE.md](./docs/design/ARCHITECTURE.md) | **总体架构总览**：5 层架构大图 + 三场景对比 + Worker 内部结构 + Agent 循环钩子时序 + 多智能体编排 + 5 维存储 + 6 条 ADR (已完成) |
 | [docs/design/EXTENSION_SYSTEM.md](./docs/design/EXTENSION_SYSTEM.md) | 两类 Extension 边界、Runner/Registry 命名、WASM ABI、热更新与 4 维数据存储（已验证） |
 | [docs/design/BASH_EXTENSION.md](./docs/design/BASH_EXTENSION.md) | Bash 扩展：同步执行 + 后台进程 + 综合教程 + CLI 测试 (设计稿+已实现) |
-| [docs/design/MEMORY_EXTENSION.md](./docs/design/MEMORY_EXTENSION.md) | Memory 扩展 v0.1：大纲索引、异步检索、XML 注入、4 维存储 (已验证，搜索 bug 已修) |
+| [docs/archive/MEMORY_EXTENSION.md](./docs/archive/MEMORY_EXTENSION.md) | Memory 扩展 v0.1：大纲索引、异步检索、XML 注入、4 维存储 (已验证，搜索 bug 已修) |
 | [docs/design/MEMORY_AGENT.md](./docs/design/MEMORY_AGENT.md) | Memory V0.2 跨项目记忆 Agent：单例扩展 + SQLite/FTS5 + 引用计数 (Phase 1-8 已实现) |
 | [docs/design/LEARNING_EXTENSION.md](./docs/design/LEARNING_EXTENSION.md) | Learning Extension：session 结束后 LLM 提炼 skill + 密钥脱敏 + 幂等写入 (已完成) |
 | [docs/design/SKILL_DISTILLATION.md](./docs/design/SKILL_DISTILLATION.md) | Skill Distillation：7 步流程（session 发现→消息提取→过滤→脱敏→LLM 提炼→文件写入）(已完成) |
@@ -534,8 +552,8 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/design/MESSAGE_RETRIEVAL_DESIGN.md](./docs/design/MESSAGE_RETRIEVAL_DESIGN.md) | 消息拉取 UI 设计规格：TypeScript 接口定义 + 6 种 UI 风格 + 3 层数据架构 (设计定稿) |
 | [docs/design/SOFT_DELETE_COMPACT.md](./docs/design/SOFT_DELETE_COMPACT.md) | 软删除/软压缩内核机制：mark_deleted/summarized/restore + on_context 时序 (已实现) |
 | [docs/testing/MESSAGE_RETRIEVAL_CASES.md](./docs/testing/MESSAGE_RETRIEVAL_CASES.md) | 消息拉取 CLI 用例集：9 接口 + 12 Group A-L + 分页/视点/过滤/血缘 (设计定稿+已实现) |
-| [docs/design/MEMORY_ACTIVE.md](./docs/design/MEMORY_ACTIVE.md) | Memory Active — V0.2 主动注入（on_input→on_context 自动检索全局库）+ 自动整理（去重/归档/大纲索引）+ bigram 中文分词 (已完成) |
-| [docs/design/MEMORY_V2_PROCESSING.md](./docs/design/MEMORY_V2_PROCESSING.md) | Memory V0.2 会话加工 — SessionEnd 自动 LLM 提炼精华（替代原样存）+ 去重 + entities 铺路 (已完成) |
+| [docs/archive/MEMORY_ACTIVE.md](./docs/archive/MEMORY_ACTIVE.md) | Memory Active — V0.2 主动注入（on_input→on_context 自动检索全局库）+ 自动整理（去重/归档/大纲索引）+ bigram 中文分词 (已完成) |
+| [docs/archive/MEMORY_V2_PROCESSING.md](./docs/archive/MEMORY_V2_PROCESSING.md) | Memory V0.2 会话加工 — SessionEnd 自动 LLM 提炼精华（替代原样存）+ 去重 + entities 铺路 (已完成) |
 | [docs/design/SELF_EVOLUTION.md](./docs/design/SELF_EVOLUTION.md) | **自我进化闭环** — evolver agent + worktree + Apple Container 双重隔离 + ION 子实例改代码 + 测试 + 开 PR（开发中） |
 | [docs/design/GOAL_SUPERVISOR.md](./docs/design/GOAL_SUPERVISOR.md) | **Goal Supervisor** — 证据驱动的目标闭环（on_gate_check + 6 道防线 + 日志 + 进化系统）+ A→B 任务规格 (B1 已完成) |
 | [docs/design/DEV_SERVER_DETECTOR.md](./docs/design/DEV_SERVER_DETECTOR.md) | **Dev Server Detector** — bash 启动 dev server 时自动检测端口（stdout 扫描 + 探活兜底）+ on_system_prompt 注入 `<dev_servers>` XML（待定） |
@@ -544,6 +562,16 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/design/BROWSER_FETCH_TOOL.md](./docs/design/BROWSER_FETCH_TOOL.md) | **Browser Fetch 工具** — SPA/CSR 感知网页抓取：内核直 spawn 独立 browser 二进制（~/Project/study-rust/browser，进程边界不合并代码）+ 超时双保险（上游 60s 预算 + ION 硬超时）+ warnings 壳页信号透传 + max_length 截断 + config `fetch.path`/`allow_urls` 白名单（已实现：lib 单测 8 + harness 2 + `tests/browser_fetch_ci.sh` 12/12 + ION_E2E 真实外网 1） |
 | [docs/design/REMOTE_WORKER.md](./docs/design/REMOTE_WORKER.md) | **Remote Worker 远程执行端** — 双模式（客户端=SSH spawn 整体搬家 + 零 key LLM 桥接 + 会话回流 Mac + 资产包便携性 lint/声明式同步 + 封闭动词表通道化宿主访问 + 审批流 / 服务端=win38 serve 已上线）；**M1-M4.5 全部完成并真机验证**（零 key "42"、会话回流 UI 直读、越权拒/审计、审批放行），commit 54cee34..24ede17 + 5e4e2cf，`tests/remote_worker_ci.sh` 10/0，lib 1010/0 |
 | [docs/design/SECURITY_HARDENING.md](./docs/design/SECURITY_HARDENING.md) | **安全加固 — 本地默认态 P0**（红蓝对抗评审落地）：受保护路径集（~/.ion config/auth/hooks/settings 写保护，canonicalize+词法规范化，先于权限引擎不可绕过）+ hooks 供应链信任门（项目级 hooks.json 默认不加载，trusted_projects 放行）；真机验证注入写 config 被拒 ✅，lib 1014/0 |
+
+### 子系统现状文档（docs/subsystems/）
+
+> **写现状，不写教程、不写提案**——描述子系统当前的行为/契约/验证方式，供维护者/AI 改码前对照。用 [SUBSYSTEM_DOC_TEMPLATE](./docs/templates/SUBSYSTEM_DOC_TEMPLATE.md)，只写核心子系统，不搞全量覆盖；与 design/ 设计文档互链不复制。
+
+| 文档 | 内容 |
+|------|------|
+| [docs/subsystems/session-index.md](./docs/subsystems/session-index.md) | **Session Index 现状** — sessions.index.json 跨进程读写协议：flock 写事务 / 原子写 / 墓碑 / 损坏隔离（读侧空视图≠数据没了）/ 启动对账 / 空闲合成读 / upsert 全量替换约束 + 新字段四步（已验证，lib 8/8 + 集成 2/2 + health_ci 5/5，2026-10-14） |
+| [docs/subsystems/approval-bus.md](./docs/subsystems/approval-bus.md) | **Approval Bus 现状** — 三来源统一审批表：dedupe 幂等 + 30s 墓碑 / 四分支单一路由（apr_/native 双前缀兼容）/ 三事件出口 + snapshot 水合 / 审批泵（冷却 (worker,kind) 2s，by=pump）/ 旧 API 镜像收口 / worker 死后条目三态收尾（已验证，lib 41/41 + approval_bus_ci 70/0，2026-10-14） |
+| [docs/subsystems/worker-supervision.md](./docs/subsystems/worker-supervision.md) | **Worker 监护现状** — heartbeat 判死（last_heartbeat never status_since，Idle 180s Stale / Busy 600s Dead）+ 死亡分类四象限 + AUTO-RECOVERY（门禁/每 session 配额 3 次/agent-model 继承/接力纪律/注入防劫持/沙盒故障转移三态/两处 max_turns 200）（已验证，lib 25/25 + heartbeat_ci 14/0 + 双 harness 8/8，2026-10-14） |
 
 ### 使用指南（docs/guides/）
 
@@ -578,6 +606,7 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/templates/TEST_SPEC_TEMPLATE.md](./docs/templates/TEST_SPEC_TEMPLATE.md) | 写测试规格（P0/P1/XFail）给评审方时 |
 | [docs/templates/PI_ALIGNMENT_TEMPLATE.md](./docs/templates/PI_ALIGNMENT_TEMPLATE.md) | 调研 pi 能力并规划对齐时 |
 | [docs/templates/EXTENSION_MANUAL_TEMPLATE.md](./docs/templates/EXTENSION_MANUAL_TEMPLATE.md) | 写 WASM 扩展手册时 |
+| [docs/templates/SUBSYSTEM_DOC_TEMPLATE.md](./docs/templates/SUBSYSTEM_DOC_TEMPLATE.md) | 为已实现核心子系统写现状文档（改码前对照）时 |
 
 ### 归档（docs/archive/）
 
@@ -613,7 +642,7 @@ ion rpc --session sess_xxx --method get_flags \
 | `src/session_workspace.rs` | **Workspace Session**（工作空间会话模型 + `~/.ion/agent/workspaces.json` 持久化，[详情](./docs/design/SESSION_WORKSPACE_CHAT.md)） |
 | `src/monitor_extension.rs` | MonitorExtension（单例扩展，场景 3 定时脚本监控→触发 LLM 对话） |
 | `src/goal_supervisor_extension.rs` | GoalSupervisorExtension（证据驱动目标闭环：on_gate_check + 6 道防线 + 日志，[详情](./docs/design/GOAL_SUPERVISOR.md)） |
-| `src/goal_evolver.rs` | Goal Evolver（日志分析进化：3 维度分析 + Issue 计划 + run_once，[详情](./docs/design/GOAL_SUPERVISOR.md §8)） |
+| `src/goal_evolver.rs` | Goal Evolver（日志分析进化：3 维度分析 + Issue 计划 + run_once，[详情](./docs/design/GOAL_SUPERVISOR.md) §8） |
 | `src/lsp_extension.rs` | LSP Extension（多语言诊断：cargo check / tsc / go vet / py_compile / HTML 标签匹配） |
 | `src/browser_fetch.rs` | **Browser Fetch 工具**（SPA/CSR 感知抓取：直 spawn browser 二进制 + 超时双保险 + warnings 透传 + url 白名单，[详情](./docs/design/BROWSER_FETCH_TOOL.md)） |
 | `src/tool_loop_detector.rs` | Tool Loop Detector（防 LLM 重复调同一工具死循环） |

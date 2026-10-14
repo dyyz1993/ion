@@ -99,7 +99,7 @@ end byte index 100 is not a char boundary; it is inside '名' (bytes 98..101)
 | v13 | **85** | ❌ | ❌ | |
 | v14 | **5** 💀 | ❌ | ❌ | 收尾反而崩了 |
 
-完整数据见 [iteration-log.md](../../iteration-log.md)。
+完整数据见 [iteration-log.md](../archive/iteration-log-mona-lisa.md)。
 
 ### 三个核心发现（ion 自己分析）
 

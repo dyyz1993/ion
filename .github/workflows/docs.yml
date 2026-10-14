@@ -1,0 +1,21 @@
+name: Docs Guard
+
+# ci.yml paths-ignores docs/** and *.md, so direct doc pushes to master
+# would never run the link guard. This workflow covers that gap; PRs are
+# covered by pr-gate.yml, code pushes by the ci-matrix auto-discovery
+# (scripts/run_ci_matrix_parallel.sh: ls tests/*_ci.sh).
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - '*.md'
+      - 'docs/**'
+      - 'tests/docs_links_ci.sh'
+
+jobs:
+  docs-links:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Docs link guard (AGENTS.md + docs/ relative links resolvable)
+        run: bash tests/docs_links_ci.sh

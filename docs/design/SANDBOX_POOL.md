@@ -214,4 +214,4 @@ ion rpc --method create_worker --params '{"host":"auto","agent":"build","initial
 
 - [REMOTE_WORKER.md](./REMOTE_WORKER.md) — 客户端模式本体（M1-M4.5）
 - [ION_WEB_RECOVERY_RPC.md](./ION_WEB_RECOVERY_RPC.md) — list_interrupted / recover_tree 设计
-- [AUTO_RECOVERY.md](./AUTO_RECOVERY.md) — 断点续作现状
+- [AUTO_RECOVERY.md](../testing/AUTO_RECOVERY_COVERAGE.md) — 断点续作现状

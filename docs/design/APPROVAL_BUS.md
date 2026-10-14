@@ -5,6 +5,9 @@
 > `WorkerRegistry::execute_unified_approval`）+ 审批泵接线（by=pump）。
 > `tests/approval_bus_ci.sh` 三合一全绿；schema 动态校验
 > （`tests/rpc_schema_subscribe_test.rs::approval_bus_rpc_frames_match_schemas`）。
+>
+> **当前契约锚点**：[docs/subsystems/approval-bus.md](../subsystems/approval-bus.md)
+> （file:line 现状快照 + 验证口径，契约变更随 commit 维护）；本文保留设计动机与 M1-M3 演进记录。
 
 ---
 

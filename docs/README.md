@@ -10,13 +10,15 @@
 ```
 docs/
 ├── README.md                          ← 本文件（总导航）
+├── LESSONS.md                         ← 错题本（复盘已合并工作，三振转正进 AGENTS.md）
 │
-├── templates/                          ← 5 个文档模板（写新文档时套用）
+├── templates/                          ← 6 个文档模板（写新文档时套用）
 │   ├── DESIGN_TEMPLATE.md             ← 功能设计文档模板
 │   ├── CLI_TEST_TEMPLATE.md           ← CLI 测试指南模板（Group A/B/C/D）
 │   ├── TEST_SPEC_TEMPLATE.md          ← 测试规格模板（P0/P1/XFail）
 │   ├── PI_ALIGNMENT_TEMPLATE.md       ← pi 对齐报告模板
-│   └── EXTENSION_MANUAL_TEMPLATE.md  ← 扩展手册模板
+│   ├── EXTENSION_MANUAL_TEMPLATE.md  ← 扩展手册模板
+│   └── SUBSYSTEM_DOC_TEMPLATE.md     ← 子系统现状文档模板（写现状，改码前对照）
 │
 ├── guides/                             ← 用户/开发者使用指南
 │   ├── CLI_USAGE.md                   ← 命令速查
@@ -27,7 +29,6 @@ docs/
 ├── design/                             ← 功能设计文档（每个子系统一份）
 │   ├── EXTENSION_SYSTEM.md            ← WASM 扩展系统
 │   ├── BASH_EXTENSION.md              ← Bash 扩展（合并自 3 个文档）
-│   ├── MEMORY_EXTENSION.md            ← Memory 扩展（合并自 2 个文档）
 │   ├── COMPACTION.md                  ← Compaction 会话压缩
 │   ├── PROVIDER_PROTOCOL.md           ← 多 Provider 协议
 │   ├── PERMISSION_SYSTEM.md           ← 权限系统（合并自 4 个文档）
@@ -40,6 +41,9 @@ docs/
 ├── testing/                            ← 测试相关
 │   └── TEST_CASES.md                  ← 测试用例总表
 │
+├── subsystems/                         ← 核心子系统现状文档（写现状不写提案）
+│   └── session-index.md               ← Session Index：跨进程读写协议/墓碑/对账
+│
 └── archive/                            ← 已归档（被合并/被替代，保留历史）
     ├── BASH_EXTENSION.md              ← 已合并到 design/BASH_EXTENSION.md
     ├── BASH_API_CHECKLIST.md          ← 已合并
@@ -50,7 +54,7 @@ docs/
     ├── SECURITY_CLI_GUIDE.md          ← 已合并
     ├── SESSION_MESSAGE.md             ← 已合并到 design/SESSION_MESSAGE.md
     ├── SESSION_MESSAGE_TYPES.md       ← 已合并
-    ├── MEMORY_EXTENSION.md            ← 已合并到 design/MEMORY_EXTENSION.md
+    ├── MEMORY_EXTENSION.md            ← 已归档到 archive/（Memory 文档族整体迁移）
     ├── MEMORY_SPEC.md                 ← 已合并
     ├── RPC_DIFF_REPORT.md             ← 被 PI_RPC_ALIGNMENT.md 替代
     └── WORKER_COMM_TODO.md            ← 任务已完成
@@ -66,7 +70,7 @@ docs/
 |------|------|
 | WASM 扩展系统 | [design/EXTENSION_SYSTEM.md](design/EXTENSION_SYSTEM.md) |
 | Bash 进程管理 | [design/BASH_EXTENSION.md](design/BASH_EXTENSION.md) |
-| Memory 记忆扩展 | [design/MEMORY_EXTENSION.md](design/MEMORY_EXTENSION.md) |
+| Memory 记忆扩展 | [archive/MEMORY_EXTENSION.md](archive/MEMORY_EXTENSION.md)（已归档） |
 | Memory Agent (SQLite) | [design/MEMORY_AGENT.md](design/MEMORY_AGENT.md) |
 | Compaction 会话压缩 | [design/COMPACTION.md](design/COMPACTION.md) |
 | 多 Provider 协议 | [design/PROVIDER_PROTOCOL.md](design/PROVIDER_PROTOCOL.md) |
@@ -117,6 +121,20 @@ docs/
 
 `archive/WASM_EXTENSION_GUIDE.md` 是未落地早期 ABI 的历史文档，不得用于实现。
 
+### 我想复盘 / 查历史上踩过的坑
+
+→ [LESSONS.md](LESSONS.md)（错题本：祈使句规则 + SHA 证据 + Seen 计数，从书签 `reviewed-through` 接着读增量 commit）
+
+### 我想在改代码前对照某个核心子系统的当前真实行为
+
+→ 用 [templates/SUBSYSTEM_DOC_TEMPLATE.md](templates/SUBSYSTEM_DOC_TEMPLATE.md)，现状文档放 `subsystems/`（只写核心，不搞全量覆盖）
+
+| 子系统 | 文档 |
+|--------|------|
+| Session Index（sessions.index.json） | [subsystems/session-index.md](subsystems/session-index.md) |
+| 统一审批总线（Approval Bus） | [subsystems/approval-bus.md](subsystems/approval-bus.md) |
+| Worker 监护（heartbeat + AUTO-RECOVERY） | [subsystems/worker-supervision.md](subsystems/worker-supervision.md) |
+
 ### 我想写新功能的设计文档
 
 → 用 [templates/DESIGN_TEMPLATE.md](templates/DESIGN_TEMPLATE.md)
@@ -160,7 +178,7 @@ docs/
 | BASH_EXTENSION.md / BASH_API_CHECKLIST.md / BASH_EXTENSION_TUTORIAL.md | design/BASH_EXTENSION.md | 3 文档合并 |
 | PERMISSION_SYSTEM.md / PERMISSION_CLI.md / PERMISSION_TESTS.md / SECURITY_CLI_GUIDE.md | design/PERMISSION_SYSTEM.md | 4 文档合并 |
 | SESSION_MESSAGE.md / SESSION_MESSAGE_TYPES.md | design/SESSION_MESSAGE.md | 2 文档合并 |
-| MEMORY_EXTENSION.md / MEMORY_SPEC.md | design/MEMORY_EXTENSION.md | 2 文档合并 |
+| MEMORY_EXTENSION.md / MEMORY_SPEC.md | archive/MEMORY_EXTENSION.md | 2 文档合并，后随 Memory 文档族整体归档 |
 | RPC_DIFF_REPORT.md | design/PI_RPC_ALIGNMENT.md | 被替代 |
 | WORKER_COMM_TODO.md | — | 任务已完成 |
 | WASM_EXTENSION_GUIDE.md | guides/EXTENSION_WORKFLOW.md + design/EXTENSION_SYSTEM.md | 旧 ABI 与构建命令已失效 |

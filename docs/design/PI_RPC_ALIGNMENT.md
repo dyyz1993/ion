@@ -10,7 +10,7 @@
 
 ## 一、背景
 
-ion 的 `ion rpc` / `ion subscribe` / `ion rpc --method extension_rpc` 三件套已经实现并验证（见 [CLI_USAGE.md](./CLI_USAGE.md)）。调研发现 pi **完全没有命令行 RPC 客户端**，所有调试必须写 Node.js 脚本。本文件记录 pi 现状、ion 已有能力、以及 ion 这边需要补的对齐项。
+ion 的 `ion rpc` / `ion subscribe` / `ion rpc --method extension_rpc` 三件套已经实现并验证（见 [CLI_USAGE.md](../guides/CLI_USAGE.md)）。调研发现 pi **完全没有命令行 RPC 客户端**，所有调试必须写 Node.js 脚本。本文件记录 pi 现状、ion 已有能力、以及 ion 这边需要补的对齐项。
 
 ## 二、pi 当前状态
 
@@ -90,7 +90,7 @@ channel.onReceive(handler)               // 注册接收处理器
 
 ## 三、ion 当前状态
 
-### 3.1 ion 已实现的 RPC CLI（[CLI_USAGE.md](./CLI_USAGE.md)）
+### 3.1 ion 已实现的 RPC CLI（[CLI_USAGE.md](../guides/CLI_USAGE.md)）
 
 ```bash
 # Manager 级
@@ -116,7 +116,7 @@ ion subscribe --session x --extension memory
 
 ### 3.2 ion 的 RPC 命令清单（51 个 Instance 级）
 
-来源：[src/bin/ion_worker.rs](./src/bin/ion_worker.rs) 的 `match method.as_str()`：
+来源：[src/bin/ion_worker.rs](../../src/worker_rpc.rs) 的 `match method.as_str()`：
 
 **已实现**：get_state / get_session_stats / get_messages / get_last_assistant_text / get_tools / set_model / set_thinking_level / set_session_name / prompt / steer / abort / promote_follow_up / channel_msg / create_worker / channel_send / send_to_worker / kill / get_system_prompt / get_agents / get_current_agent / compact / delete_entries / summarize_entries / switch_agent / bash / call_tool / extension_rpc / reload / get_agent_detail / continue / follow_up / extension_add / extension_remove / extension_list / extension_reload / append_system_event / append_custom_message / append_custom_entry / send_custom_message / append_model_change / append_thinking_level_change / append_agent_change / append_session_name / append_label / append_active_tools_change / bash_command / manager_response
 
@@ -192,9 +192,9 @@ ion subscribe --session x --extension memory
 | `set_auto_compaction` | 自动压缩开关 | ✅ 新增（调 agent.set_auto_compact()） |
 
 **改动文件**：
-- [src/agent/agent_loop.rs](./src/agent/agent_loop.rs) — Agent 加 9 个 getter/setter
-- [ion-provider/src/registry.rs](../ion-provider/src/registry.rs) — ModelRegistry 加 list_models + models_by_provider
-- [src/bin/ion_worker.rs](./src/bin/ion_worker.rs) — 11 个 RPC 实现 + 删除 2 个重复 stub
+- [src/agent/agent_loop.rs](../../src/agent/agent_loop.rs) — Agent 加 9 个 getter/setter
+- [ion-provider/src/registry.rs](../../ion-provider/src/registry.rs) — ModelRegistry 加 list_models + models_by_provider
+- [src/bin/ion_worker.rs](../../src/worker_rpc.rs) — 11 个 RPC 实现 + 删除 2 个重复 stub
 
 ### 🟡 P1 — 重要，实现中等
 
@@ -320,11 +320,11 @@ ion subscribe --session sess_xxx --extension memory
 
 | 用途 | 文件 |
 |---|---|
-| CLI 主入口 | [src/bin/ion.rs](./src/bin/ion.rs) |
-| Worker RPC 服务端 | [src/bin/ion_worker.rs](./src/bin/ion_worker.rs) |
-| CLI 用法文档 | [CLI_USAGE.md](./CLI_USAGE.md) |
-| Manager 命令处理 | [src/bin/ion.rs](./src/bin/ion.rs) `cmd_rpc` |
-| Subscribe 实现 | [src/bin/ion.rs](./src/bin/ion.rs) `cmd_subscribe` |
+| CLI 主入口 | [src/bin/ion.rs](../../src/bin/ion.rs) |
+| Worker RPC 服务端 | [src/bin/ion_worker.rs](../../src/worker_rpc.rs) |
+| CLI 用法文档 | [CLI_USAGE.md](../guides/CLI_USAGE.md) |
+| Manager 命令处理 | [src/bin/ion.rs](../../src/bin/ion.rs) `cmd_rpc` |
+| Subscribe 实现 | [src/bin/ion.rs](../../src/bin/ion.rs) `cmd_subscribe` |
 
 ## 八、推进顺序
 

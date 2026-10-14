@@ -18,7 +18,7 @@
 **触发时机**：见 [AGENTS.md §文档规范-模板触发时机](../../AGENTS.md)。
 
 **参考样本**：
-- [docs/design/MEMORY_EXTENSION.md §测试规格](../design/MEMORY_EXTENSION.md) — Memory 扩展 v0.1 测试规格
+- [docs/archive/MEMORY_EXTENSION.md §测试规格](../archive/MEMORY_EXTENSION.md) — Memory 扩展 v0.1 测试规格（已归档）
 - [docs/design/PERMISSION_SYSTEM.md §十](../design/PERMISSION_SYSTEM.md) — 权限系统 CLI 测试规格
 
 ---

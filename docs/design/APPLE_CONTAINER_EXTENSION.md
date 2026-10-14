@@ -2,7 +2,7 @@
 
 > **状态：待实测** — 实现已完成，未进行真实 E2E 验证。
 >
-> 文档对齐 [BASH_API_CHECKLIST.md](../archive/BASH_API_CHECKLIST.md) 格式。
+> 文档对齐 [BASH_API_CHECKLIST.md](./BASH_EXTENSION.md) 格式。
 
 ---
 

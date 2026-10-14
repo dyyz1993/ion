@@ -298,7 +298,7 @@ let ctx = Context::new(sys_prompt, transformed_messages);
 
 ## 7. CLI 测试指南
 
-本文档的 CLI 测试分 5 组，对齐 [SECURITY_CLI_GUIDE.md](./SECURITY_CLI_GUIDE.md) 与 [BASH_EXTENSION.md](./BASH_EXTENSION.md) §0.2 的格式：每组测试给完整的 `ion rpc` 命令 + 请求/响应 JSON 规格 + 字段说明表。
+本文档的 CLI 测试分 5 组，对齐 [SECURITY_CLI_GUIDE.md](../archive/SECURITY_CLI_GUIDE.md) 与 [BASH_EXTENSION.md](./BASH_EXTENSION.md) §0.2 的格式：每组测试给完整的 `ion rpc` 命令 + 请求/响应 JSON 规格 + 字段说明表。
 
 ### prompt RPC 接口规格
 

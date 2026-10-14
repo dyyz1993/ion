@@ -52,7 +52,7 @@
 |------|---------|--------|-------|------|------|
 | Global Memory | — | `global_memory_ci.sh` | 3 | 8 | 📋 仅 CI |
 | Memory Agent | [MEMORY_AGENT](../design/MEMORY_AGENT.md) §extension_rpc | `memory_agent_ci.sh` | 3 | 10 | 🔶 部分对齐 |
-| Memory Active (V0.2/V0.3) | [MEMORY_ACTIVE](../design/MEMORY_ACTIVE.md) | `memory_active_ci.sh` + `memory_v2_processing_ci.sh` + `memory_injection_ci.sh` | 6 | 44 | ✅ 已对齐 |
+| Memory Active (V0.2/V0.3) | [MEMORY_ACTIVE](../archive/MEMORY_ACTIVE.md) | `memory_active_ci.sh` + `memory_v2_processing_ci.sh` + `memory_injection_ci.sh` | 6 | 44 | ✅ 已对齐 |
 | Soft Delete/Compact | [SOFT_DELETE_COMPACT](../design/SOFT_DELETE_COMPACT.md) | `soft_delete_ci.sh` | — | 7 | 🔶 部分对齐 |
 | Compaction | [COMPACTION](../design/COMPACTION.md) §9 | `compaction_ci.sh` | 4 | 16 | ✅ 已对齐 |
 

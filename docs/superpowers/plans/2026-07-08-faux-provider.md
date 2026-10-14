@@ -1260,7 +1260,7 @@ git commit -m "test(provider): faux error path + isolation from real providers"
 In `AGENTS.md`, find the "### 设计文档（docs/design/）" table and add a row:
 
 ```markdown
-| [docs/design/FAUX_PROVIDER.md](./docs/design/FAUX_PROVIDER.md) | FauxProvider 架构级 LLM Mock：FIFO 队列 + 工厂响应 + 流式分块 (设计稿) |
+| [docs/design/FAUX_PROVIDER.md](../../design/FAUX_PROVIDER.md) | FauxProvider 架构级 LLM Mock：FIFO 队列 + 工厂响应 + 流式分块 (设计稿) |
 ```
 
 - [ ] **Step 2: Run the full test suite one final time**

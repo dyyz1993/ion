@@ -1,6 +1,8 @@
 # Worker 崩溃恢复设计文档
 
 > **状态：已实现** — 精准崩溃诊断 + 引导恢复。不自动重启，不复杂。崩溃后捕获 exit code + stderr，通知父 Worker，保留 Dead record，引导用户/coordinator 用 `--resume` 续接。
+>
+> **当前契约锚点**：判死判据与 AUTO-RECOVERY 重派的现状契约在 [docs/subsystems/worker-supervision.md](../subsystems/worker-supervision.md)（§0"不做自动重启"是早期哲学，自动重派已由 AUTO-RECOVERY 落地，现状以该页为准）；本文保留诊断捕获设计与 §8/§9（队列落盘、原地重建）演进记录。
 
 ---
 

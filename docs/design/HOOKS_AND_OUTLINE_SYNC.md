@@ -8,7 +8,7 @@
 > 本文档是**实现规格**（给写代码的人看），含数据结构、handler 执行引擎、改动清单、bug fix。
 >
 > - 想看"是什么/怎么用/怎么调"（无代码）→ [HOOKS_GUIDE.md](./HOOKS_GUIDE.md)
-> - 想看 CLI 验证用例（Group A-H）→ [HOOKS_CLI_TEST.md](./HOOKS_CLI_TEST.md)
+> - 想看 CLI 验证用例（Group A-H）→ [HOOKS_CLI_TEST.md](../testing/HOOKS_CLI_TEST.md)
 
 ---
 
@@ -837,8 +837,8 @@ hooks 系统只提供**机制**，不提供**策略**：
 
 > **第 5-7 章已拆分**：
 > - 参考用例（MD↔Outline 大纲同步）→ [HOOKS_GUIDE.md §7](./HOOKS_GUIDE.md)
-> - 完整 CLI 子命令族 + 接口规格 → [HOOKS_GUIDE.md §5](./HOOKS_GUIDE.md) + [HOOKS_CLI_TEST.md](./HOOKS_CLI_TEST.md)
-> - CLI 测试 Group A-H → [HOOKS_CLI_TEST.md](./HOOKS_CLI_TEST.md)
+> - 完整 CLI 子命令族 + 接口规格 → [HOOKS_GUIDE.md §5](./HOOKS_GUIDE.md) + [HOOKS_CLI_TEST.md](../testing/HOOKS_CLI_TEST.md)
+> - CLI 测试 Group A-H → [HOOKS_CLI_TEST.md](../testing/HOOKS_CLI_TEST.md)
 
 ---
 ```bash

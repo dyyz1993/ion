@@ -301,7 +301,7 @@ pub async fn compact_now(&mut self) -> AgentResult<compact::CompactionResult> {
 
 ## 9. CLI 测试指南
 
-本文档的 CLI 测试分 4 组，对齐 [SECURITY_CLI_GUIDE.md](./SECURITY_CLI_GUIDE.md) 格式。
+本文档的 CLI 测试分 4 组，对齐 [SECURITY_CLI_GUIDE.md](../archive/SECURITY_CLI_GUIDE.md) 格式。
 
 ### compact RPC 接口规格
 

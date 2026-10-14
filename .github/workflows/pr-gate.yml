@@ -22,6 +22,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ~1s fast feedback for doc-only PRs (no build needed). Code pushes
+      # get the same guard via the ci-matrix auto-discovery of tests/*_ci.sh;
+      # direct doc pushes to master are covered by docs.yml.
+      - name: Docs link guard
+        run: bash tests/docs_links_ci.sh
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
