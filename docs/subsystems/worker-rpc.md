@@ -44,7 +44,8 @@ truth 分层：命令名与参数形状以 schema（schemas/rpc/worker/）+ u16 
 - `_reply_to` 帧在 reader task 内就地 deliver，never 进主循环——run 期间主循环消费不到它，进主循环即死锁。
 - worker_ready 事件是 host 解除 Busy 的唯一信号；缺它 host 永远视 worker 为 Busy。
 - 默认预算：max_turns 20（`ION_MAX_TURNS`，0=无限）、outer iterations 5、LLM 重试 30 次/预算 240s、idle 120s、graceful drain 60s——重派路径由 [worker-supervision](./worker-supervision.md) 覆盖 200。
-- 新增命令必填参数时，同步更新 u16 冒烟表（[tests/unit_rpc_test.rs](../../tests/unit_rpc_test.rs)）与 worker 域 schema——漂移在直推下无人发现（CI 直推只跑 lib 测试）。
+- 新增命令必填参数时，同步更新 u16 冒烟表（[tests/unit_rpc_test.rs](../../tests/unit_rpc_test.rs)）与 worker 域 schema——历史上漂移在直推下无人发现（当时 CI 直推只跑 lib 测试；2026-10-14 起 ci.yml 的 `integration-tests` job 补位，直推即跑全套）。
+- worker 二进制解析有两层且必须一致：实例 `worker_bin`（`create_worker` 优先用）与进程级 `WORKER_BIN_OVERRIDE`（静态 `prepare_worker_spawn` 的 `find_ion_binary` 最优先用，`with_binary` 注入）。测试进程 never 裸建 registry——不经 `with_binary` 时 current_exe（测试二进制）被当 worker spawn，子进程以 libtest 的 `Unrecognized option: 'mode'` 秒死 exit=101（e01 事故，`76121de` 锁拆分起红了两个月）。
 
 ### Constraints for fixes
 
@@ -52,7 +53,7 @@ truth 分层：命令名与参数形状以 schema（schemas/rpc/worker/）+ u16 
 
 ## A smoke table that drifted from its commands
 
-u16_all_supported_commands 用无参冒烟扫全命令表，断言"不返回 success:false"。`fork` 在 `aa38d53`（2026-08-25）从存根变真实现后要求 `turnId`，无参调用必失败——但该测试红了一个半月无人看见：ci.yml 直推 master 只跑 `cargo test --lib`，`cargo test --tests` 仅 pr-gate 跑。Before, 修复方式有两种争议（补 turnId 造真实 turn vs 移出冒烟），现状取后者：fork 移出无参表 + 专项断言验分发与参数校验存活，完整行为归 `tests/branch_tree_ci.sh`（真实 turn 13/13）。教训入册 [LESSONS](../LESSONS.md)（改命令签名必须同步 u16）。Covered by `u16_all_supported_commands`, `tests/branch_tree_ci.sh`.
+u16_all_supported_commands 用无参冒烟扫全命令表，断言"不返回 success:false"。`fork` 在 `aa38d53`（2026-08-25）从存根变真实现后要求 `turnId`，无参调用必失败——但该测试红了一个半月无人看见：当时 ci.yml 直推 master 只跑 `cargo test --lib`，`cargo test --tests` 仅 pr-gate 跑（2026-10-14 起 ci.yml 新增 `integration-tests` job 补位，直推即跑）。Before, 修复方式有两种争议（补 turnId 造真实 turn vs 移出冒烟），现状取后者：fork 移出无参表 + 专项断言验分发与参数校验存活，完整行为归 `tests/branch_tree_ci.sh`（真实 turn 13/13）。教训入册 [LESSONS](../LESSONS.md)（改命令签名必须同步 u16）。Covered by `u16_all_supported_commands`, `tests/branch_tree_ci.sh`.
 
 ## Verification
 

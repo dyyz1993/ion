@@ -315,10 +315,13 @@ impl MemoryStore {
     pub fn search_with_scope(
         &self,
         query: &str,
-        _outline: Option<&str>,
+        outline: Option<&str>,
         global: bool,
     ) -> Vec<MemoryEntry> {
-        // 统一存储：优先走 V0.2 FTS5 搜索
+        // 统一存储：优先走 V0.2 FTS5 搜索。
+        // 注意：V0.2 FTS 存储没有 outline 维度（GlobalEntry 用 project 充位
+        // outline 字段），outline 过滤只在 v0.1 fallback 路径生效——传了
+        // outline 走 FTS 时该参数被忽略（V0.2 迁移后的既定行为）。
         if let Some(ref gstore) = self.global_store {
             // global=true → None (no project filter); global=false → 当前 project
             let project_filter: Option<&str> = if global {
@@ -356,11 +359,17 @@ impl MemoryStore {
                 })
                 .collect();
         }
-        // Fallback: v0.1 关键词双向匹配
+        // Fallback: v0.1 关键词双向匹配（无 global_store 的隔离 store 走这里，
+        // outline 过滤在本路径生效——按 outline id 只扫目标大纲）
         let q = query.to_lowercase();
         let mut results = Vec::new();
         let outlines: Vec<String> = self.read_index().into_iter().map(|i| i.id).collect();
         for oid in outlines {
+            if let Some(want) = outline
+                && oid != want
+            {
+                continue;
+            }
             for e in self.read_outline(&oid) {
                 if e.archived {
                     continue;

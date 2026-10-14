@@ -132,7 +132,12 @@ fn build_agent(
     let mut tools = ToolRegistry::new();
     tools.register(Box::new(WriteTool));
 
-    let (fs_ext, store) = FileSnapshotExtension::new_pair_with_cwd(cwd);
+    // 扩展与 ApprovalManager 必须共用同一 session_id：baseline（session_start
+    // 快照）按扩展自身 storage.session_id 写入、审批侧按会话锚定查找；de08097
+    // 去掉全局回退后，id 不一致 = baseline 永远缺失（h4/h6/h7/h8 红了两个月）。
+    // new_pair_with_cwd 硬编码 session_id="test"，故这里显式 new_pair。
+    let (fs_ext, store) =
+        FileSnapshotExtension::new_pair(StorageContext::new(cwd, "fs_harness_sess", cwd));
     let storage = StorageContext::new(cwd, "fs_harness_sess", cwd);
     let mgr = Arc::new(ApprovalManager::new(store.clone(), storage));
     let mut ext_reg = ExtensionRunner::new();
@@ -540,9 +545,12 @@ async fn h7_approvals_list_filter_by_status() {
         "approved 文件应有 baseline tree hash"
     );
     let drop_record = all.iter().find(|a| a.path == "drop.txt").unwrap();
+    // reject 保留 approved_tree_hash 锚点（approval.rs"保留锚点"注释：reject 把
+    // 文件回滚到锚点内容，锚点仍有效；清掉会让下一轮 diff 退回 session 起点，
+    // 已批准改动被重新拿来审，违背增量审批语义）。
     assert!(
-        drop_record.approved_tree_hash.is_none(),
-        "rejected 文件应无 approved_tree_hash"
+        drop_record.approved_tree_hash.is_some(),
+        "rejected 文件应保留 baseline 锚点（增量审批语义）"
     );
 
     let _ = std::fs::remove_dir_all(&cwd);

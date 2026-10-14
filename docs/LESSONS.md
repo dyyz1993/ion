@@ -94,7 +94,22 @@ ION 的错题本：复盘**已合并/已修复**的工作——返工的、不�
 
 **改命令签名（新增必填参数）必须同步 u16 全覆盖冒烟表——无参冒烟表与签名漂移会红得无声（直推只跑 lib 测试，集成测试仅 PR 才跑）。**
 - Before, `fork` 自 `aa38d53`（2026-08-25）变真实现要求 turnId，`u16_all_supported_commands` 无参表红了一个半月无人见——ci.yml 直推 master 只跑 `cargo test --lib`，`cargo test --tests` 仅 pr-gate 跑，直推绕过了它。
-- 证据：u16 失败复现（tests/unit_rpc_test.rs:693 报 "fork: missing param: turnId"，2026-10-14 发现）；修复 = fork 移出无参冒烟 + 专项断言验分发与校验（完整行为归 branch_tree_ci）；缺口对照 `.github/workflows/ci.yml` vs `pr-gate.yml`（`cargo test --tests` 仅后者有）。
+- 证据：u16 失败复现（tests/unit_rpc_test.rs:693 报 "fork: missing param: turnId"，2026-10-14 发现）；修复 = fork 移出无参冒烟 + 专项断言验分发与校验（完整行为归 branch_tree_ci）；缺口对照 `.github/workflows/ci.yml` vs `pr-gate.yml`（`cargo test --tests` 仅后者有；同日 ci.yml 增 integration-tests job 补位）。
+- Seen 1× (2026-10-14)
+
+**静态化/锁拆分重构时核对被绕开的实例状态——静态路径重建的解析优先级会与实例路径分家（worker_bin vs find_ion_binary），测试进程里 current_exe 不是 ion。**
+- Before, `76121de`（2026-08-09）把委托 create_worker 切到静态 `prepare_worker_spawn` 后，其 `find_ion_binary` current_exe 优先、拿不到 `with_binary` 注入的 worker_bin——测试进程里 current_exe 是测试二进制（libtest 不认 `--mode`），委托/respawn/host 静态路径 spawn 的子 worker 秒死 exit=101 "Unrecognized option: 'mode'"，e01 红了两个月无人见（与直推不跑集成测试叠加）。
+- 证据：诊断实证（reviewer exit_reason=测试二进制的 libtest 措辞，单独运行测试二进制复现同错）；修复 = `WORKER_BIN_OVERRIDE` 进程级（with_binary 设置 / find_ion_binary 最优先），e2e_stress 18/18 复绿；生产不受影响（serve 不调 with_binary）。
+- Seen 1× (2026-10-14)
+
+**集成测试夹具必须 hermetic：HOME 隔离 + 信任门显式放行 + session_id 全链对齐——产品加固后夹具不跟就静默红（直推不跑集成测试年代无人见）。**
+- Before, 两个家族各漏一源：hooks_e2e 读真实 HOME 的 `~/.ion/hooks.json`（zcode 防误杀 hook 泄漏进 event_count，2 vs 4 按机器漂移）且被 M4 供应链信任门拦掉项目级加载；file_snapshot_harness 的 `new_pair_with_cwd` 硬编码 session_id="test" ≠ ApprovalManager 的会话 id，de08097 去掉全局回退后 baseline 永远缺失。
+- 证据：hooks 修复 = `hermetic_load_fresh`（隔离 HOME + `load_fresh_with_trust`，10/10）；快照修复 = 显式 `new_pair` 同 id + h7 断言对齐"reject 保留锚点"语义（10/10）。
+- Seen 1× (2026-10-14)
+
+**公开 API 的参数不许在存储迁移时无声变 no-op——保留签名丢语义比删参数更糟（调用方以为过滤了其实没有）。**
+- Before, memory `search_with_scope` 的 outline 参数在 V0.2 FTS 迁移后变 `_outline` 无声忽略（FTS 无 outline 维度），v0.1 fallback 路径也跟着丢了过滤；memory_e2e 的 outline 过滤断言红（"search rust in tech should find 0" 实得 1）。
+- 证据：修复 = fallback 路径恢复按 outline id 过滤 + FTS 路径注释显式声明"该参数被忽略"；memory_e2e 6/6、lib memory 26/26。
 - Seen 1× (2026-10-14)
 
 ## 文档与证据

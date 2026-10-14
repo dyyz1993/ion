@@ -708,8 +708,21 @@ pub struct PreparedSpawn {
     pub approval_policy: Option<String>,
 }
 
+/// 进程级 worker 二进制覆盖：`with_binary` 构造时设置，`find_ion_binary` 最优先消费。
+///
+/// 为什么需要：`prepare_worker_spawn` 是静态方法拿不到 `self.worker_bin`，其本地
+/// 分支的 `find_ion_binary()` current_exe 优先——在测试进程里 current_exe 是测试
+/// 二进制（libtest 不认 `--mode`），经它 spawn 的子 worker 秒死 exit=101（e01
+/// 委托路径红了两个月，自 76121de 锁拆分起）。生产 `ion serve` 不调 `with_binary`，
+/// 此 override 恒空，行为不变。
+static WORKER_BIN_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
 /// Find the ion binary path (for spawning child workers).
 fn find_ion_binary() -> String {
+    // 测试进程显式指定的 worker 二进制最优先（见 WORKER_BIN_OVERRIDE 注释）
+    if let Some(bin) = WORKER_BIN_OVERRIDE.get() {
+        return bin.clone();
+    }
     // Try current exe first
     if let Ok(exe) = std::env::current_exe()
         && exe.exists()
@@ -969,6 +982,9 @@ impl WorkerRegistry {
 
     /// Create a new WorkerRegistry with a pre-configured worker binary path.
     pub fn with_binary(bin: &str) -> Self {
+        // 同步进程级 override：静态 spawn 路径（prepare_worker_spawn）也要用
+        // 这个二进制——测试进程 current_exe 是测试二进制，不是 ion。
+        let _ = WORKER_BIN_OVERRIDE.set(bin.to_string());
         let (manager_cmd_tx, manager_cmd_rx) = mpsc::unbounded_channel();
         Self {
             workers: HashMap::new(),

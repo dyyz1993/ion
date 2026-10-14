@@ -17,6 +17,35 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// 全局计数器：每次调用拿到唯一临时目录，避免并行测试互相踩同一个目录。
 static DIR_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// HOME 隔离锁：hermetic_load_fresh 换 HOME 期间串行化，防并行测试读到中间态。
+static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Hermetic 加载 hooks 配置（两个 env 泄漏源一起堵）：
+///
+/// 1. 全局合并——`paths::root()` 读真实 HOME，本机 `~/.ion/hooks.json`
+///    （如 zcode 防误杀 hook）会漏进 event_count，断言按机器漂移
+///    （实测 2 vs 4）；换成隔离空 HOME 后全局侧恒为 0。
+/// 2. 信任门——M4 供应链加固后项目级 hooks 默认不加载（读真实用户
+///    config 的 hooks_trust 决定放行），测试改用可测变体
+///    `load_fresh_with_trust` 显式信任本项目目录，不依赖机器配置。
+fn hermetic_load_fresh(dir: &std::path::Path) -> HooksConfig {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let saved_home = std::env::var("HOME").ok();
+    let iso_home = std::env::temp_dir().join(format!("hooks_e2e_home_{}", std::process::id()));
+    std::fs::create_dir_all(&iso_home).unwrap();
+    unsafe { std::env::set_var("HOME", &iso_home) };
+    let trust = ion::config::HooksTrustConfig {
+        project_hooks_enabled: true,
+        trusted_projects: vec![dir.to_string_lossy().to_string()],
+    };
+    let cfg = HooksConfig::load_fresh_with_trust(Some(dir), &trust);
+    match saved_home {
+        Some(h) => unsafe { std::env::set_var("HOME", h) },
+        None => unsafe { std::env::remove_var("HOME") },
+    }
+    cfg
+}
+
 /// 创建唯一临时测试目录 + hooks.json + 脚本。
 ///
 /// 用进程内原子计数器生成唯一路径，保证并行测试彼此隔离——不再共享
@@ -87,7 +116,7 @@ exit 0
 #[tokio::test]
 async fn e2e_config_loads_from_project_dir() {
     let dir = setup_test_dir();
-    let config = HooksConfig::load_fresh(Some(&dir));
+    let config = hermetic_load_fresh(&dir);
 
     assert!(!config.is_empty(), "应该加载到 hooks");
     assert!(!config.disable_all_hooks);
@@ -99,7 +128,7 @@ async fn e2e_config_loads_from_project_dir() {
 #[tokio::test]
 async fn e2e_handler_count() {
     let dir = setup_test_dir();
-    let config = HooksConfig::load_fresh(Some(&dir));
+    let config = hermetic_load_fresh(&dir);
     assert_eq!(
         config.handler_count(),
         2,
@@ -110,7 +139,7 @@ async fn e2e_handler_count() {
 #[tokio::test]
 async fn e2e_command_handler_blocks_no_verify() {
     let dir = setup_test_dir();
-    let config = HooksConfig::load_fresh(Some(&dir));
+    let config = hermetic_load_fresh(&dir);
 
     // 找到 PreToolUse 的 handler
     let handlers = config.handlers_for_event("PreToolUse");
@@ -158,7 +187,7 @@ async fn e2e_command_handler_blocks_no_verify() {
 #[tokio::test]
 async fn e2e_command_handler_allows_normal_commit() {
     let dir = setup_test_dir();
-    let config = HooksConfig::load_fresh(Some(&dir));
+    let config = hermetic_load_fresh(&dir);
     let handlers = config.handlers_for_event("PreToolUse");
     let handler = handlers[0].1;
 
@@ -191,7 +220,7 @@ async fn e2e_command_handler_allows_normal_commit() {
 #[tokio::test]
 async fn e2e_user_prompt_submit_injects_context() {
     let dir = setup_test_dir();
-    let config = HooksConfig::load_fresh(Some(&dir));
+    let config = hermetic_load_fresh(&dir);
     let handlers = config.handlers_for_event("UserPromptSubmit");
     assert_eq!(handlers.len(), 1);
     let handler = handlers[0].1;
@@ -234,7 +263,7 @@ async fn e2e_hot_reload_picks_up_changes() {
     let dir = setup_test_dir();
 
     // 第一次读
-    let config1 = HooksConfig::load_fresh(Some(&dir));
+    let config1 = hermetic_load_fresh(&dir);
     assert_eq!(config1.event_count(), 2);
 
     // 修改 hooks.json，加一个 Stop 事件
@@ -251,7 +280,7 @@ async fn e2e_hot_reload_picks_up_changes() {
     .unwrap();
 
     // 第二次读——不用重启，load_fresh 重新读文件
-    let config2 = HooksConfig::load_fresh(Some(&dir));
+    let config2 = hermetic_load_fresh(&dir);
     assert_eq!(config2.event_count(), 2, "改完应该立即反映");
     assert!(config2.hooks.contains_key("Stop"), "新加的 Stop 应该出现");
     assert!(config2.hooks.contains_key("PreToolUse"), "PreToolUse 还在");
@@ -315,7 +344,7 @@ exit 0
     // 创建 FAIL 文件模拟测试失败
     std::fs::write(ion_dir.join("FAIL"), "1").unwrap();
 
-    let config = HooksConfig::load_fresh(Some(&dir));
+    let config = hermetic_load_fresh(&dir);
     let handlers = config.handlers_for_event("Stop");
     assert_eq!(handlers.len(), 1);
     let handler = handlers[0].1;
@@ -394,7 +423,7 @@ exit 0
     }
     // 不创建 FAIL 文件
 
-    let config = HooksConfig::load_fresh(Some(&dir));
+    let config = hermetic_load_fresh(&dir);
     let handler = config.handlers_for_event("Stop")[0].1;
 
     let stdin = serde_json::json!({"last_assistant_message":"done","session_id":"sess","cwd":dir.to_string_lossy().to_string(),"hook_event_name":"Stop"});
