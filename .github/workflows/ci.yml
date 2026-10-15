@@ -216,7 +216,9 @@ jobs:
       - name: Goal Supervisor E2E (FauxProvider)
         run: |
           chmod +x tests/goal_supervisor_ci.sh
-          timeout 120 bash tests/goal_supervisor_ci.sh
+          # 600s：脚本内含 cargo test（Group A），CI 冷缓存重编依赖实测超 120s
+          # （r10/r11 连续 exit 124 于 build 后单元测试段，本地热缓存秒过）
+          timeout 600 bash tests/goal_supervisor_ci.sh
         env:
           ION_FAUX_REPLY: 'goal test'
 
