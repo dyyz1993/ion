@@ -57,6 +57,22 @@ start_serve() {
     echo "$pid"
 }
 
+# 等 session 的 agent 真正空闲——list_workers 的 Idle 与 call_tool 的 busy 门
+# 是两个状态位（Idle 后 busy 门仍拦 ~10s），故用同门只读探针
+# get_last_assistant_text：响应不含 "status":"busy" 即空闲（2026-10-16）
+wait_idle() { # wait_idle <sid> [max_iter=30]
+    local sid="$1" max=${2:-30}
+    for _ in $(seq 1 "$max"); do
+        local r
+        r=$("$ION_BIN" rpc --session "$sid" --method get_last_assistant_text 2>/dev/null)
+        case "$r" in
+            *'"status":"busy"'*|*'"status": "busy"'*) sleep 1 ;;
+            *) return 0 ;;
+        esac
+    done
+    return 0
+}
+
 echo "════════════════════════════════════════════════════"
 echo "  ION Rollback Impact CI — $(date)"
 echo "════════════════════════════════════════════════════"
@@ -83,15 +99,15 @@ SID1=$(echo "$CREATE1" | python3 -c "import json,sys;print(json.load(sys.stdin)[
 pass "S1.0b session: $SID1"
 
 # Turn1: 闲聊
-"$ION_BIN" rpc --session "$SID1" --method prompt --params '{"text":"hi"}' >/dev/null 2>&1; sleep 1
+"$ION_BIN" rpc --session "$SID1" --method prompt --params '{"text":"hi"}' >/dev/null 2>&1; wait_idle "$SID1"
 pass "S1.1 Turn1 闲聊"
 
 # Turn2/3: write a.txt V1→V2（call_tool 时序可控）
 "$ION_BIN" rpc --session "$SID1" --method call_tool \
-    --params "{\"tool\":\"write\",\"args\":{\"file_path\":\"$TEST_DIR/a.txt\",\"content\":\"V1\"}}" >/dev/null 2>&1; sleep 0.5
+    --params "{\"tool\":\"write\",\"args\":{\"file_path\":\"$TEST_DIR/a.txt\",\"content\":\"V1\"}}" >/dev/null 2>&1; wait_idle "$SID1"
 grep -q "V1" "$TEST_DIR/a.txt" 2>/dev/null && pass "S1.2 a.txt=V1" || fail "S1.2 a.txt 未写 V1"
 "$ION_BIN" rpc --session "$SID1" --method call_tool \
-    --params "{\"tool\":\"write\",\"args\":{\"file_path\":\"$TEST_DIR/a.txt\",\"content\":\"V2\"}}" >/dev/null 2>&1; sleep 0.5
+    --params "{\"tool\":\"write\",\"args\":{\"file_path\":\"$TEST_DIR/a.txt\",\"content\":\"V2\"}}" >/dev/null 2>&1; wait_idle "$SID1"
 grep -q "V2" "$TEST_DIR/a.txt" 2>/dev/null && pass "S1.3 a.txt=V2" || fail "S1.3 a.txt 未写 V2"
 
 # 回滚前状态
@@ -165,11 +181,11 @@ SID2=$(echo "$CREATE2" | python3 -c "import json,sys;print(json.load(sys.stdin)[
 
 if [ -n "$SID2" ]; then
     pass "S2.0 session: $SID2"
-    "$ION_BIN" rpc --session "$SID2" --method prompt --params '{"text":"hi"}' >/dev/null 2>&1; sleep 1; pass "S2.1 Turn1 闲聊"
+    "$ION_BIN" rpc --session "$SID2" --method prompt --params '{"text":"hi"}' >/dev/null 2>&1; wait_idle "$SID2"; pass "S2.1 Turn1 闲聊"
     "$ION_BIN" rpc --session "$SID2" --method call_tool \
-        --params "{\"tool\":\"write\",\"args\":{\"file_path\":\"$TEST_DIR2/c.txt\",\"content\":\"V1\"}}" >/dev/null 2>&1; sleep 0.5
+        --params "{\"tool\":\"write\",\"args\":{\"file_path\":\"$TEST_DIR2/c.txt\",\"content\":\"V1\"}}" >/dev/null 2>&1; wait_idle "$SID2"
     "$ION_BIN" rpc --session "$SID2" --method call_tool \
-        --params "{\"tool\":\"write\",\"args\":{\"file_path\":\"$TEST_DIR2/c.txt\",\"content\":\"V2\"}}" >/dev/null 2>&1; sleep 0.5
+        --params "{\"tool\":\"write\",\"args\":{\"file_path\":\"$TEST_DIR2/c.txt\",\"content\":\"V2\"}}" >/dev/null 2>&1; wait_idle "$SID2"
     grep -q "V2" "$TEST_DIR2/c.txt" 2>/dev/null && pass "S2.2 c.txt=V2" || fail "S2.2 c.txt 未写 V2"
 
     MSGS_BEFORE2=$("$ION_BIN" rpc --session "$SID2" --method get_messages --params '{"view":"live"}' 2>&1)

@@ -84,6 +84,10 @@ echo "Group B: session 文件 + ion history 分页"
 SESSION_DIR="$TEST_DIR/.ion_test_session"
 mkdir -p "$SESSION_DIR"
 SESSION_FILE="$SESSION_DIR/session.jsonl"
+# fixture 目录挂到 ION_SESSION_DIR——安全批把 host 直读限死在 sessions_dir()
+# 内而 sessions_dir() 吃此 env；设为 TEST_DIR 父目录以覆盖全部 fixture
+# （.ion_test_session / .ion_err_session / fork / 长链 等，2026-10-16 破案）
+export ION_SESSION_DIR="$TEST_DIR"
 
 # 写 header
 echo '{"type":"session","version":3,"id":"test_mr_ci","timestamp":"2026-07-09T10:00:00Z","cwd":"/tmp/test"}' > "$SESSION_FILE"
