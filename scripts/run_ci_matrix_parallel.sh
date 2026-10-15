@@ -344,8 +344,8 @@ run_one_script() {
     # 失败脚本日志尾回显到 job log——artifact 链路故障时唯一的现场
     # （r14/r15 artifact 曾整体缺失，逐脚本日志只能在这里看到）
     if [ "$status" = "FAIL" ]; then
-        echo "  ── $bn 日志尾（最后 15 行）──"
-        tail -15 "$log" 2>/dev/null | sed 's/^/    /'
+        echo "  ── $bn 日志尾（最后 40 行）──"
+        tail -40 "$log" 2>/dev/null | sed 's/^/    /'
     fi
 }
 export -f run_one_script
