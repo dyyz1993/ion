@@ -40,6 +40,9 @@ pub enum AgentError {
     #[error("Agent paused")]
     Paused,
 
+    #[error("Durable execution store error: {0}")]
+    DurableExecution(String),
+
     #[error("Max retries exceeded: {0}")]
     MaxRetries(String),
 

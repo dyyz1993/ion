@@ -6,7 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::types::{
-    EventPage, ExecutionCursor, ResumeReceipt, RunSnapshot, TERMINAL_RUN_STATES, TaskSummary,
+    AttemptLease, EventPage, ExecutionCursor, ResumeReceipt, RunSnapshot, TERMINAL_RUN_STATES,
+    TaskSummary, ToolCheckpoint, ToolOutcome,
 };
 
 const SCHEMA_VERSION: i64 = 1;
@@ -30,15 +31,17 @@ pub enum ExecutionStoreError {
     },
     #[error("invalid execution cursor: storeId={store_id}, seq={seq}")]
     InvalidCursor { store_id: String, seq: i64 },
+    #[error("execution store invariant violated: {0}")]
+    Invariant(String),
 }
-
-pub type StoreResult<T> = Result<T, ExecutionStoreError>;
 
 pub struct ExecutionStore {
     path: PathBuf,
     conn: Connection,
     store_id: String,
 }
+
+pub type StoreResult<T> = Result<T, ExecutionStoreError>;
 
 impl ExecutionStore {
     pub fn open_default() -> StoreResult<Self> {
@@ -438,6 +441,223 @@ impl ExecutionStore {
         })
     }
 
+    pub fn checkpoint_tool_batch(
+        &mut self,
+        run_id: &str,
+        response: &serde_json::Value,
+        tools: &[ToolCheckpoint],
+    ) -> StoreResult<Vec<String>> {
+        self.transaction(|store| {
+            let run = store.load_run(run_id)?;
+            if TERMINAL_RUN_STATES.contains(&run.state.as_str()) {
+                return Err(ExecutionStoreError::AlreadyTerminal {
+                    run_id: run_id.to_string(),
+                    state: run.state,
+                });
+            }
+            let version = run.version + 1;
+            let checkpoint = serde_json::json!({
+                "response": response,
+                "toolCount": tools.len(),
+            });
+            let mut task_ids = Vec::with_capacity(tools.len());
+            for tool in tools {
+                store.conn.execute(
+                    "INSERT INTO tasks(task_id,run_id,parent_task_id,logical_key,kind,state,version,checkpoint_version,checkpoint_json,result_json,policy_json) \
+                     VALUES(?1,?2,NULL,?3,'tool','pending',0,0,?4,NULL,?5)",
+                    params![
+                        tool.task_id,
+                        run_id,
+                        tool.logical_key,
+                        checkpoint.to_string(),
+                        serde_json::to_string(&tool.policy).unwrap_or_else(|_| "\"unsafe\"".into()),
+                    ],
+                )?;
+                task_ids.push(tool.task_id.clone());
+            }
+            store.conn.execute(
+                "UPDATE runs SET state='running',version=?2,updated_ms=?3 WHERE run_id=?1",
+                params![run_id, version, now_ms()],
+            )?;
+            store.append_event_tx(run_id, version, "tool.batch.checkpointed", &serde_json::json!({
+                "response": response,
+                "toolCount": tools.len(),
+                "taskIds": task_ids,
+            }))?;
+            store.insert_outbox_tx(run_id, "dispatch_tools", &serde_json::json!({ "taskIds": task_ids }))?;
+            Ok(task_ids)
+        })
+    }
+
+    pub fn start_tool_attempt(
+        &mut self,
+        run_id: &str,
+        task_id: &str,
+        worker_id: Option<&str>,
+    ) -> StoreResult<AttemptLease> {
+        self.transaction(|store| {
+            let run = store.load_run(run_id)?;
+            let (_, state): (String, String) = store.conn.query_row(
+                "SELECT policy_json,state FROM tasks WHERE task_id=?1 AND run_id=?2",
+                params![task_id, run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            if state != "pending" {
+                return Err(ExecutionStoreError::Invariant(format!(
+                    "task {task_id} is {state}, expected pending"
+                )));
+            }
+            let attempt_no: i64 = store.conn.query_row(
+                "SELECT COALESCE(MAX(attempt_no)+1,0) FROM attempts WHERE task_id=?1",
+                params![task_id],
+                |row| row.get(0),
+            )?;
+            let attempt_id = format!("attempt-{}", uuid::Uuid::new_v4());
+            let lease = AttemptLease {
+                task_id: task_id.to_string(),
+                attempt_id: attempt_id.clone(),
+                attempt_no,
+                host_epoch: 0,
+                generation: run.generation,
+                fence: attempt_no,
+            };
+            store.conn.execute(
+                "INSERT INTO attempts(attempt_id,task_id,attempt_no,host_epoch,generation,fence,worker_id,phase,started_ms,lease_deadline_ms,outcome_json) \
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,'executing',?8,NULL,NULL)",
+                params![attempt_id, task_id, attempt_no, lease.host_epoch, lease.generation, lease.fence, worker_id, now_ms()],
+            )?;
+            store.conn.execute(
+                "UPDATE tasks SET state='running',version=version+1 WHERE task_id=?1",
+                params![task_id],
+            )?;
+            store.conn.execute(
+                "UPDATE runs SET version=version+1,updated_ms=?2 WHERE run_id=?1",
+                params![run_id, now_ms()],
+            )?;
+            store.append_event_tx(run_id, run.version + 1, "tool.started", &serde_json::json!({
+                "taskId": task_id,
+                "attemptId": attempt_id,
+            }))?;
+            Ok(lease)
+        })
+    }
+
+    pub fn complete_tool_attempt(
+        &mut self,
+        run_id: &str,
+        lease: &AttemptLease,
+        outcome: &ToolOutcome,
+    ) -> StoreResult<()> {
+        self.transaction(|store| {
+            let run = store.load_run(run_id)?;
+            let changed = store.conn.execute(
+                "UPDATE attempts SET phase=?4,outcome_json=?5 WHERE attempt_id=?1 AND task_id=?2 AND attempt_no=?3 AND host_epoch=?6 AND generation=?7 AND fence=?8 AND phase='executing'",
+                params![lease.attempt_id, lease.task_id, lease.attempt_no, if outcome.success {"succeeded"} else {"failed"}, serde_json::to_string(outcome).unwrap_or_default(), lease.host_epoch, lease.generation, lease.fence],
+            )?;
+            if changed != 1 {
+                return Err(ExecutionStoreError::Invariant(format!(
+                    "attempt {} is no longer the active fenced attempt",
+                    lease.attempt_id
+                )));
+            }
+            let result = serde_json::json!({ "output": outcome.output, "success": outcome.success });
+            store.conn.execute(
+                "UPDATE tasks SET state=?2,version=version+1,result_json=?3 WHERE task_id=?1",
+                params![lease.task_id, if outcome.success {"succeeded"} else {"failed"}, result.to_string()],
+            )?;
+            store.conn.execute(
+                "INSERT INTO transcript_entries(entry_id,run_id,ordinal,payload_json) VALUES(?1,?2,?3,?4)",
+                params![format!("entry-{}", uuid::Uuid::new_v4()), run_id, next_transcript_ordinal(&store.conn, run_id)?, result.to_string()],
+            )?;
+            store.conn.execute(
+                "UPDATE runs SET version=version+1,updated_ms=?2 WHERE run_id=?1",
+                params![run_id, now_ms()],
+            )?;
+            store.append_event_tx(run_id, run.version + 2, "tool.completed", &serde_json::json!({
+                "taskId": lease.task_id,
+                "attemptId": lease.attempt_id,
+                "success": outcome.success,
+            }))?;
+            Ok(())
+        })
+    }
+
+    pub fn recover_interrupted_attempts(&mut self, run_id: &str) -> StoreResult<usize> {
+        self.transaction(|store| {
+            let mut stmt = store.conn.prepare(
+                "SELECT a.task_id,a.attempt_id,t.policy_json FROM attempts a \
+                 JOIN tasks t ON t.task_id=a.task_id \
+                 WHERE t.run_id=?1 AND a.phase='executing' AND t.result_json IS NULL",
+            )?;
+            let rows = stmt
+                .query_map(params![run_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut changed = 0;
+            let mut blocked = false;
+            for (task_id, attempt_id, policy_json) in rows {
+                let replay_safe = policy_json.contains("replay_safe");
+                let phase = if replay_safe { "failed" } else { "uncertain" };
+                let task_state = if replay_safe { "pending" } else { "uncertain" };
+                let outcome = serde_json::json!({
+                    "interrupted": true,
+                    "replaySafe": replay_safe,
+                })
+                .to_string();
+                store.conn.execute(
+                    "UPDATE attempts SET phase=?2,outcome_json=?3 WHERE attempt_id=?1 AND phase='executing'",
+                    params![attempt_id, phase, outcome],
+                )?;
+                store.conn.execute(
+                    "UPDATE tasks SET state=?2,version=version+1 WHERE task_id=?1",
+                    params![task_id, task_state],
+                )?;
+                changed += 1;
+                if !replay_safe {
+                    blocked = true;
+                }
+            }
+            if changed > 0 {
+                let run = store.load_run(run_id)?;
+                let version = run.version + 1;
+                let state = if blocked {
+                    "blocked".to_string()
+                } else {
+                    run.state
+                };
+                let reason = if blocked { Some("uncertain_tool_effect".to_string()) } else { None };
+                store.conn.execute(
+                    "UPDATE runs SET state=?2,reason_code=?3,version=?4,updated_ms=?5 WHERE run_id=?1",
+                    params![run_id, state, reason, version, now_ms()],
+                )?;
+                store.append_event_tx(run_id, version, "run.recovery.reconciled", &serde_json::json!({
+                    "changedAttempts": changed,
+                    "blocked": blocked,
+                }))?;
+            }
+            Ok(changed)
+        })
+    }
+
+    fn transaction<T>(&mut self, f: impl FnOnce(&Self) -> StoreResult<T>) -> StoreResult<T> {
+        self.conn.execute("BEGIN IMMEDIATE", [])?;
+        match f(self) {
+            Ok(value) => {
+                self.conn.execute("COMMIT", [])?;
+                Ok(value)
+            }
+            Err(e) => {
+                let _ = self.conn.execute("ROLLBACK", []);
+                Err(e)
+            }
+        }
+    }
+
     fn append_event_tx(
         &self,
         run_id: &str,
@@ -566,6 +786,18 @@ impl ExecutionWriter {
             ExecutionStoreError::Storage(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
         })?
     }
+
+    pub async fn call_async<T: Send + 'static>(
+        self: &Arc<Self>,
+        f: impl FnOnce(&mut ExecutionStore) -> StoreResult<T> + Send + 'static,
+    ) -> StoreResult<T> {
+        let writer = Arc::clone(self);
+        tokio::task::spawn_blocking(move || writer.call(f))
+            .await
+            .map_err(|e| {
+                ExecutionStoreError::Storage(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+            })?
+    }
 }
 
 pub fn shared_writer(path: impl AsRef<Path>) -> StoreResult<Arc<ExecutionWriter>> {
@@ -582,6 +814,15 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+fn next_transcript_ordinal(conn: &Connection, run_id: &str) -> StoreResult<i64> {
+    conn.query_row(
+        "SELECT COALESCE(MAX(ordinal)+1,0) FROM transcript_entries WHERE run_id=?1",
+        params![run_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
 }
 
 fn hash_value(value: &serde_json::Value) -> String {
@@ -695,5 +936,118 @@ mod tests {
             })
             .unwrap();
         assert_eq!(receipt.accepted_version, 1);
+    }
+
+    #[test]
+    fn tool_batch_checkpoint_attempt_and_recovery_are_transactional() {
+        let (mut store, _dir) = temp_store();
+        let snap = store
+            .create_run("s1", "main", serde_json::json!({}), serde_json::json!({}))
+            .unwrap();
+        let checkpoints = vec![
+            ToolCheckpoint {
+                task_id: "safe-task".into(),
+                logical_key: "call-safe".into(),
+                name: "read".into(),
+                call_id: "call-safe".into(),
+                arguments: serde_json::json!({ "file_path": "/tmp/x" }),
+                policy: crate::agent::tool::RecoveryPolicy::ReplaySafe,
+            },
+            ToolCheckpoint {
+                task_id: "unsafe-task".into(),
+                logical_key: "call-unsafe".into(),
+                name: "bash".into(),
+                call_id: "call-unsafe".into(),
+                arguments: serde_json::json!({ "command": "true" }),
+                policy: crate::agent::tool::RecoveryPolicy::Unsafe,
+            },
+        ];
+        store
+            .checkpoint_tool_batch(
+                &snap.run_id,
+                &serde_json::json!({ "toolCalls": [] }),
+                &checkpoints,
+            )
+            .unwrap();
+        let safe_lease = store
+            .start_tool_attempt(&snap.run_id, "safe-task", None)
+            .unwrap();
+        let unsafe_lease = store
+            .start_tool_attempt(&snap.run_id, "unsafe-task", None)
+            .unwrap();
+        assert_ne!(safe_lease.attempt_id, unsafe_lease.attempt_id);
+
+        let changed = store.recover_interrupted_attempts(&snap.run_id).unwrap();
+        assert_eq!(changed, 2);
+        let recovered = store.snapshot(&snap.run_id).unwrap();
+        assert_eq!(recovered.state, "blocked");
+        assert_eq!(
+            recovered.reason_code.as_deref(),
+            Some("uncertain_tool_effect")
+        );
+        assert!(
+            recovered
+                .tasks
+                .iter()
+                .any(|t| t.task_id == "safe-task" && t.state == "pending")
+        );
+        assert!(
+            recovered
+                .tasks
+                .iter()
+                .any(|t| t.task_id == "unsafe-task" && t.state == "uncertain")
+        );
+    }
+
+    #[test]
+    fn fenced_completion_is_idempotent_only_for_active_attempt() {
+        let (mut store, _dir) = temp_store();
+        let snap = store
+            .create_run("s1", "main", serde_json::json!({}), serde_json::json!({}))
+            .unwrap();
+        let checkpoint = ToolCheckpoint {
+            task_id: "safe-task".into(),
+            logical_key: "call-safe".into(),
+            name: "read".into(),
+            call_id: "call-safe".into(),
+            arguments: serde_json::json!({}),
+            policy: crate::agent::tool::RecoveryPolicy::ReplaySafe,
+        };
+        store
+            .checkpoint_tool_batch(
+                &snap.run_id,
+                &serde_json::json!({}),
+                std::slice::from_ref(&checkpoint),
+            )
+            .unwrap();
+        let lease = store
+            .start_tool_attempt(&snap.run_id, "safe-task", None)
+            .unwrap();
+        store
+            .complete_tool_attempt(
+                &snap.run_id,
+                &lease,
+                &ToolOutcome {
+                    task_id: "safe-task".into(),
+                    success: true,
+                    output: "ok".into(),
+                },
+            )
+            .unwrap();
+        let replay = store.complete_tool_attempt(
+            &snap.run_id,
+            &lease,
+            &ToolOutcome {
+                task_id: "safe-task".into(),
+                success: true,
+                output: "ok".into(),
+            },
+        );
+        assert!(matches!(
+            replay.unwrap_err(),
+            ExecutionStoreError::Invariant(_)
+        ));
+        let final_snap = store.snapshot(&snap.run_id).unwrap();
+        assert_eq!(final_snap.tasks[0].state, "succeeded");
     }
 }

@@ -187,6 +187,9 @@ pub struct Agent {
     deleted_entry_ids: std::collections::HashSet<String>,
     /// 软压缩状态：被折叠的 entry ID → 替换后的 BranchSummary 摘要
     summarized_entry_ids: std::collections::HashMap<String, String>,
+    /// Opt-in durable execution ledger. None preserves legacy behavior.
+    durable_store: Option<Arc<crate::execution::store::ExecutionWriter>>,
+    durable_run_id: Option<String>,
 }
 
 /// 上下文溢出恢复的最大 compact-and-retry 轮次（对齐 pi MAX_OVERFLOW_RECOVERY_ROUNDS = 5）
@@ -234,6 +237,8 @@ impl Agent {
             fallback_tried: Vec::new(),
             deleted_entry_ids: std::collections::HashSet::new(),
             summarized_entry_ids: std::collections::HashMap::new(),
+            durable_store: None,
+            durable_run_id: None,
         }
     }
 
@@ -287,6 +292,112 @@ impl Agent {
     /// 动态设置 session ID（worker 启动后 / cmd_run 设置）。
     pub fn set_session_id(&mut self, sid: Option<String>) {
         self.session_id = sid;
+    }
+
+    /// Enable transactional tool checkpoints for one agent run.
+    pub fn with_durable_execution(
+        mut self,
+        store: Arc<crate::execution::store::ExecutionWriter>,
+    ) -> Self {
+        self.durable_store = Some(store);
+        self
+    }
+
+    pub fn durable_run_id(&self) -> Option<&str> {
+        self.durable_run_id.as_deref()
+    }
+
+    async fn checkpoint_tool_batch(
+        &mut self,
+        tool_calls: &[ion_provider::types::ToolCall],
+    ) -> AgentResult<Vec<crate::execution::types::ToolCheckpoint>> {
+        let Some(store) = self.durable_store.clone() else {
+            return Ok(Vec::new());
+        };
+        let run_id = match self.durable_run_id.clone() {
+            Some(id) => id,
+            None => {
+                let sid = self.session_id.clone().unwrap_or_else(|| "session".into());
+                let prompt = self
+                    .messages
+                    .iter()
+                    .rev()
+                    .find_map(|m| match m {
+                        Message::User(user) => user
+                            .content
+                            .iter()
+                            .find_map(|b| match b {
+                                ContentBlock::Text(t) => Some(t.text.clone()),
+                                _ => None,
+                            })
+                            .map(|text| serde_json::json!({ "prompt": text })),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| serde_json::json!({ "prompt": "" }));
+                let snapshot = store
+                    .call_async(move |s| s.create_run(&sid, "main", prompt, serde_json::json!({})))
+                    .await
+                    .map_err(|e| AgentError::DurableExecution(e.to_string()))?;
+                self.durable_run_id = Some(snapshot.run_id.clone());
+                snapshot.run_id
+            }
+        };
+        if tool_calls.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut checkpoints = Vec::with_capacity(tool_calls.len());
+        for (index, tc) in tool_calls.iter().enumerate() {
+            let policy = self
+                .tools
+                .get(&tc.name)
+                .map(|tool| tool.recovery_policy())
+                .unwrap_or_default();
+            checkpoints.push(crate::execution::types::ToolCheckpoint {
+                task_id: format!("task-{}", uuid::Uuid::new_v4()),
+                logical_key: format!("{}:{}", tc.id, index),
+                name: tc.name.clone(),
+                call_id: tc.id.clone(),
+                arguments: tc.arguments.clone(),
+                policy,
+            });
+        }
+        let response = serde_json::json!({
+            "toolCalls": tool_calls.iter().map(|tc| serde_json::json!({
+                "id": tc.id,
+                "name": tc.name,
+                "arguments": tc.arguments,
+            })).collect::<Vec<_>>(),
+            "model": self.model.id,
+            "provider": self.model.provider,
+        });
+        let persisted = checkpoints.clone();
+        store
+            .call_async(move |s| s.checkpoint_tool_batch(&run_id, &response, &persisted))
+            .await
+            .map_err(|e| AgentError::DurableExecution(e.to_string()))?;
+        Ok(checkpoints)
+    }
+
+    async fn start_durable_attempt(
+        &self,
+        task_id: &Option<String>,
+    ) -> AgentResult<Option<crate::execution::types::AttemptLease>> {
+        let Some(task_id) = task_id else {
+            return Ok(None);
+        };
+        let Some(store) = self.durable_store.clone() else {
+            return Ok(None);
+        };
+        let Some(run_id) = self.durable_run_id.clone() else {
+            return Ok(None);
+        };
+        let worker_id = self.session_id.clone();
+        let task_id = task_id.clone();
+        let lease = store
+            .call_async(move |s| s.start_tool_attempt(&run_id, &task_id, worker_id.as_deref()))
+            .await
+            .map_err(|e| AgentError::DurableExecution(e.to_string()))?;
+        Ok(Some(lease))
     }
 
     /// 添加额外工作目录（add_dir RPC 调用，去重）。
@@ -1646,6 +1757,13 @@ impl Agent {
                     }
                     turn += 1;
 
+                    let durable_checkpoints = self.checkpoint_tool_batch(&tool_calls).await?;
+                    let durable_tasks = tool_calls
+                        .iter()
+                        .map(|tc| tc.id.clone())
+                        .zip(durable_checkpoints.iter().map(|cp| cp.task_id.clone()))
+                        .collect::<Vec<_>>();
+
                     for tc in &mut tool_calls {
                         // 工具执行前检查 abort(stopped 是 Arc<AtomicBool>)
                         if self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
@@ -1794,6 +1912,11 @@ impl Agent {
                         let tc_id = tc.id.clone();
                         let tc_name = tc.name.clone();
                         let tc_args = tc.arguments.clone();
+                        let durable_task_id = durable_tasks
+                            .iter()
+                            .find(|(call_id, _)| *call_id == tc.id)
+                            .map(|(_, task_id)| task_id.clone());
+                        let durable_lease = self.start_durable_attempt(&durable_task_id).await?;
 
                         // Execute tool with streaming updates via tokio channel.
                         // Use select! to forward updates to extensions concurrently while tool runs.
@@ -1919,6 +2042,26 @@ impl Agent {
                             is_interrupted: false,
                         };
                         self.extensions.on_tool_execution_end(&exec_ctx).await?;
+                        if let Some(task_id) = durable_task_id.as_ref()
+                            && let Some(run_id) = self.durable_run_id.as_ref()
+                            && let Some(lease) = durable_lease.as_ref()
+                        {
+                            let store = self.durable_store.as_ref().unwrap().clone();
+                            let run_id = run_id.clone();
+                            let lease = lease.clone();
+                            let task_id = task_id.clone();
+                            let outcome = crate::execution::types::ToolOutcome {
+                                task_id,
+                                success: !exec_ctx.is_error,
+                                output: exec_ctx.result.clone(),
+                            };
+                            store
+                                .call_async(move |store| {
+                                    store.complete_tool_attempt(&run_id, &lease, &outcome)
+                                })
+                                .await
+                                .map_err(|e| AgentError::DurableExecution(e.to_string()))?;
+                        }
 
                         let mut tr = ToolResultMessage {
                             role: "tool".into(),
@@ -3081,6 +3224,53 @@ mod tests {
             .await
             .expect("abort 后下一轮 run 挂起（僵尸 run 回归）");
         assert!(second.is_ok(), "run 2 应正常完成: {second:?}");
+    }
+
+    #[tokio::test]
+    async fn durable_agent_tool_batch_checkpoints_and_completes() {
+        let mut registry = ApiRegistry::new();
+        let faux = ion_provider::faux::register_faux(&mut registry);
+        faux.set_responses(vec![
+            ion_provider::faux::FauxResponseStep::Static(
+                ion_provider::faux::faux_assistant_message(
+                    ion_provider::faux::FauxContent::Single(ion_provider::faux::faux_tool_call(
+                        "echo",
+                        serde_json::json!({ "text": "checkpoint" }),
+                    )),
+                    ion_provider::faux::FauxMessageOptions {
+                        stop_reason: Some(StopReason::ToolUse),
+                        error_message: None,
+                    },
+                ),
+            ),
+            ion_provider::faux::FauxResponseStep::Static(
+                ion_provider::faux::faux_assistant_message(
+                    ion_provider::faux::FauxContent::Text("done".into()),
+                    ion_provider::faux::FauxMessageOptions::default(),
+                ),
+            ),
+        ]);
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(crate::agent::tool::EchoTool));
+        let config = AgentConfig {
+            max_retries: 0,
+            ..Default::default()
+        };
+        let dir = tempfile::TempDir::new().unwrap();
+        let writer = Arc::new(crate::execution::store::ExecutionWriter::spawn(
+            crate::execution::store::ExecutionStore::open(dir.path().join("execution.sqlite3"))
+                .unwrap(),
+        ));
+        let store = writer.clone();
+        let mut agent = Agent::new(Arc::new(registry), faux_model(), None, tools, config)
+            .with_durable_execution(writer);
+        agent.run("checkpoint durable tool").await.unwrap();
+
+        let run_id = agent.durable_run_id().expect("run created").to_string();
+        let snapshot = store.call(move |s| s.snapshot(&run_id)).unwrap();
+        assert_eq!(snapshot.tasks.len(), 1);
+        assert_eq!(snapshot.tasks[0].state, "succeeded");
+        assert_eq!(snapshot.tasks[0].kind, "tool");
     }
 
     /// P0 回归（场景 1 尾延迟）：graceful_drain_follow_ups 在无在飞后台任务时

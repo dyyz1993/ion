@@ -11,6 +11,20 @@ use std::sync::Arc;
 
 pub type ToolUpdateFn = Arc<dyn Fn(String) + Send + Sync>;
 
+/// How a tool may be treated after an interrupted durable attempt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Default)]
+pub enum RecoveryPolicy {
+    /// No external effect; committed results are reused and pending work may retry.
+    ReplaySafe,
+    /// Unverified side effect. An executing attempt without a committed result is uncertain.
+    #[default]
+    Unsafe,
+    /// Reserved for services that verify a stable effect key; currently treated as unsafe.
+    IdempotentExternal,
+}
+
 // ---------------------------------------------------------------------------
 // Tool trait
 // ---------------------------------------------------------------------------
@@ -20,6 +34,12 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters(&self) -> serde_json::Value;
+
+    /// Durable execution recovery classification. Unknown interrupted side
+    /// effects default to unsafe and must never be replayed automatically.
+    fn recovery_policy(&self) -> RecoveryPolicy {
+        RecoveryPolicy::Unsafe
+    }
 
     /// Execute and return final result (non-streaming).
     async fn execute(
@@ -627,6 +647,9 @@ impl Tool for ReadTool {
     }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({"type":"object","properties":{"file_path":{"type":"string","description":"Path to the file to read"},"offset":{"type":"integer","description":"1-based line number to start reading from (default: 1)"},"limit":{"type":"integer","description":"Maximum number of lines to read (default: all)"}},"required":["file_path"]})
+    }
+    fn recovery_policy(&self) -> RecoveryPolicy {
+        RecoveryPolicy::ReplaySafe
     }
     async fn execute(
         &self,

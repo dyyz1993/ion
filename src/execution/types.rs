@@ -2,6 +2,26 @@ use serde::{Deserialize, Serialize};
 
 pub const TERMINAL_RUN_STATES: [&str; 3] = ["succeeded", "failed", "cancelled"];
 
+#[derive(Clone, Debug)]
+pub struct ToolCheckpoint {
+    pub task_id: String,
+    pub logical_key: String,
+    pub name: String,
+    pub call_id: String,
+    pub arguments: serde_json::Value,
+    pub policy: crate::agent::tool::RecoveryPolicy,
+}
+
+#[derive(Clone, Debug)]
+pub struct AttemptLease {
+    pub task_id: String,
+    pub attempt_id: String,
+    pub attempt_no: i64,
+    pub host_epoch: i64,
+    pub generation: i64,
+    pub fence: i64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExecutionCursor {
     pub store_id: String,
@@ -55,4 +75,11 @@ pub struct ResumeReceipt {
 pub struct EventPage {
     pub cursor: ExecutionCursor,
     pub events: Vec<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ToolOutcome {
+    pub task_id: String,
+    pub success: bool,
+    pub output: String,
 }
