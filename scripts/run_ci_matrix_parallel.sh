@@ -64,11 +64,19 @@ fi
 RUN_ROOT="${CI_RUN_ROOT:-/tmp/ci-matrix-$(date +%Y%m%d-%H%M%S)-$$}"
 CI_BIN_DIR="$RUN_ROOT/bin"
 CI_RESULTS_DIR="$RUN_ROOT/results"
+# 嵌套标记：外层 runner export CI_BIN_DIR 给脚本；自测脚本里再跑 runner 时
+# 环境里已有它 → 内层不写 /tmp/ci-matrix-latest 指针（见下方写入守卫）
+CI_BIN_DIR_WAS_SET="${CI_BIN_DIR:+yes}"
 mkdir -p "$CI_BIN_DIR" "$CI_RESULTS_DIR" "$RUN_ROOT/out"
 echo "  Run root: $RUN_ROOT"
 export RUN_ROOT CI_BIN_DIR CI_RESULTS_DIR
 # Machine-local pointer for CI artifact upload (best effort; see ci.yml).
-echo "$RUN_ROOT" > /tmp/ci-matrix-latest
+# 嵌套 runner（自测脚本内跑的）不写——会覆盖外层指针指向已删除的内层 root，
+# 外层 upload 步骤上传空路径（r14/r15 "no valid artifacts" 根因）。外层判定：
+# 环境里没有 CI_BIN_DIR（外层 runner 会 export 它给脚本）。
+if [ -z "${CI_BIN_DIR_WAS_SET:-}" ]; then
+    echo "$RUN_ROOT" > /tmp/ci-matrix-latest
+fi
 
 # ─── Preflight: run the REAL cargo baseline once, stamp the tree ───────────
 # Every later build/check/clippy/fmt claim by scripts is backed by this real
@@ -333,6 +341,12 @@ run_one_script() {
     rm -rf "$home_dir" "$work_dir"
 
     echo "  $status $bn (exit=$exit_code, ${dur}s)"
+    # 失败脚本日志尾回显到 job log——artifact 链路故障时唯一的现场
+    # （r14/r15 artifact 曾整体缺失，逐脚本日志只能在这里看到）
+    if [ "$status" = "FAIL" ]; then
+        echo "  ── $bn 日志尾（最后 15 行）──"
+        tail -15 "$log" 2>/dev/null | sed 's/^/    /'
+    fi
 }
 export -f run_one_script
 export PER_SCRIPT_TIMEOUT REAL_CARGO PROJECT_DIR
