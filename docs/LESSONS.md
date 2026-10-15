@@ -102,6 +102,11 @@ ION 的错题本：复盘**已合并/已修复**的工作——返工的、不�
 - 证据：本 commit（脚本增 `escapes_repo` 排除 + 环境专属链接改内联码）；CI 失败记录 gh run 38577387691（[FAIL] 三条）。
 - Seen 1× (2026-10-15)
 
+**跨平台测试不得把大缓冲塞进单个 argv——Linux MAX_ARG_STRLEN 128KB/参数、macOS 宽松，本地绿 CI（Linux）红；大输入走 stdin 或临时文件。**
+- Before, `write_file_commands_contract` 把 267KB 的 base64 拼接串作单个参数传 `sh -c`（macOS 过），CI 报 `ArgumentListTooLong`（1195/1196 唯一红）；生产侧 `WRITE_FILE_CHUNK_B64=32KB` 分块本身安全，纯测试 bug。
+- 证据：CI run 38681215820；修复 = 改 stdin 喂 `base64 -d`（本 commit，验证语义不变）；与同日两条（链接守卫路径、工具链漂移）构成"本地绿≠CI 绿"三件族。
+- Seen 1× (2026-10-15)
+
 **改命令签名（新增必填参数）必须同步 u16 全覆盖冒烟表——无参冒烟表与签名漂移会红得无声（直推只跑 lib 测试，集成测试仅 PR 才跑）。**
 - Before, `fork` 自 `aa38d53`（2026-08-25）变真实现要求 turnId，`u16_all_supported_commands` 无参表红了一个半月无人见——ci.yml 直推 master 只跑 `cargo test --lib`，`cargo test --tests` 仅 pr-gate 跑，直推绕过了它。
 - 证据：u16 失败复现（tests/unit_rpc_test.rs:693 报 "fork: missing param: turnId"，2026-10-14 发现）；修复 = fork 移出无参冒烟 + 专项断言验分发与校验（完整行为归 branch_tree_ci）；缺口对照 `.github/workflows/ci.yml` vs `pr-gate.yml`（`cargo test --tests` 仅后者有；同日 ci.yml 增 integration-tests job 补位）。

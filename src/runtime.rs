@@ -2877,11 +2877,17 @@ mod tests {
             assert!(!chunk.contains('='), "非末段不得含 padding");
         }
 
-        // 拼接后整体可解码还原
+        // 拼接后整体可解码还原。经临时文件喂 base64 -d：joined 约 267KB，作单个
+        // argv 传 sh -c 在 Linux 撞 MAX_ARG_STRLEN（128KB）；同步管道方案又会
+        // stdin/stdout 双向阻塞（200KB 输出撑爆管道缓冲）——文件中转两头都躲开。
+        let tmp =
+            std::env::temp_dir().join(format!("ion-wfc-{}-{}.b64", std::process::id(), line!()));
+        std::fs::write(&tmp, joined.as_bytes()).expect("write joined base64 to tmp");
         let out = std::process::Command::new("sh")
-            .args(["-c", &format!("printf '%s' '{joined}' | base64 -d")])
+            .args(["-c", &format!("base64 -d < '{}'", tmp.display())])
             .output()
             .unwrap();
+        let _ = std::fs::remove_file(&tmp);
         assert!(out.status.success(), "拼接块应可整体解码");
         assert_eq!(out.stdout, big.into_bytes(), "解码结果必须与原文一致");
 
