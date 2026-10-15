@@ -40,12 +40,17 @@ echo "════════════════════════�
 cargo build --bin ion 2>/dev/null && pass "build" || { fail "build"; exit 1; }
 
 # ── Phase 1: 单元测试 ──
-RUST_LOG=error cargo test --lib 2>&1 | grep -q "test result: ok" && pass "cargo test --lib" || fail "cargo test --lib"
+# 全量 lib 已由 ci.yml build-and-test job 在同一 commit 门禁（本脚本在 matrix
+# 分片里再跑一遍只会与并行片抢 cargo 锁，2026-10-15 实测卡 600s）——只保留
+# 本脚本专属的 runtime_tests。
 RUST_LOG=error cargo test --test runtime_tests 2>&1 | grep -q "test result:" && pass "runtime_tests" || fail "runtime_tests"
 
 # ── Phase 2: Manager + Worker ──
 cleanup
 sleep 1; rm -f "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}"
+# 私有 socket：守护 serve 挂默认 socket 会与开发机基线 host 冲突互杀
+export ION_HOST_SOCKET="/tmp/ion-rt-ci-$$.sock"
+rm -f "$ION_HOST_SOCKET"
 "$ION_BIN" serve start > /tmp/ion-ci-rt-host.log 2>&1 &
 MANAGER_PID=$!
 echo "$MANAGER_PID" > "$HOST_PID_FILE"

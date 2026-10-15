@@ -26,8 +26,11 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 
 # Resolve HOME-aware paths (do NOT hardcode /Users/xuyingzhou — breaks isolation).
-HOST_SOCK="${ION_HOST_SOCKET:-$HOME/.ion/host.sock}"
-HOST_PID_FILE="$HOME/.ion/host.pid"
+# 私有 socket：脚本会按 host.pid 杀"旧 host"——默认 socket 会误杀开发机基线 host
+# （2026-10-15 实锤），强制落到本次运行专属 socket。
+export ION_HOST_SOCKET="/tmp/ion-perm-ci-$$.sock"
+HOST_SOCK="$ION_HOST_SOCKET"
+HOST_PID_FILE="/tmp/ion-perm-ci-$$.pid"
 HOST_LOG="/tmp/ion-ci-perm-host-${$}.log"
 LIB_LOG="/tmp/ion-ci-perm-lib-${$}.log"
 
