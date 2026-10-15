@@ -63,10 +63,20 @@ jobs:
         run: cargo test -p ion-provider
 
   # ─── Job 2: CI Matrix (FauxProvider, no real LLM) ─────────────────
+  # 🔴 此前的 "~30 分钟神秘取消" 根因就是本 job 的 timeout-minutes: 30——
+  # GitHub job 超时的 conclusion 是 "cancelled"（不是 failure），加上我曾把
+  # 45→90 的修改误落到 integration-tests 头上，双重误导排查成"外部干预"。
+  # 现已正确设 90，并分片 ×2 并行（strategy.matrix）把每片压到 ~15 分钟。
+  # 预检降为 build-only：clippy/fmt/lib/provider 已由 build-and-test 在
+  # 同一 commit 门禁过（needs 链保证）。
   ci-matrix:
     runs-on: ubuntu-latest
     needs: build-and-test
-    timeout-minutes: 30
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
     steps:
       - uses: actions/checkout@v4
 
@@ -88,18 +98,18 @@ jobs:
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Build ion binary
-        run: cargo build --bin ion
-
-      - name: Run CI Matrix (parallel + serial)
+      - name: Run CI Matrix shard ${{ matrix.shard }}
         run: |
           chmod +x scripts/run_ci_matrix_parallel.sh
           bash scripts/run_ci_matrix_parallel.sh
         env:
-          # GitHub runner 资源远小于开发机：5 路并行实测 OOM（serve 被内核
-          # SIGKILL 连坐邻居脚本，run 38695602172），降到 2。
-          PARALLELISM: 2
+          # 2 片 × P3 = 峰值 6 并发脚本；泄漏守护进程已被 runner 逐脚本清扫
+          # （早期 P5 OOM 的根因是泄漏积累，run 38695602172）。
+          PARALLELISM: 3
           PER_SCRIPT_TIMEOUT: 600
+          SHARD_COUNT: 2
+          SHARD_INDEX: ${{ matrix.shard }}
+          PREFLIGHT_CMDS: "cargo build --bin ion --locked"
 
       - name: Record run root
         if: always()
@@ -107,18 +117,18 @@ jobs:
           ROOT=$(cat /tmp/ci-matrix-latest 2>/dev/null || true)
           echo "CI_RUN_ROOT=${ROOT:-/tmp/ci-matrix-none}" >> $GITHUB_ENV
 
-      - name: Upload CI results
+      - name: Upload CI results (shard ${{ matrix.shard }})
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ci-results
+          name: ci-results-s${{ matrix.shard }}
           path: ${{ env.CI_RUN_ROOT }}/results/
 
-      - name: Upload CI logs
+      - name: Upload CI logs (shard ${{ matrix.shard }})
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ci-logs
+          name: ci-logs-s${{ matrix.shard }}
           path: ${{ env.CI_RUN_ROOT }}/out/
 
   # ─── Job 2.5: Integration tests (tests/*.rs on direct pushes) ────
@@ -131,7 +141,8 @@ jobs:
   integration-tests:
     runs-on: ubuntu-latest
     needs: build-and-test
-    # P=2（防 OOM）下 91 脚本实测超 45 分钟被 job 级超时取消（run 38707119960）
+    # 48 个集成二进制 + 全量 lib 重跑，冷缓存实测 ~10-15 分钟；90 上限留余量
+    # （此前 45→90 的修改本意是给 ci-matrix 的，误落到这里——2026-10-15 勘误）
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4

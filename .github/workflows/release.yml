@@ -29,7 +29,57 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # ─── 全绿门：触发 commit 的 ci.yml run 必须 100% success 才允许打包 ───
+  # "以 Git CI commit 为主，百分百绿才发版"的硬约束实现。查 tag 指向 commit
+  # 的最新 ci.yml run：不存在（CI 没跑过/还在跑）或任一 job 非 success → 拒绝。
+  verify-ci-green:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Require all ci.yml jobs green on ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # 轮询等该 commit 的 ci.yml run 出现并完成（tag 通常在 CI 全绿后才打，
+          # 这里兜底等待刚 push 的场景；上限 20 分钟）
+          RUN_ID=""
+          for i in $(seq 1 40); do
+            RUN_ID=$(gh api "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?head_sha=${{ github.sha }}" \
+              --jq '[.workflow_runs[] | select(.status=="completed")] | sort_by(.run_number) | last | .id // empty' || true)
+            [ -n "$RUN_ID" ] && break
+            echo "  ci.yml run for this commit not completed yet, waiting... ($i/40)"
+            sleep 30
+          done
+          if [ -z "$RUN_ID" ]; then
+            echo "❌ no completed ci.yml run for commit ${{ github.sha }} — refusing to release"
+            exit 1
+          fi
+          echo "  ci.yml run: $RUN_ID"
+          CONCL=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID" --jq .conclusion)
+          if [ "$CONCL" != "success" ]; then
+            echo "❌ ci.yml run $RUN_ID conclusion=$CONCL (need success) — refusing to release"
+            gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID/jobs" \
+              --jq '.jobs[] | "  \(.conclusion // .status)\t\(.name)"'
+            exit 1
+          fi
+          # run 级 success 之外再逐 job 复核（cancelled/skipped 的 job 可能被
+          # run 级 success 掩盖的边界情形，宁可误杀不可漏放）
+          BAD=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID/jobs" \
+            --jq '[.jobs[] | select(.conclusion != "success")] | length')
+          if [ "$BAD" != "0" ]; then
+            echo "❌ $BAD ci.yml job(s) not success — refusing to release:"
+            gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID/jobs" \
+              --jq '.jobs[] | select(.conclusion != "success") | "  \(.conclusion // .status)\t\(.name)"'
+            exit 1
+          fi
+          echo "✅ all ci.yml jobs green on ${{ github.sha }} — release allowed"
+
   build-and-release:
+    needs: verify-ci-green
     # 在 ubuntu-22.04 runner（充足、不排队）里跑 ubuntu:20.04 容器，
     # 编出的二进制依赖 glibc 2.31，兼容 Ubuntu 20.04+ / Debian 11+。
     runs-on: ubuntu-22.04

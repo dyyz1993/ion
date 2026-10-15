@@ -194,6 +194,23 @@ for s in $ALL_SCRIPTS; do
 done
 
 TOTAL=$(echo "$FILTERED" | wc -w | tr -d ' ')
+
+# ── 分片（SHARD_INDEX 0-based / SHARD_COUNT）：round-robin 均分脚本列表 ──
+# ci.yml 用 strategy.matrix 起多个分片 job 并行，把整跑墙钟压进 ~30 分钟
+# 窗口（matrix job 曾连续被外部取消于 ~30min 处，跑完的 run 无法被取消）。
+# round-robin（而非连续切）让 SERIAL_LIST 尾部脚本均匀散到各片。
+if [ "${SHARD_COUNT:-1}" -gt 1 ]; then
+    IDX="${SHARD_INDEX:-0}"
+    SHARDED=""
+    i=0
+    for s in $FILTERED; do
+        if [ $((i % SHARD_COUNT)) -eq "$IDX" ]; then SHARDED="$SHARDED $s"; fi
+        i=$((i + 1))
+    done
+    FILTERED="$SHARDED"
+    TOTAL=$(echo "$FILTERED" | wc -w | tr -d ' ')
+    echo "  Shard $IDX/$SHARD_COUNT: $TOTAL scripts"
+fi
 SKIP_CNT=$(echo "$SKIPPED" | wc -w | tr -d ' ')
 echo "  Total scripts: $TOTAL (skipped: $SKIP_CNT)"
 echo ""
