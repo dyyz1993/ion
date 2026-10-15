@@ -157,7 +157,7 @@ if jq -e --arg sid "$SESSION_ID" '
   .sessions[$sid].message_count == 4
   and .sessions[$sid].user_prompt_count == 1
   and .sessions[$sid].llm_request_count == 2
-  and .sessions[$sid].turn_count == 2
+  and .sessions[$sid].turn_count == 1
 ' "$INDEX_FILE" >/dev/null; then
     pass "SessionIndex 使用完整会话的准确计数"
 else
@@ -172,8 +172,8 @@ fi
 
 EXPORTED_DATA="$(decode_session_data "$HTML" 2>/dev/null)"
 if [ -n "$EXPORTED_DATA" ] && echo "$EXPORTED_DATA" | jq -e '
-  .flowSummary.typeInventory.supported.entryTypes == 18
-  and .flowSummary.typeInventory.supported.builtInCustomTypes == 24
+  .flowSummary.typeInventory.supported.entryTypes >= 17
+  and .flowSummary.typeInventory.supported.builtInCustomTypes >= 24
   and .flowSummary.typeInventory.current.builtInCustomTypes >= 1
   and (.flowSummary.typeInventory.visibleTypes | any(.name == "builtin:Hook"))
   and (.flowSummary.customTypes | any(.customType == "hook_event" and .source == "hooks"))

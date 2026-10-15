@@ -40,6 +40,8 @@ cd "$PROJECT_DIR"
 TEST_PROJECT="/tmp/ion-perm-store-test-$$"
 rm -rf "$TEST_PROJECT"
 mkdir -p "$TEST_PROJECT/.ion"
+# A3 用 git status 验证自动放行——会话 cwd 必须是 git 仓库（否则 git 本身 128）
+git init -q "$TEST_PROJECT" 2>/dev/null
 
 echo "════════════════════════════════════════════════════"
 echo "  ION Stored-Decision Permission CI Test"

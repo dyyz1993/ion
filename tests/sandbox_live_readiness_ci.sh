@@ -84,7 +84,14 @@ echo "═ Phase C: --check 判定（本地 listener 模拟可达端点 → 按�
 LP=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
 python3 -c "import socket,time; s=socket.socket(); s.bind(('127.0.0.1',$LP)); s.listen(5); time.sleep(120)" &
 LISTEN_PID=$!
-sleep 1
+# 轮询等 listener 真正 accept——固定 sleep 1 在慢 CI 上 python 还没 bind 完
+# （run 38750756657 C2/C3 假红：TCP 不可达被如实标注）
+for _ in $(seq 1 20); do
+    if python3 -c "import socket; s=socket.create_connection(('127.0.0.1',$LP),timeout=1)" 2>/dev/null; then
+        break
+    fi
+    sleep 0.5
+done
 CHK2_OUT=$(HOME="$B_HOME" ION_BIN="$DUMMY_ION" RW_HOST="127.0.0.1" RW_PORT="$LP" \
   bash "$READY" --check 2>&1); CR2=$?
 check $CR2 "C1 --check（可达端点）退出 0"
