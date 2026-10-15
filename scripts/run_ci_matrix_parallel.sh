@@ -61,12 +61,12 @@ fi
 # ─── Per-run isolation root + trusted cargo baseline (preflight) ──────────
 # Every run gets its own directory tree so two concurrent matrix runs (or a
 # crashed leftover) cannot clobber each other via shared /tmp/ci-* names.
+# 嵌套标记：外层 runner export CI_BIN_DIR 给脚本。必须在下方覆盖赋值【前】
+# 捕获原始环境值（曾把覆盖后的值当判断源——恒非空，顶层也误判嵌套，B6 抓到）
+NESTED_WAS_SET="${CI_BIN_DIR:+yes}"
 RUN_ROOT="${CI_RUN_ROOT:-/tmp/ci-matrix-$(date +%Y%m%d-%H%M%S)-$$}"
 CI_BIN_DIR="$RUN_ROOT/bin"
 CI_RESULTS_DIR="$RUN_ROOT/results"
-# 嵌套标记：外层 runner export CI_BIN_DIR 给脚本；自测脚本里再跑 runner 时
-# 环境里已有它 → 内层不写 /tmp/ci-matrix-latest 指针（见下方写入守卫）
-CI_BIN_DIR_WAS_SET="${CI_BIN_DIR:+yes}"
 mkdir -p "$CI_BIN_DIR" "$CI_RESULTS_DIR" "$RUN_ROOT/out"
 echo "  Run root: $RUN_ROOT"
 export RUN_ROOT CI_BIN_DIR CI_RESULTS_DIR
@@ -74,7 +74,7 @@ export RUN_ROOT CI_BIN_DIR CI_RESULTS_DIR
 # 嵌套 runner（自测脚本内跑的）不写——会覆盖外层指针指向已删除的内层 root，
 # 外层 upload 步骤上传空路径（r14/r15 "no valid artifacts" 根因）。外层判定：
 # 环境里没有 CI_BIN_DIR（外层 runner 会 export 它给脚本）。
-if [ -z "${CI_BIN_DIR_WAS_SET:-}" ]; then
+if [ -z "$NESTED_WAS_SET" ]; then
     echo "$RUN_ROOT" > /tmp/ci-matrix-latest
 fi
 
