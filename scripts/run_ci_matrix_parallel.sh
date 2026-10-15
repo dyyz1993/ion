@@ -268,7 +268,7 @@ run_one_script() {
     # 秒败，且被 runner 的 "command not found" 过滤掩盖——2026-10-15 CI 47 脚本
     # 连败即 ion-protocol 未链接，六周 CI 盲区内无人察觉）。
     for member in tests-extensions extensions permission dashboard \
-                  ion-dashboard-ui docs scripts webui; do
+                  ion-dashboard-ui docs scripts webui schemas; do
         [ -d "$PROJECT_DIR/$member" ] && ln -sfn "$PROJECT_DIR/$member" "$work_dir/$member"
     done
 

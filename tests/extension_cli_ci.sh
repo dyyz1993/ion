@@ -217,6 +217,11 @@ else
 fi
 
 WASM_PATH="$CREATE_DIR/ci-hello/target/wasm32-wasip1/release/ci_hello.wasm"
+# matrix runner 设了全局 CARGO_TARGET_DIR → scaffold 产物改道工作区 target
+# （与 wasm_extension_tests 的双位置探测同款）
+if [ ! -f "$WASM_PATH" ]; then
+    WASM_PATH="$PROJECT_DIR/target/wasm32-wasip1/release/ci_hello.wasm"
+fi
 if [ -f "$WASM_PATH" ]; then
     pass "E4: scaffold 产物名称与安装提示一致"
 else

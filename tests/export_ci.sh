@@ -255,7 +255,8 @@ printf '%s\n' \
     '{"type":"custom","id":"snap-1","parentId":"m2","timestamp":"2026-08-08T08:00:03Z","customType":"step-snapshot","data":{"baselineTreeHash":"tree0","snapshotTreeHash":"tree1","toolSnapshotTurnId":"ts-1","turnIndex":1,"diff":{"added":["src/a.rs"],"modified":[],"deleted":[]}}}' \
     > "$TS_SESSION_FILE"
 
-HTML_B=$(mktemp -t export_ci_B).html
+# GNU mktemp -t 模板必须含 XXXXXX（BSD 无此要求）——CI 上 "too few X's" 报错
+HTML_B="$TS_SESSION_ROOT/export_ci_B.html"
 ION_SESSION_DIR="$TS_SESSION_ROOT" \
     "$ION_BIN" --export "$HTML_B" --session snapshot_visible 2>&1 | grep -q "Exported" && \
     pass "B1 export 含 step-snapshot 的 session" || fail "B1 export 失败"

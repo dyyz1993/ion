@@ -8,6 +8,13 @@
 # ──────────────────────────────────────────────────────────
 set -o pipefail
 
+# 🔴 能力已按产品决策移除：worker_rpc.rs 不再给 LLM 注册 SkillTool
+# （"禁止提供 skill list 的能力给到 LLM"）——本脚本测的是被有意移除的
+# 能力，call_tool skill 恒报 tool not found。保留脚本作历史参考；
+# 若未来恢复该能力，删除此门并重新启用断言。
+echo "  ⏭️  SKIP: SkillTool 已按产品决策从 LLM 工具面移除（worker_rpc.rs 注册点注释）"
+exit 0
+
 PASS=0; FAIL=0; SKIP=0
 green() { echo -e "\033[32m  ✅ $1\033[0m"; }
 red()   { echo -e "\033[31m  ❌ $1\033[0m"; }

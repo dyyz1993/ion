@@ -82,11 +82,17 @@ echo "═══ 2. SettingsChanged 事件（set_permission_mode/set_model/set_th
 echo "═══ 3. failures[]（approve_all 响应） ═══"
 [ -n "$SID" ] && {
   R=$(rpc review_approve_all "$SID")
-  echo "$R" | python3 -c "
+  # 审批管理器按需接线：无审批活动的会话返回 {error:"approval not enabled"}
+  # （统一审批总线后的合法态，2026-09-16 修复批 7）——此时跳过而非失败
+  echo "$R" | grep -q "approval not enabled" \
+    && skip "approval manager 未启用（无审批活动的会话）" \
+    || {
+    echo "$R" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)['data']
 exit(0 if 'failures' in d else 1)" 2>/dev/null \
-    && ok "approve_all 响应含 failures[]" || bad "approve_all 响应缺 failures[]"
+      && ok "approve_all 响应含 failures[]" || bad "approve_all 响应缺 failures[]"
+    }
 } || skip "无 session"
 
 echo "═══ 4. memory LIMIT + unarchive ═══"
