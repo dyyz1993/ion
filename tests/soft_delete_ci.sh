@@ -77,14 +77,18 @@ fi
 echo ""
 echo "── Phase 4: 全量 lib 测试 ──"
 
-FULL_RESULT=$(cargo test --lib 2>&1 | grep "test result:" | tail -1)
+# 保存首次完整输出——CI 上的 1 failed 是 flake，重跑第二次抓不到（此前
+# 失败用例名恒空的根因，run 38746153347）
+TEST_ROOT="$(mktemp -d /tmp/ion-softdel-XXXXXX)"
+FULL_LOG="$TEST_ROOT/lib_test_full.log"
+cargo test --lib > "$FULL_LOG" 2>&1
+FULL_RESULT=$(grep "test result:" "$FULL_LOG" | tail -1)
 if echo "$FULL_RESULT" | grep -q "0 failed"; then
     TOTAL=$(echo "$FULL_RESULT" | grep -oE "[0-9]+ passed" | grep -oE "[0-9]+")
     pass "D1 全量 lib 测试通过 ($TOTAL tests, 0 failed)"
 else
-    # 捕获失败用例名——CI 上 1197/1 的 flake 曾无法定位（run 38737109559）
-    FAILED_NAMES=$(cargo test --lib 2>&1 | sed -n '/^failures:/,/^$/p' | grep "^    " | head -5 | tr '\n' ' ')
-    fail "D1 全量 lib 测试有失败: $FULL_RESULT | failed: $FAILED_NAMES"
+    FAILED_NAMES=$(sed -n '/^failures:/,/^$/p' "$FULL_LOG" | grep "^    " | head -5 | tr '\n' ' ')
+    fail "D1 全量 lib 测试有失败: $FULL_RESULT | failed: $FAILED_NAMES | log: $FULL_LOG"
 fi
 
 echo ""

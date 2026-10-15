@@ -103,9 +103,10 @@ jobs:
           chmod +x scripts/run_ci_matrix_parallel.sh
           bash scripts/run_ci_matrix_parallel.sh
         env:
-          # 2 片 × P3 = 峰值 6 并发脚本；泄漏守护进程已被 runner 逐脚本清扫
-          # （早期 P5 OOM 的根因是泄漏积累，run 38695602172）。
-          PARALLELISM: 3
+          # P2：soft_delete 在片内并发跑全量 lib（rustc 内存尖峰）时，P3 实测
+          # OOM 杀掉邻近脚本的 serve 守护（rpc_event_push host 失联，
+          # run 38746153347）。2 片 × P2 = 峰值 4 并发，稳。
+          PARALLELISM: 2
           PER_SCRIPT_TIMEOUT: 600
           SHARD_COUNT: 2
           SHARD_INDEX: ${{ matrix.shard }}
