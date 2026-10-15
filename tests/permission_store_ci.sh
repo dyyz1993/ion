@@ -180,7 +180,7 @@ fi
 # （stored allow 规则命中 → before_tool_call 放行）
 OUT=$(quiet "$ION_BIN" rpc --session "$SID" --method call_tool \
   --params '{"tool":"bash","args":{"command":"git status"}}')
-if echo "$OUT" | grep -q '"success": true\|"success":true'; then
+if echo "$OUT" | grep -q '"success":true\|"success":true'; then
     pass "A3 自动放行: git status (stored allow 生效)"
 else
     fail "A3 自动放行: git status (OUT=$OUT)"

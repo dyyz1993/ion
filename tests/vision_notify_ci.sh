@@ -19,6 +19,21 @@ PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); echo "✅ $1"; }
 bad() { FAIL=$((FAIL+1)); echo "❌ $1"; }
 
+# ⚠️ 本脚本是真实 LLM 视觉 e2e：前置 = ion serve 运行中 + 视觉模型
+# （zai/glm-5.3-flash）。CI 环境两者皆无 → 诚实 SKIP（绿）；本地按
+# ION_CI_MODEL/ION_CI_PROVIDER 覆盖后真跑。
+REAL_PROVIDER=$(python3 -c "
+import json,sys
+try:
+    cfg = json.load(open('$HOME/.ion/config.json'))
+    p = cfg.get('default_provider') or ''
+    print(p if p and p != 'faux' else '')
+except Exception: print('')" 2>/dev/null)
+if [ -z "$REAL_PROVIDER" ]; then
+    echo "  ⏭️  SKIP: 真实 LLM 视觉 e2e 需要 serve + 视觉 provider（当前 HOME 未配置）"
+    exit 0
+fi
+
 # ── socket RPC 助手（每连接一行命令，按 id 拣包）──
 rpc() { # rpc <id> <method> <session-or-empty> <params-json> [timeout]
   python3 - "$1" "$2" "$3" "$4" "${5:-150}" << 'PYEOF'
@@ -54,10 +69,10 @@ PYEOF
 
 # ── 会话 JSONL 尾部 N 行 ──
 tail_entries() { # tail_entries <sid>
-  python3 - "$1" << 'PYEOF'
+  python3 - "$1" "${HOME}/.ion/agent/sessions" << 'PYEOF'
 import glob, sys, json
 sid = sys.argv[1]
-fs = glob.glob(f'/Users/xuyingzhou/.ion/agent/sessions/*/{sid}.jsonl')
+fs = glob.glob(f'{sys.argv[2]}/*/{sid}.jsonl')
 if not fs:
     print("[]")
 else:
@@ -162,7 +177,7 @@ try:
 except Exception as e:
     print('索引清理失败:', e)
 for pat in ('sess_ci_vis_*', 'sess_ci_ntf_*', 'sess_ci_fu_*'):
-    for f in glob.glob(f'/Users/xuyingzhou/.ion/agent/sessions/*/{pat}.jsonl'):
+    for f in glob.glob(os.environ.get('HOME', '') + '/.ion/agent/sessions/*/' + pat + '.jsonl'):
         os.remove(f)
 print('已清理 CI 会话')
 PYEOF

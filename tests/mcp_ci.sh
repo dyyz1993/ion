@@ -79,7 +79,7 @@ cat > "$TEST_HOME/.ion/config.json" <<'EOF'
 EOF
 start_host
 OUT=$(rpc get_mcp_servers)
-if echo "$OUT" | grep -q '"success": true\|"success":true'; then
+if echo "$OUT" | grep -q '"success":true\|"success":true'; then
     if echo "$OUT" | grep -q '"data": \[\]\|"data":\[\]'; then
         pass "A1: 空配置 get_mcp_servers 返回空数组"
     else
@@ -206,7 +206,7 @@ start_host
 
 # B1: toggle 关闭（已经是 disabled，再关一次）
 OUT=$(rpc mcp_toggle_server '{"name":"toggle-test","enabled":false}')
-if echo "$OUT" | grep -q '"success": true\|"success":true'; then
+if echo "$OUT" | grep -q '"success":true\|"success":true'; then
     pass "B1: toggle 关闭 toggle-test"
 else
     fail "B1: toggle 关闭失败"
@@ -215,7 +215,7 @@ fi
 
 # B3: toggle 不存在的 server
 OUT=$(rpc mcp_toggle_server '{"name":"ghost","enabled":true}')
-if echo "$OUT" | grep -q '"success": false\|"success":false'; then
+if echo "$OUT" | grep -q '"success":false\|"success":false'; then
     pass "B2: toggle 不存在 server 报错"
 else
     fail "B2: 应报错 unknown mcp server"
@@ -223,7 +223,7 @@ fi
 
 # B4: 缺 enabled 参数
 OUT=$(rpc mcp_toggle_server '{"name":"toggle-test"}')
-if echo "$OUT" | grep -q '"success": false\|"success":false'; then
+if echo "$OUT" | grep -q '"success":false\|"success":false'; then
     pass "B3: 缺 enabled 参数报错"
 else
     fail "B3: 应报错 missing enabled"
@@ -235,7 +235,7 @@ echo "Group C: restart"
 
 # C1: restart（server 用不存在的命令，restart 会尝试连接→失败→status:error）
 OUT=$(rpc mcp_restart_server '{"name":"toggle-test"}')
-if echo "$OUT" | grep -q '"success": true\|"success":true\|"status"\|"error"'; then
+if echo "$OUT" | grep -q '"success":true\|"success":true\|"status"\|"error"'; then
     pass "C1: restart toggle-test（返回状态）"
 else
     fail "C1: restart 失败"
@@ -244,7 +244,7 @@ fi
 
 # C2: restart 不存在的 server
 OUT=$(rpc mcp_restart_server '{"name":"ghost"}')
-if echo "$OUT" | grep -q '"success": false\|"success":false\|"error"'; then
+if echo "$OUT" | grep -q '"success":false\|"success":false\|"error"'; then
     pass "C2: restart 不存在 server 报错"
 else
     fail "C2: 应报错"
@@ -321,7 +321,7 @@ EOF
 
     # E3: 工具调用 echo
     OUT=$(rpc call_tool '{"tool":"mcp__everything__echo","args":{"message":"ci-test"}}')
-    if echo "$OUT" | grep -q '"success": true\|"success":true'; then
+    if echo "$OUT" | grep -q '"success":true\|"success":true'; then
         OUTPUT_TEXT=$(echo "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',{}).get('output','')[:50])" 2>/dev/null)
         if echo "$OUTPUT_TEXT" | grep -q "ci-test"; then
             pass "E3: echo 工具调用成功（返回含输入消息）"
@@ -335,7 +335,7 @@ EOF
 
     # E4: 工具调用 get-sum（验证参数传递）
     OUT=$(rpc call_tool '{"tool":"mcp__everything__get-sum","args":{"a":7,"b":3}}')
-    if echo "$OUT" | grep -q '"success": true\|"success":true'; then
+    if echo "$OUT" | grep -q '"success":true\|"success":true'; then
         pass "E4: get-sum 工具调用成功（参数传递正确）"
     else
         fail "E4: get-sum 工具调用失败"
@@ -390,7 +390,7 @@ print(len(mcp))" 2>/dev/null)
 
     # F3: Worker 通过 bridge 代理调用 MCP 工具（不直连 server）
     OUT=$(rpc call_tool '{"tool":"mcp__everything__echo","args":{"message":"proxy-test"}}')
-    if echo "$OUT" | grep -q '"success": true\|"success":true'; then
+    if echo "$OUT" | grep -q '"success":true\|"success":true'; then
         OUTPUT_TEXT=$(echo "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',{}).get('output','')[:50])" 2>/dev/null)
         if echo "$OUTPUT_TEXT" | grep -q "proxy-test"; then
             pass "F3: bridge 代理调用 echo 成功（返回含 proxy-test）"
@@ -487,7 +487,7 @@ EOF
     OUT=$(rpc call_tool '{"tool":"mcp__everything__echo","args":{"message":"blocked"}}')
     if echo "$OUT" | grep -q "denied\|Permission\|permission"; then
         pass "H1: mcp__everything__echo 被 permission Deny 拦截"
-    elif echo "$OUT" | grep -q '"success": false\|"success":false'; then
+    elif echo "$OUT" | grep -q '"success":false\|"success":false'; then
         pass "H1: echo 被拦截（success=false）"
     else
         pass "H1: echo 权限规则已配置（direct call_tool 绕过 permission — 权限只在 agent loop 生效）"
@@ -496,7 +496,7 @@ EOF
 
     # H2: 未禁用的工具正常（get-sum）
     OUT=$(rpc call_tool '{"tool":"mcp__everything__get-sum","args":{"a":1,"b":2}}')
-    if echo "$OUT" | grep -q '"success": true\|"success":true'; then
+    if echo "$OUT" | grep -q '"success":true\|"success":true'; then
         pass "H2: mcp__everything__get-sum 不受影响（未禁用）"
     else
         fail "H2: get-sum 应正常"
@@ -582,7 +582,7 @@ print(len(s.get('prompts',[])))" 2>/dev/null)
     # 检查 host 的 process_pending_commands 有 mcp_read_resource 命令（间接验证）
     # 通过 call_tool 的 bridge 代理验证 MCP 连接仍然工作
     OUT=$(rpc call_tool '{"tool":"mcp__everything__echo","args":{"message":"res-test"}}')
-    if echo "$OUT" | grep -q '"success": true\|"success":true'; then
+    if echo "$OUT" | grep -q '"success":true\|"success":true'; then
         pass "I3: resources 发现后 MCP 工具调用仍正常"
     else
         fail "I3: MCP 工具调用异常"
@@ -678,7 +678,7 @@ EOF
 
     # 读一个 resource（server-everything 有 demo://resource/static/document/architecture）
     OUT=$(rpc mcp_read_resource '{"server":"everything","uri":"demo://resource/static/document/architecture.md"}')
-    if echo "$OUT" | grep -q '"success": true\|"success":true'; then
+    if echo "$OUT" | grep -q '"success":true\|"success":true'; then
         CONTENT=$(echo "$OUT" | python3 -c "
 import sys,json; d=json.load(sys.stdin)
 print(d.get('data',{}).get('content','')[:30])" 2>/dev/null)
@@ -698,7 +698,7 @@ print(d.get('data',{}).get('content','')[:30])" 2>/dev/null)
     echo '{}' > "$TEST_HOME/.ion/config.json"
     start_host
     OUT=$(rpc mcp_reload)
-    if echo "$OUT" | grep -q '"success": true\|"success":true'; then
+    if echo "$OUT" | grep -q '"success":true\|"success":true'; then
         pass "J3: mcp_reload 不崩溃（host 无 mcp_manager 时自动创建）"
     else
         fail "J3: mcp_reload 崩溃"

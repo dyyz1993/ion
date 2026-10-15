@@ -68,14 +68,14 @@ rpc() { "$ION_BIN" rpc --session "$SID" --method call_tool --params "$1" 2>/dev/
 echo ""; echo "═══ Group A: LocalRuntime ═══"
 
 OUT=$(rpc '{"tool":"bash","args":{"command":"echo hello-rt"}}')
-echo "$OUT" | grep -q '"success": true' && pass "A1: bash echo" || fail "A1: bash echo"
+echo "$OUT" | grep -q '"success":true' && pass "A1: bash echo" || fail "A1: bash echo"
 
 echo "test-content" > /tmp/ion-rt-test.txt
 OUT=$(rpc '{"tool":"read","args":{"file_path":"/tmp/ion-rt-test.txt"}}')
-echo "$OUT" | grep -q '"success": true' && pass "A2: read file" || fail "A2: read file"
+echo "$OUT" | grep -q '"success":true' && pass "A2: read file" || fail "A2: read file"
 
 OUT=$(rpc '{"tool":"write","args":{"file_path":"/tmp/ion-rt-write.txt","content":"ok"}}')
-echo "$OUT" | grep -q '"success": true' && pass "A3: write file" || fail "A3: write file"
+echo "$OUT" | grep -q '"success":true' && pass "A3: write file" || fail "A3: write file"
 
 OUT=$(rpc '{"tool":"bash","args":{"command":"rm -rf /"}}')
 echo "$OUT" | grep -q "CommandGuard" && pass "A4: CommandGuard rm -rf" || fail "A4: CommandGuard rm -rf"
@@ -109,7 +109,7 @@ ssh -o ConnectTimeout=2 -o StrictHostKeyChecking=no localhost 'echo ssh-ok' 2>/d
 echo ""; echo "═══ Group D: 组合场景 ═══"
 
 OUT=$(rpc '{"tool":"bash","args":{"command":"echo combo-works"}}')
-echo "$OUT" | grep -q '"success": true' && pass "D1: SecuredRuntime+ LocalRuntime" || fail "D1"
+echo "$OUT" | grep -q '"success":true' && pass "D1: SecuredRuntime+ LocalRuntime" || fail "D1"
 
 OUT=$(rpc '{"tool":"bash","args":{"command":"echo bg-combo","background":true,"description":"ci"}}')
 echo "$OUT" | grep -q "success.*true\|started" && pass "D2: background process" || fail "D2"

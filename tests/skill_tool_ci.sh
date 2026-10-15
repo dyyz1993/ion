@@ -171,7 +171,7 @@ fi
 # S5: fork 模式 — spawn_worker 起子任务（需要 WorkerRuntime，CI FauxProvider host 可能不支持）
 FORK_OUT=$($ION_BIN rpc --session "$SID" --method call_tool \
   --params '{"tool":"skill","args":{"skill_name":"code-review","context":"fork"}}' 2>&1)
-if echo "$FORK_OUT" | grep -qi "executed in fork mode" && echo "$FORK_OUT" | grep -qi '"success": true\|"success":true'; then
+if echo "$FORK_OUT" | grep -qi "executed in fork mode" && echo "$FORK_OUT" | grep -qi '"success":true\|"success":true'; then
     pass "S5: skill fork 执行成功（spawn_worker 起子任务，返回结果）"
 else
     # fork 需要真实 spawn_worker — 在 FauxProvider/CI Matrix 环境下可能不支持

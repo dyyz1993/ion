@@ -202,7 +202,7 @@ echo "── Phase 4: Rule Matching ──"
 # 4a: allow rule — echo hello 应放行
 OUT=$(quiet "$ION_BIN" rpc --session "$SID" --method call_tool --params '{"tool":"bash","args":{"command":"echo hello"}}')
 SUCCESS=$(echo "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('success',''))" 2>/dev/null)
-if [ "$SUCCESS" = "True" ] || echo "$OUT" | grep -q '"success": true'; then
+if [ "$SUCCESS" = "True" ] || echo "$OUT" | grep -q '"success":true'; then
     pass "allow rule: echo hello"
 else
     fail "allow rule: echo hello"
@@ -211,7 +211,7 @@ fi
 
 # 4b: deny rule — read .env 应拒绝
 OUT=$(quiet "$ION_BIN" rpc --session "$SID" --method call_tool --params '{"tool":"read","args":{"file_path":"'"$PROJECT_DIR"'/.env"}}')
-if echo "$OUT" | grep -q '"success": false'; then
+if echo "$OUT" | grep -q '"success":false'; then
     pass "deny rule: read .env (blocked)"
 else
     fail "deny rule: read .env"
@@ -229,7 +229,7 @@ fi
 
 # 4d: 安全命令放行
 OUT=$(quiet "$ION_BIN" rpc --session "$SID" --method call_tool --params '{"tool":"bash","args":{"command":"echo safe"}}')
-if echo "$OUT" | grep -q '"success": true'; then
+if echo "$OUT" | grep -q '"success":true'; then
     pass "safe command: echo safe"
 else
     fail "safe command: echo safe"

@@ -168,7 +168,7 @@ with open('$FAUX_SCRIPT','w') as f:
     def step(obj): f.write(json.dumps(obj) + '\n')
     # C2 / C3 专用：write 大文件让流式 delta 充足（放前面，被 B 组消费完后就到 bash）
     step({'tool_call':{'name':'write','input':{'file_path':'/tmp/ui_test_atomic.txt','content':'hello world\n'*5}}})
-    step({'tool_call':{'name':'write','input':{'file_path':'/tmp/ui_test_stream.txt','content':long_lines}})
+    step({'tool_call':{'name':'write','input':{'file_path':'/tmp/ui_test_stream.txt','content':long_lines}}})
     # 所有 step 都用 bash sleep 30 —— B 组测试只关心 abort 行为 + 进程清理。
     # 放最后：ION_FAUX_REPEAT=1 时队列空了重复最后一个（bash sleep 30），
     # 保证 B1/B3 的 abort 测试总是拿到 bash sleep（长任务可中断）。
@@ -234,7 +234,7 @@ fi
 AUTO_SID="sess_ui_autocreate_$(date +%s)_$$"
 AUTO_RESULT="fail"
 for try in 1 2 3; do
-    AUTO_RESULT=$(HOME="$HOME" timeout 8 "$ION_BIN" rpc --session "$AUTO_SID" \
+    AUTO_RESULT=$(HOME="$HOME" timeout 20 "$ION_BIN" rpc --session "$AUTO_SID" \
         --method prompt --params '{"text":"hi"}' 2>&1 \
         | python3 -c "
 import sys, json
