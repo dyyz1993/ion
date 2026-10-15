@@ -57,16 +57,12 @@ echo "Group B: session 持久化验证"
 # B1: 创建 session → 发消息 → 检查 session 文件存在
 SESSION_ID="sess_compact_ci_$(date +%s)"
 ION_FAUX_REPLY="compaction test ok" ION_FAUX_REPEAT=1 $ION_BIN --session-id "$SESSION_ID" -p "hello world" --model faux-test --provider faux 2>/dev/null || true
-SESSION_FILE=$(find ~/.ion/agent/sessions -name "session.jsonl" -newer /tmp 2>/dev/null | head -1)
+# 布局是 <session_id>.jsonl（per-cwd 哈希子目录），按显式指定的 id 找
+SESSION_FILE=$(find ~/.ion/agent/sessions -name "${SESSION_ID}.jsonl" 2>/dev/null | head -1)
 if [ -n "$SESSION_FILE" ]; then
     pass "B1: session 文件已创建"
 else
-    # Try alternate location
-    if find ~/.ion/agent/sessions -name "session.jsonl" 2>/dev/null | head -1 | grep -q .; then
-        pass "B1: session 文件存在(位置可能不同)"
-    else
-        fail "B1: 未找到 session 文件"
-    fi
+    fail "B1: 未找到 ${SESSION_ID}.jsonl"
 fi
 
 # B2: --continue 恢复最近 session

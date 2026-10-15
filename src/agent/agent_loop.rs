@@ -543,6 +543,15 @@ impl Agent {
             return collected;
         }
 
+        // 无在飞后台任务时立即返回——block-wait 只为等"运行中 bash 后台进程的
+        // 完成通知"，bg_pending==0 意味着所有 watcher 已结束、其消息已被上面的
+        // 即时 drain 收走（watcher 的递减是 RAII Drop，晚于 send）。等满 deadline
+        // 是纯浪费：cmd_run 默认 60s，每次直跑 `ion -p` 白等一分钟才打印回复
+        // （2026-10-15 实测 61s 退出；outer_loop 的 30s 等待在 L1151 有同款门控）。
+        if self.bg_pending.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            return collected;
+        }
+
         // 否则 block-wait 直到 deadline 或收到新消息
         while collected.len() < max_messages.max(1) {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
@@ -1084,22 +1093,6 @@ impl Agent {
         let auto_continue = std::env::var("ION_AUTO_CONTINUE")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
-        // 文件日志（eprintln 去 stderr 文件，不确定能不能看到；直接写 /tmp 调试）
-        let _ = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/tmp/agent_loop_debug.log")
-            .and_then(|mut f| {
-                std::io::Write::write_all(
-                    &mut f,
-                    format!(
-                        "[outer_loop] ENTER auto_continue={} env={}\n",
-                        auto_continue,
-                        std::env::var("ION_AUTO_CONTINUE").unwrap_or_default()
-                    )
-                    .as_bytes(),
-                )
-            });
         let auto_continue_limit = std::env::var("ION_AUTO_CONTINUE_LIMIT")
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
@@ -1107,22 +1100,6 @@ impl Agent {
 
         for outer_i in 0..self.config.max_outer_iterations.max(auto_continue_limit) {
             let reason = self.inner_loop().await?;
-            let _ = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/tmp/agent_loop_debug.log")
-                .and_then(|mut f| {
-                    std::io::Write::write_all(
-                        &mut f,
-                        format!(
-                            "[outer_loop] iter={} reason={:?} queue_len={}\n",
-                            outer_i,
-                            reason,
-                            self.follow_up_queue.len()
-                        )
-                        .as_bytes(),
-                    )
-                });
             match reason {
                 StopReason::Error | StopReason::Aborted => return Ok(()),
                 _ => {}
@@ -3104,6 +3081,63 @@ mod tests {
             .await
             .expect("abort 后下一轮 run 挂起（僵尸 run 回归）");
         assert!(second.is_ok(), "run 2 应正常完成: {second:?}");
+    }
+
+    /// P0 回归（场景 1 尾延迟）：graceful_drain_follow_ups 在无在飞后台任务时
+    /// 必须立即返回。旧实现无视 bg_pending 无条件等满 deadline——cmd_run 默认
+    /// 60s，每次直跑 `ion -p` 都白等一分钟才打印回复（2026-10-15 实测 61s 退出，
+    /// faux 回复早已落盘；compaction/cli_alignment 等 CI 超时簇的根因）。
+    #[tokio::test]
+    async fn graceful_drain_returns_fast_without_pending_background() {
+        let mut agent = build_test_agent();
+        // 真实形态：channel 打开（bash watcher 持有 tx）但无在飞任务——
+        // tx 必须存活，否则 recv() 立即返回 None 造成旧实现也快速返回的假绿。
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<(Message, DeliverAs)>();
+        agent.follow_up_rx = Some(tokio::sync::Mutex::new(rx));
+
+        let start = std::time::Instant::now();
+        let drained = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            agent.graceful_drain_follow_ups(10_000, 50),
+        )
+        .await
+        .expect("drain 在无在飞后台任务时必须 5s 内返回（60s 尾延迟回归）");
+        assert!(drained.is_empty());
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "无 bg 任务时 drain 不应等满 deadline，实际耗时 {:?}",
+            start.elapsed()
+        );
+    }
+
+    /// 对照组：有在飞后台任务（bg_pending>0）时，drain 仍要等到完成消息并收集。
+    /// 修复只加"无任务早退"门，不得破坏原有的等待语义。
+    #[tokio::test]
+    async fn graceful_drain_collects_message_when_bg_pending() {
+        let mut agent = build_test_agent();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<(Message, DeliverAs)>();
+        agent.follow_up_rx = Some(tokio::sync::Mutex::new(rx));
+        agent
+            .bg_pending
+            .store(1, std::sync::atomic::Ordering::SeqCst);
+
+        // 模拟 watcher：300ms 后投递完成消息、任务结束（guard Drop 递减计数）
+        let bg = agent.bg_pending.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let _ = tx.send((user_msg("bg-done"), DeliverAs::FollowUp));
+            bg.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            // sender 存活到递减之后（对齐真实 watcher 的 Drop 顺序）
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        });
+
+        let drained = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            agent.graceful_drain_follow_ups(10_000, 50),
+        )
+        .await
+        .expect("有在飞任务时 drain 应等到完成消息");
+        assert_eq!(drained.len(), 1, "应收到后台完成消息");
     }
 }
 

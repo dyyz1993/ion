@@ -74,10 +74,16 @@ if [ -z "$SID" ]; then
 else
     # 发 prompt（异步，立即返回）
     timeout 30 "$ION_BIN" rpc --session "$SID" --method prompt --params '{"text":"hi"}' >/dev/null 2>&1 || true
-    # 等待 Agent 处理
-    sleep 3
-    # 读回最后一条 assistant 文本
-    GET_OUTPUT=$(timeout 15 "$ION_BIN" rpc --session "$SID" --method get_last_assistant_text 2>&1 || true)
+    # 轮询读回最后一条 assistant 文本——首查可能撞上 worker 冷启动/agent 仍在跑
+    # （busy），固定 sleep 3 在慢机上不够（CI 实测过）
+    GET_OUTPUT=""
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        sleep 2
+        GET_OUTPUT=$(timeout 15 "$ION_BIN" rpc --session "$SID" --method get_last_assistant_text 2>&1 || true)
+        if echo "$GET_OUTPUT" | grep -qi "serve faux reply\|faux"; then
+            break
+        fi
+    done
     kill $SERVE_PID 2>/dev/null || true
     wait $SERVE_PID 2>/dev/null || true
     if echo "$GET_OUTPUT" | grep -qi "serve faux reply\|faux"; then

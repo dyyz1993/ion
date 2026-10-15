@@ -117,6 +117,11 @@ ION 的错题本：复盘**已合并/已修复**的工作——返工的、不�
 - 证据：本 commit（测试文件进程级 `TODO_STORAGE_LOCK` 串行化 8 测试，24/24 绿）；根修方向=`load_with_context(path, ctx)` 注入唯一 session_id；同日本地绿≠CI 绿三件族（链接守卫路径 / 工具链漂移 / argv 上限）之外的第四类：真竞态而非环境差。
 - Seen 1× (2026-10-15)
 
+**给"等待型收尾"（drain/兜底等待）加资源门控——先证明有在等的东西（bg_pending/channel 存活），没有就立即返回；无条件等满 deadline 是把每个正常路径都拖上最坏延迟。**
+- Before, cmd_run 在 agent.run() 后无条件 `graceful_drain_follow_ups(60s)`——bash 后台完成通知的兜底等待，但 99% 的直跑（`ion -p`）根本没有后台进程：回复早已落盘、进程却白等 60s 才打印退出（2026-10-15 实测 61s→修复后 1.25s）。outer_loop 自己的 30s 等待早有 bg_pending>0 门控（L1151），drain 是后加的、忘了同款门。该"尾延迟"伪装成"挂死"（faux 复现全程 exit=124 看似死锁），拖垮 compaction/cli_alignment/faux_scenarios 等 5+ CI 脚本一个多月；且三重误导排查：回复不打印≠没生成（在 JSONL 里）、采样栈 worker 全闲≠死锁（是孤儿等待）、复用 /tmp/agent_loop_debug.log debris 才定位到 inner_loop 实际正常返回。
+- 证据：本 commit（graceful_drain_follow_ups 增 bg_pending==0 早退门 + 红绿双测 `graceful_drain_returns_fast_without_pending_background` / `graceful_drain_collects_message_when_bg_pending`；watcher 递减是 RAII Drop 晚于 send，故门零丢失）；端到端 61s→1.25s；faux_scenarios_ci 1/3 失败→4/0；顺带清除 outer_loop 写死 /tmp/agent_loop_debug.log 的调试 debris（985 ENTER vs 832 iter 的差值曾是我定位的关键证据，但生产代码写硬编码 /tmp 日志本身是 debris）。
+- Seen 1× (2026-10-15)
+
 **改命令签名（新增必填参数）必须同步 u16 全覆盖冒烟表——无参冒烟表与签名漂移会红得无声（直推只跑 lib 测试，集成测试仅 PR 才跑）。**
 - Before, `fork` 自 `aa38d53`（2026-08-25）变真实现要求 turnId，`u16_all_supported_commands` 无参表红了一个半月无人见——ci.yml 直推 master 只跑 `cargo test --lib`，`cargo test --tests` 仅 pr-gate 跑，直推绕过了它。
 - 证据：u16 失败复现（tests/unit_rpc_test.rs:693 报 "fork: missing param: turnId"，2026-10-14 发现）；修复 = fork 移出无参冒烟 + 专项断言验分发与校验（完整行为归 branch_tree_ci）；缺口对照 `.github/workflows/ci.yml` vs `pr-gate.yml`（`cargo test --tests` 仅后者有；同日 ci.yml 增 integration-tests job 补位）。
