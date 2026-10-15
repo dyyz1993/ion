@@ -23,6 +23,13 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BROWSER_DIR="$PROJECT_DIR/../browser"
 ION_BIN="$PROJECT_DIR/target/debug/ion"
 
+# 依赖仓库外兄弟目录 ../browser（fetch 工具 spawn 的独立 browser 二进制）。
+# CI checkout 里不存在——按约定 SKIP 而非 FAIL（本地照常跑）。
+if [ ! -d "$BROWSER_DIR" ]; then
+    echo "  ⏭️  SKIP: sibling repo ../browser not available (CI checkout)"
+    exit 0
+fi
+
 # ── 测试隔离：目录与 socket（HOME 隔离在 build 之后才启用——rustup shim 依赖真实 HOME）──
 TEST_ROOT="$(mktemp -d /tmp/ion-fetch-ci-XXXXXX)"
 TEST_HOME="$TEST_ROOT/home"; mkdir -p "$TEST_HOME/.ion"

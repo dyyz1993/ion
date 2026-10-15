@@ -112,6 +112,11 @@ ION 的错题本：复盘**已合并/已修复**的工作——返工的、不�
 - 证据：本 commit（runner 补 `ion-protocol` + `build.rs` 链接，清单处加"新增成员必须同步"警告注释）；本地模拟 work dir 复现三态（缺 ion-protocol 秒败 / 缺 build.rs 报 env!未定义 / 双补后 3m52s 构建成功）。
 - Seen 1× (2026-10-15)
 
+**提供"默认全局上下文"的 API（Context::default 全空 id）会让依赖它定位存储的测试共享同一份文件——并行测试即 last-writer-wins 竞态；测试侧先进程级互斥消竞态，根修是把上下文注入做成 load 参数。**
+- Before, `WasmExtensionInstance::load` 硬编码 `Context::default()`（cwd/session_id/extension_id 全空串），所有实例的 host 侧 session-data 落同一个文件；wasm_extension_tests 里 8 个 todo 测试并行跑互相吞写，CI Linux（run 38689713393）翻车为 create_and_list 读到 `[{"id":"1","text":"hello",...}]`——"hello" 精确字面量在构建路径中无来源（hex 验证过日志、grep 过全库与 git 历史），只能由并行交错产生，本地三次全绿纯属调度运气。
+- 证据：本 commit（测试文件进程级 `TODO_STORAGE_LOCK` 串行化 8 测试，24/24 绿）；根修方向=`load_with_context(path, ctx)` 注入唯一 session_id；同日本地绿≠CI 绿三件族（链接守卫路径 / 工具链漂移 / argv 上限）之外的第四类：真竞态而非环境差。
+- Seen 1× (2026-10-15)
+
 **改命令签名（新增必填参数）必须同步 u16 全覆盖冒烟表——无参冒烟表与签名漂移会红得无声（直推只跑 lib 测试，集成测试仅 PR 才跑）。**
 - Before, `fork` 自 `aa38d53`（2026-08-25）变真实现要求 turnId，`u16_all_supported_commands` 无参表红了一个半月无人见——ci.yml 直推 master 只跑 `cargo test --lib`，`cargo test --tests` 仅 pr-gate 跑，直推绕过了它。
 - 证据：u16 失败复现（tests/unit_rpc_test.rs:693 报 "fork: missing param: turnId"，2026-10-14 发现）；修复 = fork 移出无参冒烟 + 专项断言验分发与校验（完整行为归 branch_tree_ci）；缺口对照 `.github/workflows/ci.yml` vs `pr-gate.yml`（`cargo test --tests` 仅后者有；同日 ci.yml 增 integration-tests job 补位）。

@@ -125,8 +125,16 @@ fn todo_extension_loads_and_registers_tools() {
     assert_eq!(extension.tools.len(), 5, "should register exactly 5 tools");
 }
 
+// 🔴 WasmExtensionInstance::load 用 Context::default()（cwd/session/extension_id
+// 全空）→ 所有实例的 host 侧 session-data 存储落在同一个文件；todo 测试并行跑
+// 时 last-writer-wins 互相吞写（CI Linux 实测翻车：create_and_list 读到别测试
+// 写入的 hello 任务，run 38689713393）。用进程级锁串行化所有触碰共享存储的
+// todo 测试——修根（存储隔离要改 load API，见 LESSONS.md），先消竞态。
+static TODO_STORAGE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn todo_extension_create_and_list() {
+    let _storage_guard = TODO_STORAGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let wasm_path = build_todo_extension();
     let mut extension =
         ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
@@ -150,6 +158,7 @@ fn todo_extension_create_and_list() {
 
 #[test]
 fn todo_extension_update_status() {
+    let _storage_guard = TODO_STORAGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let wasm_path = build_todo_extension();
     let mut extension =
         ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
@@ -170,6 +179,7 @@ fn todo_extension_update_status() {
 
 #[test]
 fn todo_extension_nonexistent_item() {
+    let _storage_guard = TODO_STORAGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let wasm_path = build_todo_extension();
     let mut extension =
         ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
@@ -188,6 +198,7 @@ fn todo_extension_nonexistent_item() {
 
 #[test]
 fn todo_extension_edge_empty_array() {
+    let _storage_guard = TODO_STORAGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let wasm_path = build_todo_extension();
     let mut extension =
         ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
@@ -205,6 +216,7 @@ fn todo_extension_edge_empty_array() {
 
 #[test]
 fn todo_extension_edge_large_list() {
+    let _storage_guard = TODO_STORAGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let wasm_path = build_todo_extension();
     let mut extension =
         ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
@@ -228,6 +240,7 @@ fn todo_extension_edge_large_list() {
 
 #[test]
 fn todo_extension_edge_special_chars() {
+    let _storage_guard = TODO_STORAGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let wasm_path = build_todo_extension();
     let mut extension =
         ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
@@ -244,6 +257,7 @@ fn todo_extension_edge_special_chars() {
 
 #[test]
 fn todo_extension_edge_invalid_status() {
+    let _storage_guard = TODO_STORAGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let wasm_path = build_todo_extension();
     let mut extension =
         ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
@@ -259,6 +273,7 @@ fn todo_extension_edge_invalid_status() {
 
 #[test]
 fn todo_extension_edge_update_empty_list() {
+    let _storage_guard = TODO_STORAGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let wasm_path = build_todo_extension();
     let mut extension =
         ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
@@ -643,6 +658,7 @@ fn extension_data_dimension_paths_are_correct() {
 
 #[test]
 fn extension_context_injected_into_store() {
+    let _storage_guard = TODO_STORAGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let wasm_path = build_todo_extension();
     let mut extension =
         ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
