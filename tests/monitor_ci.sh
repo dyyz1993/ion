@@ -11,8 +11,17 @@
 set -uo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$PROJECT_DIR"
 ION="$PROJECT_DIR/target/debug/ion"
+# 🔴 隔离三件套：私有 socket + 隔离 HOME + 隔离 monitors。
+# 旧版在仓库根写 .ion/monitors/ 并按二进制路径 kill 一切 ion 进程——
+# 会误杀开发机基线 host（违反 AGENTS 红线）且与本仓库 .ion/ 互相污染。
+export ION_HOST_SOCKET="/tmp/ion-mon-ci-$$.sock"
+export HOME="$(mktemp -d /tmp/ion-mon-home-XXXXXX)"
+mkdir -p "$HOME/.ion"
+export ION_PROJECT_ROOT="$PROJECT_DIR"
+TEST_CWD="$(mktemp -d /tmp/ion-mon-proj-XXXXXX)"
+mkdir -p "$TEST_CWD/.ion/monitors"
+cd "$TEST_CWD"
 PASS=0
 FAIL=0
 
@@ -100,22 +109,18 @@ cleanup_serve() {
     fi
     # Also kill any SERVE_PID we tracked (in case pidfile is stale)
     if [ -n "${SERVE_PID:-}" ]; then
-        kill "$SERVE_PID" 2>/dev/null
+        kill "${SERVE_PID}" 2>/dev/null
     fi
     sleep 1
-    # 2. Kill by binary path (covers serve + worker subprocesses)
-    ps aux | grep "study-rust/ion/target/debug/ion" | grep -v grep | awk '{print $2}' | xargs kill 2>/dev/null
-    sleep 1
-    # 3. Force kill stragglers (SIGKILL)
-    ps aux | grep "study-rust/ion/target/debug/ion" | grep -v grep | awk '{print $2}' | xargs kill -9 2>/dev/null
-    # 4. Clean up socket + pidfile so next serve can bind cleanly
-    rm -f "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}" "$HOME/.ion/host.pid"
-    # 5. Verify socket is gone (sometimes OS holds it briefly)
+    # 2. 只清本次私有 socket（隔离 HOME/host.pid 下的进程已随 pidfile/SERVE_PID
+    #    结束；按二进制路径 kill 一切 ion 的旧写法会误杀开发机基线 host）
+    rm -f "$ION_HOST_SOCKET" "$HOME/.ion/host.pid"
+    # 3. Verify socket is gone (sometimes OS holds it briefly)
     for _ in 1 2 3 4 5; do
-        [ -S "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}" ] || break
+        [ -S "$ION_HOST_SOCKET" ] || break
         sleep 1
     done
-    rm -f "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}"
+    rm -f "$ION_HOST_SOCKET"
 }
 
 echo "=========================================="

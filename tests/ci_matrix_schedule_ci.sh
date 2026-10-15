@@ -59,7 +59,7 @@ PREFLIGHT_SET="cargo build --bin ion"
 printf '# user monitor config -- must survive matrix runs\nschedule=* * * * *\n' \
     > "$FP/.ion/monitors/SENTINEL.cfg"
 MON_BEFORE=$(cksum "$FP/.ion/monitors/SENTINEL.cfg" | awk '{print $1}')
-(cd "$FP" && cargo build --bin ion) > "$SB/setup-build.log" 2>&1 \
+(cd "$FP" && env -u CARGO_TARGET_DIR cargo build --bin ion) > "$SB/setup-build.log" 2>&1 \
     || { echo "  [FAIL] setup: fake project build error"; cat "$SB/setup-build.log"; exit 1; }
 
 # Fake test scripts: log sub-second timestamps via python3 time.time()
@@ -91,8 +91,9 @@ capture_root() {
 CLEAN_PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "^${CI_BIN_DIR:-/nonexistent}$" | paste -sd: -)
 INVOKE_LOG="$SB/invoke1.log" \
 PREFLIGHT_CMDS="$PREFLIGHT_SET" \
-        PATH="$CLEAN_PATH" \
-        bash "$FP/scripts/run_ci_matrix_parallel.sh" > "$SB/run1.out" 2>&1
+    PATH="$CLEAN_PATH" \
+    env -u CARGO_TARGET_DIR \
+    bash "$FP/scripts/run_ci_matrix_parallel.sh" > "$SB/run1.out" 2>&1
 RC1=$?
 RUN1=$(capture_root "$SB/run1.out")
 [ -n "$RUN1" ] && RUN_ROOTS="$RUN_ROOTS $RUN1"
@@ -174,8 +175,9 @@ fi
 # --- Run 2: per-run isolation + earlier artifacts survive -------------------
 INVOKE_LOG="$SB/invoke2.log" \
 PREFLIGHT_CMDS="$PREFLIGHT_SET" \
-        PATH="$CLEAN_PATH" \
-        bash "$FP/scripts/run_ci_matrix_parallel.sh" > "$SB/run2.out" 2>&1
+    PATH="$CLEAN_PATH" \
+    env -u CARGO_TARGET_DIR \
+    bash "$FP/scripts/run_ci_matrix_parallel.sh" > "$SB/run2.out" 2>&1
 RC2=$?
 RUN2=$(capture_root "$SB/run2.out")
 [ -n "$RUN2" ] && RUN_ROOTS="$RUN_ROOTS $RUN2"

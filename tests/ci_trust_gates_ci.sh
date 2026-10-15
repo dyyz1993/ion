@@ -39,7 +39,8 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SB="$(mktemp -d /tmp/ion-trust-gates.XXXXXX)"
 FP="$SB/fakeproj"
 RUN_ROOTS=
-trap 'rm -rf "$SB" $RUN_ROOTS' EXIT
+# KEEP_TEST_ROOT=1 保留沙盒（调试嵌套 runner 用）
+[ "${KEEP_TEST_ROOT:-0}" = "1" ] || trap 'rm -rf "$SB" $RUN_ROOTS' EXIT
 
 P=0
 F=0
@@ -105,7 +106,9 @@ MON_BEFORE=$(cksum "$FP/.ion/monitors/SENTINEL.cfg" | awk '{print $1}')
 (cd "$FP" && git init -q && git add -A && \
  git -c user.email=t@t -c user.name=t commit -qm init) >/dev/null 2>&1
 # prebuild the ion bin (runner preflight check needs it to exist)
-(cd "$FP" && cargo build --bin ion) > "$SB/setup-build.log" 2>&1 \
+# env -u CARGO_TARGET_DIR：外层 runner 的共享 target 会把 fakeproj 产物导走
+# （setup 产物在真项目 target → 内层 runner 的 ION_BIN 预检 "build ion first"）
+(cd "$FP" && env -u CARGO_TARGET_DIR cargo build --bin ion) > "$SB/setup-build.log" 2>&1 \
     || { echo "  [FAIL] setup build error:"; tail -5 "$SB/setup-build.log"; exit 1; }
 
 cat > "$FP/tests/a_check_ci.sh" <<'EOF'
@@ -140,10 +143,14 @@ chmod +x "$FP"/tests/*.sh
 # 剥掉外层 matrix runner 的 cargo shim（CI_BIN_DIR）——本自测在 runner 内嵌套
 # 跑 runner，内层 `command -v cargo` 会解析到外层 shim，外层按外层树的 stamp
 # no-op 掉内层预检的真构建 → preflight.log 无 cargo 输出（B2 抓到的正是这个）。
+# 同时剥 CARGO_TARGET_DIR（unset 而非置空——空串会被 cargo 当作 target=./，
+# 外层 runner 为真项目设的共享 target 会把假项目构建产物导去真项目 target，
+# preflight 找不到 fakeproj 的 ion 二进制 → B2/B3/B5 连锁假红）。
 CLEAN_PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "^${CI_BIN_DIR:-/nonexistent}$" | paste -sd: -)
 INJECT_FAULT=1 \
 PREFLIGHT_CMDS="cargo build --bin ion;cargo test --lib" \
     PATH="$CLEAN_PATH" \
+    env -u CARGO_TARGET_DIR \
     bash "$FP/scripts/run_ci_matrix_parallel.sh" > "$SB/run1.out" 2>&1
 RC1=$?
 RUN1=$(capture_root "$SB/run1.out")
@@ -183,6 +190,7 @@ MON_AFTER=$(cksum "$FP/.ion/monitors/SENTINEL.cfg" 2>/dev/null | awk '{print $1}
 (cd "$FP" && git checkout -q -- src/lib.rs)
 PREFLIGHT_CMDS="cargo build --bin ion;cargo test --lib" \
     PATH="$CLEAN_PATH" \
+    env -u CARGO_TARGET_DIR \
     bash "$FP/scripts/run_ci_matrix_parallel.sh" > "$SB/run2.out" 2>&1
 RC2=$?
 RUN2=$(capture_root "$SB/run2.out")
