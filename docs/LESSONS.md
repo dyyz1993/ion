@@ -107,6 +107,11 @@ ION 的错题本：复盘**已合并/已修复**的工作——返工的、不�
 - 证据：CI run 38681215820；修复 = 改 stdin 喂 `base64 -d`（本 commit，验证语义不变）；与同日两条（链接守卫路径、工具链漂移）构成"本地绿≠CI 绿"三件族。
 - Seen 1× (2026-10-15)
 
+**CI matrix runner 的 per-script work dir 是手工拼的符号链接仓库——新增 workspace 成员 crate / 根级构建文件（build.rs）时必须同步链接清单，漏了 = 每脚本 Phase 0 真编译秒败且被 runner 的输出过滤掩盖。**
+- Before, run_ci_matrix_parallel.sh（42df79d，2026-09-09）的 work dir 链接清单缺 `ion-protocol/`（9-15 新增 crate）与 `build.rs`——绕过 cargo shim 走绝对路径 `~/.cargo/bin/cargo` 的脚本（如 approval_bus_ci:191）在 work dir 真编译即失败；CI run 38684860314 ci-matrix 47/91 连败全在 0-2s，报错行被 runner 的 `grep -v "command not found"` 过滤吞掉，只能靠 artifact 日志（`FAIL build ion`）定位。八月底后新写脚本从未被 matrix 验证过（build-and-test 红六周 → ci-matrix 恒 skipped）。
+- 证据：本 commit（runner 补 `ion-protocol` + `build.rs` 链接，清单处加"新增成员必须同步"警告注释）；本地模拟 work dir 复现三态（缺 ion-protocol 秒败 / 缺 build.rs 报 env!未定义 / 双补后 3m52s 构建成功）。
+- Seen 1× (2026-10-15)
+
 **改命令签名（新增必填参数）必须同步 u16 全覆盖冒烟表——无参冒烟表与签名漂移会红得无声（直推只跑 lib 测试，集成测试仅 PR 才跑）。**
 - Before, `fork` 自 `aa38d53`（2026-08-25）变真实现要求 turnId，`u16_all_supported_commands` 无参表红了一个半月无人见——ci.yml 直推 master 只跑 `cargo test --lib`，`cargo test --tests` 仅 pr-gate 跑，直推绕过了它。
 - 证据：u16 失败复现（tests/unit_rpc_test.rs:693 报 "fork: missing param: turnId"，2026-10-14 发现）；修复 = fork 移出无参冒烟 + 专项断言验分发与校验（完整行为归 branch_tree_ci）；缺口对照 `.github/workflows/ci.yml` vs `pr-gate.yml`（`cargo test --tests` 仅后者有；同日 ci.yml 增 integration-tests job 补位）。

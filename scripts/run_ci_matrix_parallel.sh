@@ -226,11 +226,16 @@ run_one_script() {
     ln -sfn "$PROJECT_DIR/tests" "$work_dir/tests"
     ln -sfn "$PROJECT_DIR/src" "$work_dir/src"
     ln -sfn "$PROJECT_DIR/ion-provider" "$work_dir/ion-provider"
+    ln -sfn "$PROJECT_DIR/ion-protocol" "$work_dir/ion-protocol"
     ln -sf "$PROJECT_DIR/Cargo.toml" "$work_dir/Cargo.toml"
     ln -sf "$PROJECT_DIR/Cargo.lock" "$work_dir/Cargo.lock" 2>/dev/null
+    ln -sf "$PROJECT_DIR/build.rs" "$work_dir/build.rs" 2>/dev/null
     ln -sfn "$PROJECT_DIR/examples" "$work_dir/examples" 2>/dev/null
     ln -sfn "$PROJECT_DIR/.git" "$work_dir/.git" 2>/dev/null
     # Workspace member dirs (Cargo.toml references these — cargo test fails without them)
+    # ⚠️ 新增 workspace 成员 crate 时必须同步这里（缺了 = 每脚本 Phase 0 build
+    # 秒败，且被 runner 的 "command not found" 过滤掩盖——2026-10-15 CI 47 脚本
+    # 连败即 ion-protocol 未链接，六周 CI 盲区内无人察觉）。
     for member in tests-extensions extensions permission dashboard \
                   ion-dashboard-ui docs scripts; do
         [ -d "$PROJECT_DIR/$member" ] && ln -sfn "$PROJECT_DIR/$member" "$work_dir/$member"
