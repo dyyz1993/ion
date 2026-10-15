@@ -1,0 +1,85 @@
+# Module: ion-web-console
+# Version: 2
+# Status: verified
+# Last verified: 2026-09-20
+# 远程 fleet console UI（区别于本地 ion-webui 的聊天式 UI，选择器体系不同）
+# 实例: win38 http://192.168.0.38:15180/ (最新版) / shanbox http://192.168.0.29:5180/ (副本)
+#
+# v2 (2026-09-20) 重大改版: 事件流已接入 (DONE/FAILED 真实数字)、420 sessions、
+# chat 详情/composer/导出/workers 页/模型下拉/命令面板全部可用。v1 的"全 0 fleet"描述已过时，
+# v1 布局描述保留在下方 history 区块 (仅作参考)。
+#
+# ⚠ 坐标系: 以下 mouse 坐标均为 1920x1080 viewport 实测; 其他尺寸需重新 eval 取坐标。
+
+page:
+  title: "ION Web"
+  # 注意: 此 UI 无 #input/#sessbar/#overlay (那是 ion-webui 聊天版的), 不要混用两套选择器
+
+tabs:
+  # 侧栏 4 tab (SPAN, 无 id/class, 用文本定位后取坐标 mouse click)
+  # 1920x1080 坐标 + hash:
+  feed:
+    text_anchor: "aside 内 startsWith('Feed') 且 length<10 的最后一个小元素"
+    click_xy: [56, 65]
+    hash_after: "#chat"          # ⚠ Feed 复用 chat 路由, 内容是 "Live message feed" 空会话
+  sandboxes:
+    click_xy: [74, 97]
+    hash_after: "#sandboxes"     # = 主 dashboard (统计卡+FLEET TREND+SANDBOXES 卡片墙)
+  workers:
+    click_xy: [65, 129]
+    hash_after: "#workers"
+  sessions:
+    click_xy: [67, 161]
+    hash_after: "#sessions"
+
+selectors:
+  # --- Sessions 列表页 (#sessions) ---
+  sessions_filter_input: "main input[placeholder^='filter by title']"   # placeholder="filter by title / id / project…"
+  session_row: "main .row-hover"                                          # div.panel.fade-in.row-hover, 高 38-40px
+  sessions_header_regex: "main innerText match /SESSIONS — (\\d+)\\/(\\d+) shown/"
+  clear_filter_link: "文本=='clear' 的叶子元素 (过滤生效时出现 'N hidden by filter — clear')"
+  sort_chips: "sort: recent / sort: turns"
+
+  # --- 会话详情 chat (#chat) ---
+  composer_textarea: "main textarea"                                      # placeholder="send a message… (Enter to send, Shift+Enter for newline)"
+  send_button: "main button 文本匹配 /^send$/i (composer 右侧)"
+  export_button: "main button 文本=='导出' (chat footer 最右)"
+  msg_filter_chips: "all N / user / assistant / tool (chat footer)"
+  loaded_counter_regex: "/(\\d+) loaded( · more available)?/"
+  chat_back_to_list: "main button 文本=='× list' (头部右侧)"
+  chat_prev_next: "main button '‹' '›' (上一个/下一个会话, 不是返回列表!)"
+  live_badge: "● live (chat footer / 会话行 LIVE 徽章)"
+
+  # --- Workers 页 (#workers) ---
+  workers_filter_input: "input[placeholder^='filter workers…']"
+  model_badge_span: "main 内叶子 SPAN 文本匹配 /^glm[\\d.a-z-]*$/i (workers 表 model 列)"
+  workers_chips: "all N / busy N / idle N / stale N"
+
+  # --- 侧栏底栏 ---
+  theme_button: "aside button 文本匹配 /dark|light|☾|☀/"                  # "☾ dark"(暗) ↔ "☀ light"(亮)
+  commands_button: "aside button '⌕commands⌘K'"                           # click_xy [142,1054]
+  new_task_button: "aside button '+new task'"
+
+  # --- 模型下拉 ---
+  model_dropdown: "click workers 表里的 model badge SPAN → 弹出菜单 glm-5.2 / glm-4.7 / ✓ 当前模型"
+
+text_anchors:
+  hosts_count: "/HOSTS\\n([\\d/]+)\\nhealthy/"
+  agents_count: "/AGENTS\\n(\\d+)\\nacross fleet/"
+  running_count: "/RUNNING\\n(\\d+)\\n(\\d+) queued/"
+  done_count: "/DONE\\n(\\d+)\\nacross fleet/"       # v2: 真实数字 (v1 是 '--' 占位)
+  failed_count: "/FAILED\\n(\\d+)\\nacross fleet/"
+  trend_line: "FLEET TREND cpu N% mem N% last 2 min (含 svg 图表, .skeleton=0)"
+  approvals_placeholder: "等待真实审批接入 (侧栏, 仍保留)"
+
+api:
+  gateway_base: "http://127.0.0.1:8792"
+  health: "/api/health → {ok:true,ts}"
+  sessions: "/api/sessions → 数组/含 sessions 键 (2026-09-20 实测 420 条)"
+  workers: "/api/workers → {byStatus,total,workers}"
+  approvals: "/api/approvals  # ⚠ 实测 3.5-4.8s 慢请求"
+
+history_v1_2026_09_17:
+  stat_cards_top: ["HOSTS 0/0 healthy", "AGENTS 0 across fleet", "RUNNING 0 (0 queued · 0 idle · 0 stopped)", "DONE -- 待事件流接入", "FAILED -- 待事件流接入"]
+  trend_panel: "FLEET TREND cpu/mem last 2 min (canvas 虚线网格)"
+  events_placeholder: "待事件流接入 (DONE/FAILED 卡)"   # v2 已接入, 该占位不再出现

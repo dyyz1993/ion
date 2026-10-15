@@ -1,0 +1,58 @@
+quick_health_check:
+  description: "远程 console 实例快速体检 (渲染/console/计数/10s 存活)"
+  steps:
+    - action: open
+      url: "http://<host>:<port>/"
+    - action: waitForTimeout
+      ms: 3000
+    - action: title          # 期望 "ION Web"
+    - action: screenshot     # 第 1 张
+    - action: console        # 期望 0 errors (注意: 只看调用后 5s 窗口)
+    - action: eval           # innerText 正则抓 Sessions/HOSTS/RUNNING 计数
+    - action: waitForTimeout
+      ms: 10000
+    - action: screenshot     # 第 2 张; 与第 1 张比对字节数判断是否在动
+  expected_result: "title=ION Web, 侧栏+统计卡+SANDBOXES 行齐全, console 0 fatal"
+
+v2_full_acceptance:
+  description: "16 项全功能验收 (2026-09-20 首跑 16/16 PASS)"
+  steps:
+    - action: goto
+      url: "http://192.168.0.38:15180/"
+    - action: eval    # 5 probes: iframe/shadow/contenteditable/animated/draggable → 全 0/none/751(svg+canvas)
+    - action: eval    # 统计卡: main.innerText 正则 HOSTS/AGENTS/RUNNING/DONE/FAILED
+    - action: eval    # FLEET TREND 文本 + main svg 数 + .skeleton 数
+    - action: mouse_click  # Sandboxes tab [74,97] → #sandboxes
+    - action: type
+      selector: "main input[placeholder^='filter by title']"   # 先 Sessions tab [67,161]
+      value: "sess_ffa69c13"                                    # → SESSIONS — 1/420 shown
+    - action: mouse_click  # 会话行 (eval 取 .row-hover 坐标) → #chat
+    - action: type
+      selector: "main textarea"
+      value: "测试"
+    - action: mouse_click  # Send 按钮 (eval 取 /^send$/i 坐标); UI 自动跳回 #sessions, 行变 LIVE
+    - action: waitForTimeout
+      ms: 15000            # 重进 chat 见 user 消息; AI 工具调用/回复 ~60s 内出现 ("N loaded" 递增)
+    - action: mouse_click  # Workers tab [65,129] → model badge click → glm-5.2/glm-4.7/✓当前
+    - action: mouse_click  # theme [232,1054] ↔ dark/light; body bg rgb(11,14,20)↔rgb(245,246,250)
+    - action: mouse_click  # commands [142,1054] → 命令面板 (NAVIGATE/APPROVALS/SETTINGS); Escape 关闭
+    - action: console      # refresh 后立刻抓: 期望 0 errors / 0 warnings
+  expected_result: "16/16 PASS; DONE/FAILED 真实数字; 无 '(message)' 占位; console 全程 0 fatal"
+
+tips:
+  # ---- v1 遗留 (仍有效) ----
+  - "xbrowser console 命令只捕获调用后约 5s 的窗口, 不含加载期历史; 页面已静置时 0 messages 只说明无持续性报错, 加载期 fatal 需 refresh 后立刻 console 才可靠"
+  - "截图对比存活: 同一页面两次 screenshot 字节数完全一致 = 完全静态 (win38); canvas 图表重绘会变字节数 (shanbox) 但计数仍可为 0"
+  - "fleet 全 0 的判断已过时 (v2 已接入事件流); 但侧栏 APPROVALS 的 '等待真实审批接入' 占位仍存在"
+  - "会话文件里要存 export S=... 形式, 存 SESSION=... 再 source 不会设置 $S, 会导致 --session 空参落到 default 会话、eval 跑在 about:blank 上"
+  # ---- v2 新增 (2026-09-20) ----
+  - "CDP-Guard: 页内合成事件 (el.click()/dispatchEvent) 被拦; 一律 eval 取坐标 → mouse click X Y, 输入用 xbrowser type -s -v; 按钮也可 focus()+press body Enter"
+  - "LIVE 会话行内容持续刷新 (LIVE 徽章/时间/标题), 行位置会漂移 → mouse click 前必须当场 eval 重取坐标; 用固定坐标点上次位置会点空"
+  - "composer 点 Send 后 UI 自动跳回 #sessions 且该会话行变 LIVE——这是设计行为, 不是失败; 重进 #chat 轮询 'N loaded' 递增 + innerText 出现所发文本"
+  - "chat 头部 '‹' '›' 是上一个/下一个会话导航, 不是返回列表; 返回列表用 '× list'"
+  - "导出按钮: 存在且可点, 但 mouse click 会跳回 #sessions (复现 2 次), focus+Enter 不跳也无下载文件落 ~/Downloads——导出实际行为待人工确认 (open question)"
+  - "模型下拉 (workers 表 model badge 点击) 一旦打开, 切 tab 不自动关闭, overlay 残留在左上角 (轻微 bug); body Escape 可关"
+  - "Feed tab 复用 #chat hash (内容为 'Live message feed' 空会话 + 建议 chips), 4 tab hash 实际是: #chat/#sandboxes/#workers/#sessions"
+  - "/api/approvals 慢 (3.5-4.8s), 其他 API <100ms; net-debug 总结 '3 slow (>3000ms)' 即来自它"
+  - "press 需要唯一元素匹配 (如 press 'main button' 会 Actionability timeout), 焦点类按键用 press body <key>"
+  - "移动端 375px: 侧栏占 2/3 宽, sessions 行横向溢出 (badge 截断)——未做移动适配, 验收按桌面口径"

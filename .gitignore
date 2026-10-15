@@ -6,6 +6,7 @@ target/
 # IDE / agent caches
 .claude/
 .zcode/
+.video_agent/
 
 # Vendored ion-provider build artifacts
 /ion-provider/target
