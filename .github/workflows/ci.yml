@@ -131,7 +131,8 @@ jobs:
   integration-tests:
     runs-on: ubuntu-latest
     needs: build-and-test
-    timeout-minutes: 45
+    # P=2（防 OOM）下 91 脚本实测超 45 分钟被 job 级超时取消（run 38707119960）
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
