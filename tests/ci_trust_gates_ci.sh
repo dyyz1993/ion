@@ -166,11 +166,12 @@ RUN1=$(capture_root "$SB/run1.out")
 [ -s "${RUN1}/preflight.log" ] && grep -q "Finished" "${RUN1}/preflight.log" \
     && ok "B2 preflight.log holds real cargo output" \
     || { bad "B2 preflight.log missing/empty/no cargo output"
-         echo "  ── run1.out tail（诊断内层 runner 失败模式）──"
+         echo "  ── 环境差异自曝（CI 与本地模拟的最后一差）──"
+         env | grep -E "^(CI_BIN_DIR|CI_RUN_ROOT|CARGO|RUN_ROOT|PATH)=" | sed 's/^/    /'
+         echo "  ── setup-build.log 尾 ──"; tail -5 "$SB/setup-build.log" 2>/dev/null | sed 's/^/    /'
+         ls -la "$FP/target/debug/ion" 2>/dev/null | sed 's/^/    /' || echo "    FP ion MISSING"
+         echo "  ── run1.out tail ──"
          tail -12 "$SB/run1.out" 2>/dev/null | sed 's/^/    /'
-         echo "  ── RUN1=$RUN1 preflight.log ──"
-         ls -la "${RUN1}/preflight.log" 2>/dev/null | sed 's/^/    /'
-         tail -6 "${RUN1}/preflight.log" 2>/dev/null | sed 's/^/    /'
        }
 [ -f "${RUN1}/cargo-stamp" ] && grep -q '^fingerprint=' "${RUN1}/cargo-stamp" \
     && ok "B3 stamp written with tree fingerprint" \
