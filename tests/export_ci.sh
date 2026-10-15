@@ -298,7 +298,7 @@ printf '%s\n' \
     '{"type":"message","id":"cm2","parentId":"compact-1","timestamp":"2026-08-08T09:00:03Z","message":{"Assistant":{"role":"assistant","provider":"zai","model":"glm-5.2","api":"openai-completions","usage":{"input":100,"output":30},"stop_reason":"stop","content":[{"Text":{"text":"continued after compaction"}}]}}}' \
     > "$COMPACTION_SESSION"
 
-HTML_E=$(mktemp -t export_ci_E).html
+HTML_E="$COMPACTION_ROOT/export_ci_E.html"
 ION_SESSION_DIR="$COMPACTION_ROOT" \
     "$ION_BIN" --export "$HTML_E" --session compaction_export 2>&1 | grep -q "Exported" && \
     pass "E1 export 确定性 compaction session" || fail "E1 compaction session export 失败"
@@ -344,7 +344,7 @@ apply_branch_fixture() {
 }
 apply_branch_fixture
 
-HTML_F=$(mktemp -t export_ci_F).html
+HTML_F="$BRANCH_ROOT/export_ci_F.html"
 ION_SESSION_DIR="$BRANCH_ROOT" \
     "$ION_BIN" --export "$HTML_F" --session branch_export 2>&1 | grep -q "Exported" && \
     pass "F1 分支 session 导出成功" || fail "F1 分支 session 导出失败"
@@ -385,7 +385,7 @@ mkdir -p "$FLOW_ROOT/exact"
 FLOW_SESSION="$FLOW_ROOT/exact/session.jsonl"
 cp "$PROJECT_DIR/tests/fixtures/export/flow_semantics/session.jsonl" "$FLOW_SESSION"
 
-HTML_G=$(mktemp -t export_ci_G).html
+HTML_G="$FLOW_ROOT/export_ci_G.html"
 ION_SESSION_DIR="$FLOW_ROOT" \
     "$ION_BIN" --export "$HTML_G" --session flow_semantics 2>&1 | grep -q "Exported" && \
     pass "G1 完整流程 fixture 导出成功" || fail "G1 完整流程 fixture 导出失败"
