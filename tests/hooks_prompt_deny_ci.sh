@@ -49,6 +49,10 @@ MARKER="$TEST_ROOT/tool-ran.txt"
 SESSION_ID="sess_hooks_prompt_deny_ci"
 HTML="$TEST_ROOT/export.html"
 mkdir -p "$TEST_HOME" "$TEST_PROJECT/.ion"
+# hooks 供应链信任门（404522c）：项目级 hooks.json 默认不加载——沙盒项目必须
+# 显式开信任，否则 PreToolUse 静默跳过（deny 失效的根因，2026-10-15 破案）
+mkdir -p "$TEST_HOME/.ion"
+printf '{"runtime":{"hooks_trust":{"project_hooks_enabled":true}}}' > "$TEST_HOME/.ion/config.json"
 
 cleanup() {
     if [ "${KEEP_TEST_ROOT:-0}" = "1" ]; then
