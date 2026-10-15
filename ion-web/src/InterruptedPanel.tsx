@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react"
-import { fetchInterrupted, resumeSession, type InterruptedSession } from "./api"
+import { fetchInterrupted, startRelayTask, type InterruptedSession } from "./api"
 
 const RESUME_CTX = "检查 git status 和最近改动，继续未完成的工作"
 
-// 断点复原面板：发现中断的子任务会话，一键接力修复
+// 中断会话面板：只提供诚实的“新建接力任务”，不冒充持久恢复
 export default function InterruptedPanel() {
   const [items, setItems] = useState<InterruptedSession[]>([])
   const [err, setErr] = useState<string | null>(null)
@@ -30,8 +30,8 @@ export default function InterruptedPanel() {
 
   const doResume = (s: InterruptedSession) => {
     setBusy(s.id); setErr(null)
-    resumeSession(s.id, RESUME_CTX)
-      .then(() => { setResumed((r) => ({ ...r, [s.id]: true })); setToast(`已接力：${s.name || s.id}`) })
+    startRelayTask(s.id, RESUME_CTX)
+      .then(() => { setResumed((r) => ({ ...r, [s.id]: true })); setToast(`已新建接力任务：${s.name || s.id}`) })
       .catch((e) => setErr(String(e.message || e)))
       .finally(() => setBusy(null))
   }
@@ -48,7 +48,7 @@ export default function InterruptedPanel() {
     <div style={{ border: "1px solid #333", borderRadius: 8, padding: "10px 14px", marginBottom: 12 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
         <b style={{ fontSize: 13 }}>⚡ 断点复原</b>
-        <span style={{ fontSize: 12, color: "#888" }}>发现中断的子任务，一键接力修复</span>
+        <span style={{ fontSize: 12, color: "#888" }}>发现中断的子任务，可新建接力任务</span>
         {toast && <span style={{ marginLeft: "auto", fontSize: 12, color: "#34d399" }}>{toast}</span>}
       </div>
       {err && <div style={{ fontSize: 12, color: "#f87171", marginBottom: 6 }}>{err}</div>}
@@ -65,7 +65,7 @@ export default function InterruptedPanel() {
               disabled={!!resumed[s.id] || busy === s.id}
               onClick={() => doResume(s)}
               style={{ marginLeft: "auto", fontSize: 12, padding: "3px 10px", cursor: resumed[s.id] ? "default" : "pointer", borderRadius: 6 }}
-            >{resumed[s.id] ? "已接力" : busy === s.id ? "接力中…" : "接力修复"}</button>
+            >{resumed[s.id] ? "已新建" : busy === s.id ? "创建中…" : "新建接力任务"}</button>
           </div>
         ))
       )}
