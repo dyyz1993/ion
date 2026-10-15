@@ -82,7 +82,9 @@ if echo "$FULL_RESULT" | grep -q "0 failed"; then
     TOTAL=$(echo "$FULL_RESULT" | grep -oE "[0-9]+ passed" | grep -oE "[0-9]+")
     pass "D1 全量 lib 测试通过 ($TOTAL tests, 0 failed)"
 else
-    fail "D1 全量 lib 测试有失败: $FULL_RESULT"
+    # 捕获失败用例名——CI 上 1197/1 的 flake 曾无法定位（run 38737109559）
+    FAILED_NAMES=$(cargo test --lib 2>&1 | sed -n '/^failures:/,/^$/p' | grep "^    " | head -5 | tr '\n' ' ')
+    fail "D1 全量 lib 测试有失败: $FULL_RESULT | failed: $FAILED_NAMES"
 fi
 
 echo ""

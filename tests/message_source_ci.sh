@@ -122,14 +122,18 @@ fi
 echo ""
 echo "Group C: jsonl 落盘"
 
-# 找这次测试的 session jsonl（可能在任意 hash 目录下）
-SESS_FILE=""
-for f in $(find "$HOME/.ion/agent/sessions" -name "session.jsonl" -mmin -2 2>/dev/null); do
-    if grep -q "source test\|你好" "$f" 2>/dev/null; then
-        SESS_FILE="$f"
-        break
-    fi
-done
+# 找这次测试的 session jsonl（布局是 <sid>.jsonl 的 per-cwd 哈希子目录——
+# 按 create_session 返回的 SID 精确定位，不再扫字面 session.jsonl）
+SESS_FILE=$(find "$HOME/.ion/agent/sessions" -name "${SID}.jsonl" -mmin -5 2>/dev/null | head -1)
+if [ -z "$SESS_FILE" ]; then
+    # 兜底：按内容找（SID 变量丢失等场景）
+    for f in $(find "$HOME/.ion/agent/sessions" -name "*.jsonl" -mmin -5 2>/dev/null); do
+        if grep -q "source test\|你好" "$f" 2>/dev/null; then
+            SESS_FILE="$f"
+            break
+        fi
+    done
+fi
 
 if [ -n "$SESS_FILE" ]; then
     # C1: message 含 source

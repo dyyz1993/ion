@@ -136,9 +136,15 @@ _fp() {
 _stamp_fp() { grep '^fingerprint=' "\$STAMP_FILE" 2>/dev/null | cut -d= -f2; }
 case "\$1" in
     build|check|clippy|fmt)
-        if [ -n "\$(_stamp_fp)" ] && [ "\$(_fp)" = "\$(_stamp_fp)" ]; then
-            echo "    (cargo shim: \$1 validated by preflight at same tree)"
-            exit 0
+        # 只有与预检等价的"整树构建/检查"才可 no-op（预检在同指纹树上跑过）。
+        # 带 --target（wasm 交叉编译等）/-p（选包）/--manifest-path 的调用产物
+        # 预检没产出过——no-op 它们会让脚本拿不到 artifact（extension_cli E4
+        # 的 scaffold .wasm 即此坑，2026-10-15）——一律走真 cargo。
+        if ! echo "\$@" | grep -qE -- '--target|--manifest-path|--package|-p '; then
+            if [ -n "\$(_stamp_fp)" ] && [ "\$(_fp)" = "\$(_stamp_fp)" ]; then
+                echo "    (cargo shim: \$1 validated by preflight at same tree)"
+                exit 0
+            fi
         fi
         exec "\$REAL_CARGO" "\$@"
         ;;
@@ -235,8 +241,9 @@ run_one_script() {
     # Baseline faux config: 隔离 HOME 不得依赖开发机真实 ~/.ion/config.json
     # （CI 全新环境无 default_model → faux 回放链断、config list 为空——
     # run 38695602172 的 faux_scenarios/tier_models/cli_alignment 集群）。
+    # 假 api_key 给脱敏断言类用例（host_read D1 要求 ak="***"）。
     # 脚本自带 config fixture 的会覆盖此文件。
-    printf '{"default_provider":"faux","default_model":"faux"}' > "$home_dir/.ion/config.json"
+    printf '{"default_provider":"faux","default_model":"faux","api_key":"sk-seed-redact-test"}' > "$home_dir/.ion/config.json"
     [ -d "$HOME/.rustup" ] && ln -s "$HOME/.rustup" "$home_dir/.rustup" 2>/dev/null
     [ -d "$HOME/.cargo" ] && ln -s "$HOME/.cargo" "$home_dir/.cargo" 2>/dev/null
 

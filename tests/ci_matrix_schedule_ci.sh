@@ -86,8 +86,12 @@ capture_root() {
 }
 
 # --- Run 1: all PASS --------------------------------------------------------
+# 剥掉外层 runner 的 cargo shim（CI_BIN_DIR），防嵌套时外层 shim 按外层树
+# stamp no-op 掉内层预检（ci_trust_gates B2 抓到的同款嵌套干扰）
+CLEAN_PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "^${CI_BIN_DIR:-/nonexistent}$" | paste -sd: -)
 INVOKE_LOG="$SB/invoke1.log" \
 PREFLIGHT_CMDS="$PREFLIGHT_SET" \
+        PATH="$CLEAN_PATH" \
         bash "$FP/scripts/run_ci_matrix_parallel.sh" > "$SB/run1.out" 2>&1
 RC1=$?
 RUN1=$(capture_root "$SB/run1.out")
@@ -170,6 +174,7 @@ fi
 # --- Run 2: per-run isolation + earlier artifacts survive -------------------
 INVOKE_LOG="$SB/invoke2.log" \
 PREFLIGHT_CMDS="$PREFLIGHT_SET" \
+        PATH="$CLEAN_PATH" \
         bash "$FP/scripts/run_ci_matrix_parallel.sh" > "$SB/run2.out" 2>&1
 RC2=$?
 RUN2=$(capture_root "$SB/run2.out")
