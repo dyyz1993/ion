@@ -354,8 +354,12 @@ mod tests {
     #[tokio::test]
     async fn test_ignore_paths() {
         // A path under target/ should never be flagged even if it changed.
-        let dir = "/tmp/ftg_ignore_target";
-        let _ = std::fs::create_dir_all(dir);
+        // 目录名带 PID：固定路径在并行测试/并发 cargo test 进程下互相覆盖；
+        // 且必须含真正的 "target/" 片段（默认规则是 "target/" 带斜杠，
+        // 此前 ftg_ignore_target 里只有 "_target/"——substring 恰不命中，
+        // 该测试在 CI 上其实一直靠竞态掩盖（run 38784953880 soft_delete 抓到）
+        let dir = format!("/tmp/ftg_ignore_{}/target", std::process::id());
+        let _ = std::fs::create_dir_all(&dir);
         let path = format!("{}/dummy.rs", dir);
         std::fs::write(&path, "a").unwrap();
 
