@@ -187,7 +187,8 @@ pub struct RemoteWorkerHost {
     /// initial_prompt 前缀的工具链/PATH/版本提示（如 "cargo 在 ~/.cargo/bin"）。
     /// 修沙盒优先（ln -sf 进 /usr/local/bin），这里只留兜底事实。
     #[serde(default)]
-    pub notes: Vec<String>,}
+    pub notes: Vec<String>,
+}
 
 /// 动词授权（remote_workers.<name>.grants）。全部默认空 = 全拒。
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -1587,6 +1588,26 @@ mod merge_tests {
 
     // ── M4 动词表：grant glob 匹配语义 ──────────────────────────────────────
 
+    // RAII：测试期间移除 ION_REMOTE_WORKERS（真实 shell 环境可能带有该变量，
+    // 直接污染 remote_worker_host 的 env 优先解析），drop 时恢复原值。
+    struct RwEnvGuard(Option<String>);
+    impl RwEnvGuard {
+        fn remove() -> Self {
+            let prev = std::env::var("ION_REMOTE_WORKERS").ok();
+            // SAFETY: 与 set_var 同理——env_test_lock 已保证无并发读写
+            unsafe { std::env::remove_var("ION_REMOTE_WORKERS") };
+            Self(prev)
+        }
+    }
+    impl Drop for RwEnvGuard {
+        fn drop(&mut self) {
+            if let Some(v) = self.0.take() {
+                // SAFETY: 同上，env_test_lock 串行保护
+                unsafe { std::env::set_var("ION_REMOTE_WORKERS", v) };
+            }
+        }
+    }
+
     #[test]
     fn test_grant_path_matches() {
         let g = crate::config::RemoteWorkerGrants {
@@ -1620,6 +1641,7 @@ mod merge_tests {
     #[test]
     fn test_remote_worker_grants_parse() {
         let _env_guard = crate::paths::env_test_lock();
+        let _rw_guard = RwEnvGuard::remove();
         let json = r#"{"remote_workers": {"w": {"hostname": "h",
             "grants": {"fs_read": ["/p/**"], "http_fetch": ["x.com"]}}}}"#;
         let cfg: IonConfig = serde_json::from_str(json).unwrap();
@@ -1638,6 +1660,7 @@ mod merge_tests {
     #[test]
     fn test_remote_workers_parse_and_env_override() {
         let _env_guard = crate::paths::env_test_lock();
+        let _rw_guard = RwEnvGuard::remove();
         let json = r#"{"remote_workers": {"win38": {"hostname": "win38", "user": "sshuser",
             "worker_bin": "/usr/local/bin/ion", "cwd": "/root/ws"}}}"#;
         let cfg: IonConfig = serde_json::from_str(json).unwrap();
@@ -1673,8 +1696,7 @@ mod merge_tests {
         let cfg: RuntimeConfig = serde_json::from_str("{}").unwrap();
         assert!(cfg.auto_fallback_tier, "missing field should default true");
         // 显式 false 可关闭（写进 RuntimeConfig）
-        let cfg: RuntimeConfig =
-            serde_json::from_str(r#"{"auto_fallback_tier": false}"#).unwrap();
+        let cfg: RuntimeConfig = serde_json::from_str(r#"{"auto_fallback_tier": false}"#).unwrap();
         assert!(!cfg.auto_fallback_tier);
         // 序列化保留
         let json = serde_json::to_string(&cfg).unwrap();
@@ -1705,7 +1727,8 @@ mod merge_tests {
                 .collect(),
             model_overrides: None,
         };
-        cfg.providers.insert("zai".into(), mk(&["glm-5.2", "glm-4.6"]));
+        cfg.providers
+            .insert("zai".into(), mk(&["glm-5.2", "glm-4.6"]));
         cfg.providers
             .insert("opencode".into(), mk(&["deepseek-v4-flash"]));
         cfg.default_provider = Some("zai".into());
@@ -1719,8 +1742,7 @@ mod merge_tests {
     #[test]
     fn tier_fallback_candidates_strict_semantics() {
         let mut cfg = fallback_cfg();
-        cfg.tier_models
-            .insert("pro".into(), "zai/glm-4.6".into());
+        cfg.tier_models.insert("pro".into(), "zai/glm-4.6".into());
         cfg.tier_models
             .insert("fast".into(), "opencode/deepseek-v4-flash".into());
 
@@ -1747,7 +1769,10 @@ mod merge_tests {
         // resolve_tier_model 会回落 default_model（zai/glm-5.2），但那不是
         // "tier_models 有不同可用档"——无档 = 保持现状报死，不悄悄切默认模型。
         let cfg = fallback_cfg();
-        assert!(cfg.tier_fallback_candidates("opencode/deepseek-v4-flash").is_empty());
+        assert!(
+            cfg.tier_fallback_candidates("opencode/deepseek-v4-flash")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1761,7 +1786,8 @@ mod merge_tests {
 
         // 畸形条目（无 "provider/model" 形状）→ 跳过，不回落 default
         let mut cfg = fallback_cfg();
-        cfg.tier_models.insert("pro".into(), "not-a-tier-ref".into());
+        cfg.tier_models
+            .insert("pro".into(), "not-a-tier-ref".into());
         assert!(
             cfg.tier_fallback_candidates("zai/glm-5.2").is_empty(),
             "畸形 tier 条目不得泄漏 default_model 进候选池"
@@ -1769,7 +1795,8 @@ mod merge_tests {
 
         // 指向 providers 里不存在的模型 → resolve 失败，跳过
         let mut cfg = fallback_cfg();
-        cfg.tier_models.insert("pro".into(), "ghost/no-such-model".into());
+        cfg.tier_models
+            .insert("pro".into(), "ghost/no-such-model".into());
         assert!(cfg.tier_fallback_candidates("zai/glm-5.2").is_empty());
     }
 
@@ -2378,10 +2405,7 @@ mod trust_pred_tests {
     /// trusted_projects 精确放行 / None project_dir deny）。
     #[test]
     fn test_project_hooks_allowed_unchanged_after_refactor() {
-        let tmp = std::env::temp_dir().join(format!(
-            "ion-trust-pred-2-{}",
-            std::process::id()
-        ));
+        let tmp = std::env::temp_dir().join(format!("ion-trust-pred-2-{}", std::process::id()));
         let proj = tmp.join("repo");
         std::fs::create_dir_all(&proj).unwrap();
 
@@ -2421,7 +2445,8 @@ mod redact_tests {
         // ① 顶层 api_key
         cfg.api_key = Some("sk-top-SECRET1".into());
         // ② provider_api_keys 映射
-        cfg.provider_api_keys.insert("zai".into(), "pk-zai-SECRET2".into());
+        cfg.provider_api_keys
+            .insert("zai".into(), "pk-zai-SECRET2".into());
         cfg.provider_api_keys
             .insert("opencode".into(), "pk-oc-SECRET3".into());
         // ③ providers.*.{api_key, headers, model_overrides.*.api_key}
@@ -2470,8 +2495,7 @@ mod redact_tests {
             },
         );
         let mut http_headers = HashMap::new();
-        http_headers
-            .insert("Authorization".into(), "Bearer mcp-hdr-SECRET8".into());
+        http_headers.insert("Authorization".into(), "Bearer mcp-hdr-SECRET8".into());
         cfg.mcp_servers.insert(
             "remote".into(),
             McpServerConfig::Http {
@@ -2513,7 +2537,10 @@ mod redact_tests {
             out["provider_api_keys"]["opencode"], "***",
             "provider_api_keys 第二项"
         );
-        assert_eq!(out["providers"]["zai"]["api_key"], "***", "provider api_key");
+        assert_eq!(
+            out["providers"]["zai"]["api_key"], "***",
+            "provider api_key"
+        );
         assert_eq!(
             out["providers"]["zai"]["headers"]["Authorization"], "***",
             "provider headers"

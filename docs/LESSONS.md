@@ -92,6 +92,11 @@ ION 的错题本：复盘**已合并/已修复**的工作——返工的、不�
 - 证据：`4604b12` 撤 `5509206`（同日加撤对，lib 1196/0 验证）。
 - Seen 1× (2026-09-23)
 
+**读进程 env 的单测，env_test_lock 只解决"测试互串"不解决"真实 shell 变量渗入"——必须配 RAII 摘除恢复，且同坑多测试一次补全。**
+- Before, X2 flake 审计给 remote_worker 配置解析测试统一上了 `paths::env_test_lock`（只串行化、不移除变量），但开发/CI 脚本环境常态 `export ION_REMOTE_WORKERS`（remote_worker_ci.sh:52 等 5 处脚本），该 env 会被 `from_config` 合并进池污染断言；且同批只给 `from_config_parses` 加了摘除、`profile_reads_config_fields` 漏网——同一个坑两处只补一处。
+- 证据：本 commit（config.rs `RwEnvGuard` + sandbox_pool.rs `defer` RAII 三处，补漏网测试；复现 `ION_REMOTE_WORKERS='{"ghost":{"hostname":"x"}}' cargo test --lib -- profile_reads_config_fields`，修前 ghost host 会渗入池）；同家族 `4604b12`（ION_SESSION_CWD）、`72cd162`（X2 HOME env 竞态 RAII 兜底）。
+- Seen 1× (2026-10-15)
+
 **改命令签名（新增必填参数）必须同步 u16 全覆盖冒烟表——无参冒烟表与签名漂移会红得无声（直推只跑 lib 测试，集成测试仅 PR 才跑）。**
 - Before, `fork` 自 `aa38d53`（2026-08-25）变真实现要求 turnId，`u16_all_supported_commands` 无参表红了一个半月无人见——ci.yml 直推 master 只跑 `cargo test --lib`，`cargo test --tests` 仅 pr-gate 跑，直推绕过了它。
 - 证据：u16 失败复现（tests/unit_rpc_test.rs:693 报 "fork: missing param: turnId"，2026-10-14 发现）；修复 = fork 移出无参冒烟 + 专项断言验分发与校验（完整行为归 branch_tree_ci）；缺口对照 `.github/workflows/ci.yml` vs `pr-gate.yml`（`cargo test --tests` 仅后者有；同日 ci.yml 增 integration-tests job 补位）。

@@ -156,9 +156,12 @@ impl SandboxPool {
         }
 
         let mut cmd = tokio::process::Command::new("ssh");
-        cmd.arg("-o").arg("ConnectTimeout=5")
-            .arg("-o").arg("StrictHostKeyChecking=accept-new")
-            .arg("-o").arg("BatchMode=yes");
+        cmd.arg("-o")
+            .arg("ConnectTimeout=5")
+            .arg("-o")
+            .arg("StrictHostKeyChecking=accept-new")
+            .arg("-o")
+            .arg("BatchMode=yes");
         if let Some(p) = cfg.port {
             cmd.arg("-p").arg(p.to_string());
         }
@@ -200,10 +203,15 @@ impl SandboxPool {
                 } else {
                     SandboxHealth::VersionMismatch
                 };
-                st.version = if ver_clean.is_empty() { None } else { Some(ver_clean) };
+                st.version = if ver_clean.is_empty() {
+                    None
+                } else {
+                    Some(ver_clean)
+                };
             }
-            Ok(Ok(out)) if !String::from_utf8_lossy(&out.stdout).trim().is_empty()
-                && out.status.code() == Some(0) =>
+            Ok(Ok(out))
+                if !String::from_utf8_lossy(&out.stdout).trim().is_empty()
+                    && out.status.code() == Some(0) =>
             {
                 st.health = SandboxHealth::Reachable;
                 st.version = None;
@@ -274,7 +282,9 @@ pub fn failover_decision(pool: &SandboxPool, original_host: &str) -> FailoverDec
         return FailoverDecision::NotPoolMember;
     }
     match pool.pick_healthy(&[]) {
-        Some(picked) => FailoverDecision::Failover { to: picked.to_string() },
+        Some(picked) => FailoverDecision::Failover {
+            to: picked.to_string(),
+        },
         None => FailoverDecision::NoHealthyFallback,
     }
 }
@@ -404,9 +414,10 @@ impl ApprovalPolicy {
             ApprovalPolicySpec::Map(m) => {
                 let mut autos = std::collections::HashSet::new();
                 for (k, v) in m {
-                    if let (Some(kind), Some(act)) =
-                        (ApprovalKind::parse(k), v.as_str().and_then(PolicyAction::parse))
-                        && act == PolicyAction::Auto
+                    if let (Some(kind), Some(act)) = (
+                        ApprovalKind::parse(k),
+                        v.as_str().and_then(PolicyAction::parse),
+                    ) && act == PolicyAction::Auto
                     {
                         autos.insert(kind);
                     }
@@ -444,7 +455,9 @@ impl ApprovalPolicy {
             let mut autos = std::collections::HashSet::new();
             for (k, val) in obj {
                 let kind = ApprovalKind::parse(k).ok_or_else(|| {
-                    format!("unknown policy kind '{k}' (expected file_snapshot | ui_ask | remote_verb)")
+                    format!(
+                        "unknown policy kind '{k}' (expected file_snapshot | ui_ask | remote_verb)"
+                    )
                 })?;
                 let act = val.as_str().and_then(PolicyAction::parse).ok_or_else(|| {
                     format!("unknown policy action for '{k}': {val} (expected auto | ask)")
@@ -555,10 +568,13 @@ impl SandboxProfile {
 impl SandboxPool {
     /// 取一台沙盒的档案（未配置 → Default 空档案）。
     pub fn profile(&self, name: &str) -> SandboxProfile {
-        self.hosts.get(name).map(|h| SandboxProfile {
-            approval_policy: ApprovalPolicy::parse_spec(&h.approval_policy),
-            notes: h.notes.clone(),
-        }).unwrap_or_default()
+        self.hosts
+            .get(name)
+            .map(|h| SandboxProfile {
+                approval_policy: ApprovalPolicy::parse_spec(&h.approval_policy),
+                notes: h.notes.clone(),
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -617,6 +633,21 @@ mod tests {
         }
     }
 
+    /// RAII：drop 时恢复 ION_REMOTE_WORKERS 原值（None 则保持移除）。
+    /// SAFETY: env_test_lock 已保证同进程 env 测试串行。
+    fn defer(prev: Option<String>) -> impl Drop {
+        struct G(Option<String>);
+        impl Drop for G {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(v) => unsafe { std::env::set_var("ION_REMOTE_WORKERS", v) },
+                    None => unsafe { std::env::remove_var("ION_REMOTE_WORKERS") },
+                }
+            }
+        }
+        G(prev)
+    }
+
     fn make_status(name: &str, health: SandboxHealth, count: usize) -> SandboxStatus {
         SandboxStatus {
             name: name.to_string(),
@@ -633,7 +664,10 @@ mod tests {
         for s in v {
             m.insert(s.name.clone(), s);
         }
-        SandboxPool { statuses: m, hosts: HashMap::new() }
+        SandboxPool {
+            statuses: m,
+            hosts: HashMap::new(),
+        }
     }
 
     #[test]
@@ -645,6 +679,12 @@ mod tests {
 
     #[test]
     fn from_config_parses() {
+        // shell 真实环境可能带有 ION_REMOTE_WORKERS（env 会合并进池）——隔离它
+        let _env_guard = crate::paths::env_test_lock();
+        let prev = std::env::var("ION_REMOTE_WORKERS").ok();
+        // SAFETY: env_test_lock 串行保证无并发读写
+        unsafe { std::env::remove_var("ION_REMOTE_WORKERS") };
+        let _rw_guard = defer(prev);
         let mut a = host("10.0.0.1");
         a.user = "root".into();
         a.port = Some(2222);
@@ -731,7 +771,9 @@ mod tests {
         ]);
         assert_eq!(
             failover_decision(&pool, "auto"),
-            FailoverDecision::Failover { to: "b".to_string() }
+            FailoverDecision::Failover {
+                to: "b".to_string()
+            }
         );
     }
 
@@ -752,16 +794,15 @@ mod tests {
     #[test]
     fn failover_skips_non_pool_member() {
         // 非池成员（显式 host 但不在 remote_workers / 本地 None→""）→ 不做 failover
-        let pool = pool_of(vec![make_status(
-            "other",
-            SandboxHealth::Reachable,
-            0,
-        )]);
+        let pool = pool_of(vec![make_status("other", SandboxHealth::Reachable, 0)]);
         assert_eq!(
             failover_decision(&pool, "some-explicit-host"),
             FailoverDecision::NotPoolMember
         );
-        assert_eq!(failover_decision(&pool, ""), FailoverDecision::NotPoolMember);
+        assert_eq!(
+            failover_decision(&pool, ""),
+            FailoverDecision::NotPoolMember
+        );
     }
 
     #[test]
@@ -773,7 +814,9 @@ mod tests {
         ]);
         assert_eq!(
             failover_decision(&pool, "orig"),
-            FailoverDecision::Failover { to: "orig".to_string() }
+            FailoverDecision::Failover {
+                to: "orig".to_string()
+            }
         );
     }
 
@@ -855,7 +898,9 @@ mod tests {
         );
         // legacy file-approval 形态：无 kind（requestId/total/files 平铺）→ file_snapshot
         assert_eq!(
-            ApprovalKind::from_event_data(Some(&json!({"requestId":"appr_1","total":2,"files":[]}))),
+            ApprovalKind::from_event_data(Some(
+                &json!({"requestId":"appr_1","total":2,"files":[]})
+            )),
             ApprovalKind::FileSnapshot
         );
         // 未知 kind / data 缺失 → file_snapshot（与升级前泵行为一致）
@@ -863,18 +908,26 @@ mod tests {
             ApprovalKind::from_event_data(Some(&json!({"kind":"bogus"}))),
             ApprovalKind::FileSnapshot
         );
-        assert_eq!(ApprovalKind::from_event_data(None), ApprovalKind::FileSnapshot);
+        assert_eq!(
+            ApprovalKind::from_event_data(None),
+            ApprovalKind::FileSnapshot
+        );
     }
 
     #[test]
     fn policy_parse_map_form_per_kind() {
         // map 形态：只列的 auto 生效，未列 = ask
-        let p = ApprovalPolicy::parse(r#"{"file_snapshot":"auto","ui_ask":"ask","remote_verb":"auto"}"#);
+        let p = ApprovalPolicy::parse(
+            r#"{"file_snapshot":"auto","ui_ask":"ask","remote_verb":"auto"}"#,
+        );
         assert_eq!(p.action_for(ApprovalKind::FileSnapshot), PolicyAction::Auto);
         assert_eq!(p.action_for(ApprovalKind::UiAsk), PolicyAction::Ask);
         assert_eq!(p.action_for(ApprovalKind::RemoteVerb), PolicyAction::Auto);
         // 全 ask / 空 map → 归一化 Default
-        assert_eq!(ApprovalPolicy::parse(r#"{"ui_ask":"ask"}"#), ApprovalPolicy::Default);
+        assert_eq!(
+            ApprovalPolicy::parse(r#"{"ui_ask":"ask"}"#),
+            ApprovalPolicy::Default
+        );
         assert_eq!(ApprovalPolicy::parse(r#"{}"#), ApprovalPolicy::Default);
         // 坏 JSON → 宽容回落 Default（不炸配置加载）
         assert_eq!(ApprovalPolicy::parse("{not json"), ApprovalPolicy::Default);
@@ -894,7 +947,8 @@ mod tests {
         // 配置 map 形态（untagged ApprovalPolicySpec::Map）
         let spec: ApprovalPolicySpec = serde_json::from_value(json!({
             "file_snapshot": "auto", "ui_ask": "ask", "remote_verb": "auto"
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(
             spec,
             ApprovalPolicySpec::Map(
@@ -915,9 +969,13 @@ mod tests {
         assert_eq!(ApprovalPolicy::parse_spec(&s), ApprovalPolicy::AutoApprove);
         // 未知 kind / 非字符串值宽容忽略
         let noisy: ApprovalPolicySpec =
-            serde_json::from_value(json!({"file_snapshot":"auto","bogus":"auto","ui_ask":true})).unwrap();
+            serde_json::from_value(json!({"file_snapshot":"auto","bogus":"auto","ui_ask":true}))
+                .unwrap();
         let p2 = ApprovalPolicy::parse_spec(&noisy);
-        assert_eq!(p2.action_for(ApprovalKind::FileSnapshot), PolicyAction::Auto);
+        assert_eq!(
+            p2.action_for(ApprovalKind::FileSnapshot),
+            PolicyAction::Auto
+        );
         assert_eq!(p2.action_for(ApprovalKind::UiAsk), PolicyAction::Ask);
     }
 
@@ -933,8 +991,14 @@ mod tests {
         assert!(ApprovalPolicy::parse_strict("{not json").is_err());
         assert!(ApprovalPolicy::parse_strict("[1,2]").is_err());
         // 合法两形态通过
-        assert_eq!(ApprovalPolicy::parse_strict("auto_approve").unwrap(), ApprovalPolicy::AutoApprove);
-        assert_eq!(ApprovalPolicy::parse_strict("default").unwrap(), ApprovalPolicy::Default);
+        assert_eq!(
+            ApprovalPolicy::parse_strict("auto_approve").unwrap(),
+            ApprovalPolicy::AutoApprove
+        );
+        assert_eq!(
+            ApprovalPolicy::parse_strict("default").unwrap(),
+            ApprovalPolicy::Default
+        );
         assert_eq!(
             ApprovalPolicy::parse_strict(r#"{"file_snapshot":"auto"}"#).unwrap(),
             ApprovalPolicy::PerKind([ApprovalKind::FileSnapshot].into_iter().collect())
@@ -946,7 +1010,11 @@ mod tests {
         for p in [
             ApprovalPolicy::Default,
             ApprovalPolicy::AutoApprove,
-            ApprovalPolicy::PerKind([ApprovalKind::FileSnapshot, ApprovalKind::RemoteVerb].into_iter().collect()),
+            ApprovalPolicy::PerKind(
+                [ApprovalKind::FileSnapshot, ApprovalKind::RemoteVerb]
+                    .into_iter()
+                    .collect(),
+            ),
             ApprovalPolicy::PerKind([ApprovalKind::UiAsk].into_iter().collect()),
         ] {
             let s = p.to_config_string();
@@ -954,17 +1022,28 @@ mod tests {
         }
         // scalar 形态的存储串保持旧词汇（旧数据/旧工具可读）
         assert_eq!(ApprovalPolicy::Default.to_config_string(), "default");
-        assert_eq!(ApprovalPolicy::AutoApprove.to_config_string(), "auto_approve");
+        assert_eq!(
+            ApprovalPolicy::AutoApprove.to_config_string(),
+            "auto_approve"
+        );
     }
 
     #[test]
     fn policy_describe_shapes() {
         use serde_json::json;
         assert_eq!(ApprovalPolicy::Default.describe(), json!("default"));
-        assert_eq!(ApprovalPolicy::AutoApprove.describe(), json!("auto_approve"));
+        assert_eq!(
+            ApprovalPolicy::AutoApprove.describe(),
+            json!("auto_approve")
+        );
         // PerKind → 三来源全覆盖对象（未列 = ask）
         assert_eq!(
-            ApprovalPolicy::PerKind([ApprovalKind::FileSnapshot, ApprovalKind::RemoteVerb].into_iter().collect()).describe(),
+            ApprovalPolicy::PerKind(
+                [ApprovalKind::FileSnapshot, ApprovalKind::RemoteVerb]
+                    .into_iter()
+                    .collect()
+            )
+            .describe(),
             json!({"file_snapshot":"auto","ui_ask":"ask","remote_verb":"auto"})
         );
         // 旧 as_str 视图：PerKind → "per_kind" 标记（list_sandboxes 遗留路径）
@@ -1004,6 +1083,12 @@ mod tests {
 
     #[test]
     fn profile_reads_config_fields() {
+        // from_config 会合并 shell 真实环境里的 ION_REMOTE_WORKERS——隔离它
+        let _env_guard = crate::paths::env_test_lock();
+        let prev = std::env::var("ION_REMOTE_WORKERS").ok();
+        // SAFETY: env_test_lock 串行保证无并发读写
+        unsafe { std::env::remove_var("ION_REMOTE_WORKERS") };
+        let _rw_guard = defer(prev);
         let mut m = HashMap::new();
         m.insert(
             "unattended".to_string(),
@@ -1016,7 +1101,10 @@ mod tests {
         assert_eq!(p.approval_policy, ApprovalPolicy::AutoApprove);
         assert_eq!(p.notes.len(), 1);
         // 未配置 / 不存在的沙盒 → Default 空档案（不 panic）
-        assert_eq!(pool.profile("manual").approval_policy, ApprovalPolicy::Default);
+        assert_eq!(
+            pool.profile("manual").approval_policy,
+            ApprovalPolicy::Default
+        );
         assert_eq!(pool.profile("nope"), SandboxProfile::default());
     }
 
@@ -1073,10 +1161,11 @@ mod tests {
         // env 注入（ION_REMOTE_WORKERS）与 config 同构：档案字段一并生效。
         // from_config 读 env 走 std::env::var——这里只验证 hosts map 直构路径。
         let mut pool = SandboxPool::default();
-        pool.hosts.insert(
-            "ci".to_string(),
-            host_with_policy("auto_approve", vec![]),
+        pool.hosts
+            .insert("ci".to_string(), host_with_policy("auto_approve", vec![]));
+        assert_eq!(
+            pool.profile("ci").approval_policy,
+            ApprovalPolicy::AutoApprove
         );
-        assert_eq!(pool.profile("ci").approval_policy, ApprovalPolicy::AutoApprove);
     }
 }
