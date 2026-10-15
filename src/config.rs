@@ -489,6 +489,10 @@ pub struct RuntimeConfig {
     /// + 继续当前任务；无可用档保持现状报死。默认 true（无人值守容错）。
     #[serde(default = "default_true")]
     pub auto_fallback_tier: bool,
+    /// Durable execution ledger switch. Opt-in in PR1; enabling it uses
+    /// ~/.ion/execution.sqlite3 through the dedicated writer actor.
+    #[serde(default)]
+    pub durable_execution: bool,
 }
 
 fn default_runtime_mode() -> String {
@@ -509,6 +513,7 @@ impl Default for RuntimeConfig {
             hooks_trust: HooksTrustConfig::default(),
             auto_respawn_local: false,
             auto_fallback_tier: true,
+            durable_execution: false,
         }
     }
 }
@@ -1703,6 +1708,16 @@ mod merge_tests {
         assert!(json.contains("auto_fallback_tier\":false"));
         // Default 实现同样为 true
         assert!(RuntimeConfig::default().auto_fallback_tier);
+    }
+
+    #[test]
+    fn durable_execution_defaults_false_and_roundtrips() {
+        let cfg: RuntimeConfig = serde_json::from_str("{}").unwrap();
+        assert!(!cfg.durable_execution);
+        let cfg: RuntimeConfig = serde_json::from_str(r#"{"durable_execution": true}"#).unwrap();
+        assert!(cfg.durable_execution);
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains("durable_execution\":true"));
     }
 
     /// 构造带 zai(glm-5.2/glm-4.6) + opencode(deepseek) 三个模型的 config

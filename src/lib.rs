@@ -48,6 +48,7 @@ pub mod dev_server_detector;
 pub mod error;
 pub mod event;
 pub mod event_bus;
+pub mod execution;
 pub mod export;
 pub mod global_memory;
 pub mod global_memory_ext;
