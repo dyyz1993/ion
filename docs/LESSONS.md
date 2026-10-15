@@ -97,6 +97,11 @@ ION 的错题本：复盘**已合并/已修复**的工作——返工的、不�
 - 证据：本 commit（config.rs `RwEnvGuard` + sandbox_pool.rs `defer` RAII 三处，补漏网测试；复现 `ION_REMOTE_WORKERS='{"ghost":{"hostname":"x"}}' cargo test --lib -- profile_reads_config_fields`，修前 ghost host 会渗入池）；同家族 `4604b12`（ION_SESSION_CWD）、`72cd162`（X2 HOME env 竞态 RAII 兜底）。
 - Seen 1× (2026-10-15)
 
+**守卫/校验脚本的"本地绿"不算数——凡依赖开发机才存在的路径（兄弟仓库、gitignored 目录）在 CI checkout 必红，排除规则要建在链接形状层而不是靠本地碰巧存在。**
+- Before, docs_links_ci.sh 排除规则只有协议/占位符类，AGENTS.md 链 `../ion-webui/`（兄弟仓库）与 HOOKS_ION_KILL 链 `~/.zcode/`（gitignored 目录）本地全绿，CI docs-links 三连红无人见。
+- 证据：本 commit（脚本增 `escapes_repo` 排除 + 环境专属链接改内联码）；CI 失败记录 gh run 38577387691（[FAIL] 三条）。
+- Seen 1× (2026-10-15)
+
 **改命令签名（新增必填参数）必须同步 u16 全覆盖冒烟表——无参冒烟表与签名漂移会红得无声（直推只跑 lib 测试，集成测试仅 PR 才跑）。**
 - Before, `fork` 自 `aa38d53`（2026-08-25）变真实现要求 turnId，`u16_all_supported_commands` 无参表红了一个半月无人见——ci.yml 直推 master 只跑 `cargo test --lib`，`cargo test --tests` 仅 pr-gate 跑，直推绕过了它。
 - 证据：u16 失败复现（tests/unit_rpc_test.rs:693 报 "fork: missing param: turnId"，2026-10-14 发现）；修复 = fork 移出无参冒烟 + 专项断言验分发与校验（完整行为归 branch_tree_ci）；缺口对照 `.github/workflows/ci.yml` vs `pr-gate.yml`（`cargo test --tests` 仅后者有；同日 ci.yml 增 integration-tests job 补位）。

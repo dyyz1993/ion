@@ -5,11 +5,13 @@
 # 本脚本把「评审时逐个检查文档链接可解析」（SUBSYSTEM_DOC_TEMPLATE §维护规则 4）
 # 变成违反就红的守卫测试，改文档的 commit 过一遍。
 #
-# 排除项（见 case 分支，均为已知合法遗留，不算坏链）：
+# 排除项（见 case 分支与 escapes_repo，均为已知合法遗留，不算坏链）：
 #   - http(s)/mailto：外链
 #   - file://：旧设计文档的绝对路径风格（迁移是待办，存量见 docs/design/ 多篇）
 #   - /tmp/*：CI 报告快照里的临时日志
 #   - *xxx* / 含 < 或 {：模板格式占位符（如 src/xxx.rs、{extension}/MANUAL.md）
+#   - 逃出仓库根的相对链接（如 ../ion-webui/...）：兄弟仓库/家目录只在开发机存在，
+#     CI checkout 里不可解析（2026-10-15 CI docs-links 三连红的根因之一）
 # 链接指向 archive/ 是允许的（归档文档可被引用，只是不在 archive/ 里维护内容）。
 #
 # 用法：bash tests/docs_links_ci.sh   （退出码 0=全绿，1=有坏链）
@@ -17,6 +19,21 @@
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT" || exit 1
+
+# 逃出仓库根判定：按 '/' 逐段走路，depth 归零后再遇 .. 即逃出（bash 3.2 兼容）
+escapes_repo() {
+  local depth=0 seg
+  local oldIFS=$IFS
+  IFS=/; set -- $1; IFS=$oldIFS
+  for seg in "$@"; do
+    case "$seg" in
+      ""|.) ;;
+      ..) depth=$((depth - 1)); [ "$depth" -lt 0 ] && return 0 ;;
+      *) depth=$((depth + 1)) ;;
+    esac
+  done
+  return 1
+}
 
 FAIL=0
 CHECKED=0
@@ -31,6 +48,7 @@ for f in AGENTS.md $(find docs -name '*.md' -not -path '*/archive/*' | sort); do
       *xxx*|*\<*|*\{*) continue ;;
     esac
     d="$(dirname "$f")"
+    if escapes_repo "$d/$p"; then continue; fi
     CHECKED=$((CHECKED + 1))
     if [ ! -e "$d/$p" ]; then
       echo "[FAIL] [$f] -> $p"

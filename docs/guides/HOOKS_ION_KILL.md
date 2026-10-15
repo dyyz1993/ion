@@ -195,5 +195,7 @@ A: 因为 AI 有合理需求（比如 `pkill -f "target/debug/ion serve"` 是安
 
 | 文件 | 作用 |
 |------|------|
-| [`.zcode/config.json`](../../.zcode/config.json) | 注册 hook 到 PreToolUse/Bash |
-| [`.zcode/hooks/guard-ion-kill.sh`](../../.zcode/hooks/guard-ion-kill.sh) | 三层防御拦截脚本（bash + python3）|
+| `.zcode/config.json` | 注册 hook 到 PreToolUse/Bash |
+| `.zcode/hooks/guard-ion-kill.sh` | 三层防御拦截脚本（bash + python3）|
+
+> 以上文件位于用户家目录 `~/.zcode/`（本仓库之外），故用纯文本路径而非链接——链接守卫只校验仓库内可解析目标。
