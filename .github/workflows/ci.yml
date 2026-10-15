@@ -96,7 +96,9 @@ jobs:
           chmod +x scripts/run_ci_matrix_parallel.sh
           bash scripts/run_ci_matrix_parallel.sh
         env:
-          PARALLELISM: 5
+          # GitHub runner 资源远小于开发机：5 路并行实测 OOM（serve 被内核
+          # SIGKILL 连坐邻居脚本，run 38695602172），降到 2。
+          PARALLELISM: 2
           PER_SCRIPT_TIMEOUT: 600
 
       - name: Record run root

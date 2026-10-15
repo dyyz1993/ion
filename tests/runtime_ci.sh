@@ -45,7 +45,7 @@ RUST_LOG=error cargo test --test runtime_tests 2>&1 | grep -q "test result:" && 
 
 # ── Phase 2: Manager + Worker ──
 cleanup
-sleep 1; rm -f /Users/xuyingzhou/.ion/host.sock
+sleep 1; rm -f "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}"
 "$ION_BIN" serve start > /tmp/ion-ci-rt-host.log 2>&1 &
 MANAGER_PID=$!
 echo "$MANAGER_PID" > "$HOST_PID_FILE"

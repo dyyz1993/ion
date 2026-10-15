@@ -215,6 +215,11 @@ run_one_script() {
     # Per-script isolated HOME
     rm -rf "$home_dir" "$work_dir"
     mkdir -p "$home_dir/.ion/agent" "$work_dir"
+    # Baseline faux config: 隔离 HOME 不得依赖开发机真实 ~/.ion/config.json
+    # （CI 全新环境无 default_model → faux 回放链断、config list 为空——
+    # run 38695602172 的 faux_scenarios/tier_models/cli_alignment 集群）。
+    # 脚本自带 config fixture 的会覆盖此文件。
+    printf '{"default_provider":"faux","default_model":"faux"}' > "$home_dir/.ion/config.json"
     [ -d "$HOME/.rustup" ] && ln -s "$HOME/.rustup" "$home_dir/.rustup" 2>/dev/null
     [ -d "$HOME/.cargo" ] && ln -s "$HOME/.cargo" "$home_dir/.cargo" 2>/dev/null
 
@@ -232,6 +237,7 @@ run_one_script() {
     ln -sf "$PROJECT_DIR/build.rs" "$work_dir/build.rs" 2>/dev/null
     ln -sfn "$PROJECT_DIR/examples" "$work_dir/examples" 2>/dev/null
     ln -sfn "$PROJECT_DIR/.git" "$work_dir/.git"
+    ln -sfn "$PROJECT_DIR/.github" "$work_dir/.github"
     ln -sfn "$PROJECT_DIR/.github" "$work_dir/.github" 2>/dev/null
     # Workspace member dirs (Cargo.toml references these — cargo test fails without them)
     # ⚠️ 新增 workspace 成员 crate 时必须同步这里（缺了 = 每脚本 Phase 0 build
@@ -278,6 +284,20 @@ run_one_script() {
     local exit_code=$?
     local end=$(date +%s)
     local dur=$((end - start))
+
+    # Sweep leaked daemons/workers: ion processes whose HOME env is this
+    # script's isolated home. `serve start` daemonizes (double-fork escapes
+    # the script's process group), so leaked hosts accumulate across 80+
+    # scripts and feed runner OOM — CI 实测 serve start 被内核 SIGKILL
+    # ("Killed", run 38695602172) 并连坐邻居脚本。/proc 仅 Linux 存在。
+    if [ -d /proc ]; then
+        for lpid in $(pgrep -f "target/debug/ion" 2>/dev/null); do
+            [ "$lpid" = "$$" ] && continue
+            if tr '\0' '\n' < "/proc/$lpid/environ" 2>/dev/null | grep -qxF "HOME=$home_dir"; then
+                kill -9 "$lpid" 2>/dev/null || true
+            fi
+        done
+    fi
 
     local status
     if [ $exit_code -eq 0 ]; then status="PASS"; else status="FAIL"; fi
