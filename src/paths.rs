@@ -1140,6 +1140,10 @@ mod tests {
 
     #[test]
     fn ensure_dirs_creates_all() {
+        // env_test_lock：与其他持锁的 env 操纵测试（ION_AGENT_DIR/ION_SESSION_DIR 等）
+        // 互斥——无锁时 ensure_dirs() 与断言之间读到别测试临时改写的 env 根，
+        // CI（Linux 双核调度）实测撞过 extensions_dir 不存在（run 38684860314）。
+        let _guard = env_test_lock();
         ensure_dirs();
         assert!(agent_dir().exists());
         assert!(sessions_dir().exists());
