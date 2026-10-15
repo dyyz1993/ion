@@ -538,6 +538,7 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/design/WORKFLOW_GATE.md](./docs/design/WORKFLOW_GATE.md) | Workflow Gate — 内核级交付校验 (已完成) |
 | [docs/design/WORKFLOW_ENGINE.md](./docs/design/WORKFLOW_ENGINE.md) | Workflow Engine — 结构化交付流水线 DSL + 执行流程 + CI Group (已验证) |
 | [docs/design/PI_RPC_ALIGNMENT.md](./docs/design/PI_RPC_ALIGNMENT.md) | pi RPC CLI 对齐文档 (66 ✅ / 0 ❌ 全部对齐) |
+| [docs/design/PI_UI_FORMS.md](./docs/design/PI_UI_FORMS.md) | pi UI 形态调研：无官方 Web UI（v0.85 主动清理）+ 实验 client/server 架构深读（已完成（调研）） |
 | [docs/design/CLI_ARCHITECTURE.md](./docs/design/CLI_ARCHITECTURE.md) | CLI 三种执行场景设计：三场景分组验证用例 (已完成) |
 | [docs/design/CLI_ROADMAP.md](./docs/design/CLI_ROADMAP.md) | CLI 落地路线图 (已完成) |
 | [docs/design/CLI_PLAN.md](./docs/design/CLI_PLAN.md) | **CLI 完整落地方案（唯一入口）**：架构 + 路线图 + 验证用例 + checklist 合并 (已完成) |
