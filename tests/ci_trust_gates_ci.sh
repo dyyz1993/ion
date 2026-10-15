@@ -160,7 +160,13 @@ RUN1=$(capture_root "$SB/run1.out")
                  || bad "B1 matrix exited 0 despite injected failure"
 [ -s "${RUN1}/preflight.log" ] && grep -q "Finished" "${RUN1}/preflight.log" \
     && ok "B2 preflight.log holds real cargo output" \
-    || bad "B2 preflight.log missing/empty/no cargo output"
+    || { bad "B2 preflight.log missing/empty/no cargo output"
+         echo "  ── run1.out tail（诊断内层 runner 失败模式）──"
+         tail -12 "$SB/run1.out" 2>/dev/null | sed 's/^/    /'
+         echo "  ── RUN1=$RUN1 preflight.log ──"
+         ls -la "${RUN1}/preflight.log" 2>/dev/null | sed 's/^/    /'
+         tail -6 "${RUN1}/preflight.log" 2>/dev/null | sed 's/^/    /'
+       }
 [ -f "${RUN1}/cargo-stamp" ] && grep -q '^fingerprint=' "${RUN1}/cargo-stamp" \
     && ok "B3 stamp written with tree fingerprint" \
     || bad "B3 cargo-stamp missing"
