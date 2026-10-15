@@ -35,6 +35,11 @@ TEST_PROJECT="$TEST_ROOT/hook-project"
 SOCK="/tmp/ion_ext06_serve_$$.sock"
 SID=""
 HOOK_LOG="$TEST_ROOT/hooks-exec.log"
+# hooks 供应链信任门（404522c）：项目级 hooks.json 默认不加载——隔离 HOME 并
+# 显式开信任（SessionStart 0 次的根因；同 hooks_prompt_deny_ci）
+export HOME="$TEST_ROOT/home"
+mkdir -p "$HOME/.ion"
+printf '{"runtime":{"hooks_trust":{"project_hooks_enabled":true}}}' > "$HOME/.ion/config.json"
 
 wait_agent_idle() {
     local max_iter=${1:-50}

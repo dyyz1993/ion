@@ -38,6 +38,13 @@ echo "fn main() {}" > "$TMP/proj/src/main.rs"
 HOOKS_JSON="$TMP/proj/.ion/hooks.json"
 mkdir -p "$TMP/proj/.ion"
 
+# hooks 供应链信任门（404522c）：项目级 hooks.json 默认不加载——隔离 HOME 并
+# 显式开信任（与 hooks_prompt_deny_ci 同款；本脚本原先用环境 HOME，在 CI 的
+# 种子 HOME 与开发机真实 HOME 下项目 hooks 都被静默跳过 → 6 组全红）
+export HOME="$TMP/home"
+mkdir -p "$HOME/.ion"
+printf '{"runtime":{"hooks_trust":{"project_hooks_enabled":true}}}' > "$HOME/.ion/config.json"
+
 write_hooks() {
     local event="$1" outfile="$2"
     cat > "$HOOKS_JSON" << EOF

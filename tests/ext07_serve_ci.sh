@@ -35,6 +35,27 @@ TEST_ROOT="$(mktemp -d /tmp/ion-ext07-serve-XXXXXX)"
 TEST_PROJECT="$TEST_ROOT/goal-project"
 SOCK="/tmp/ion_ext07_serve_$$.sock"
 SID=""
+# hooks 供应链信任门（404522c）：项目级 hooks.json 默认不加载——隔离 HOME 并
+# 显式开信任（同 ext06/hooks_prompt_deny_ci）
+ORIG_HOME="$HOME"
+export HOME="$TEST_ROOT/home"
+mkdir -p "$HOME/.ion"
+printf '{"runtime":{"hooks_trust":{"project_hooks_enabled":true}}}' > "$HOME/.ion/config.json"
+
+# ⚠️ Phase 4+5/6b 是真实 LLM e2e（goal_set + write + read + bash 多轮工具调用，
+# 无 faux 剧本）——历史上借开发机真实 provider 静默运行。原 HOME 无可用
+# provider（CI 隔离环境）→ 诚实 SKIP（绿）；faux 化改造另批。
+REAL_PROVIDER=$(python3 -c "
+import json,sys
+try:
+    cfg = json.load(open('$ORIG_HOME/.ion/config.json'))
+    p = cfg.get('default_provider') or ''
+    print(p if p and p != 'faux' else '')
+except Exception: print('')" 2>/dev/null)
+if [ -z "$REAL_PROVIDER" ]; then
+    echo "  ⏭️  SKIP: Phase 4+5/6b 需要真实 LLM provider（原 HOME 未配置）——见脚本头注释"
+    exit 0
+fi
 
 wait_agent_idle() {
     local max_iter=${1:-60}
