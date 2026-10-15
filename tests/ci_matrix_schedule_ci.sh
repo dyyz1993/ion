@@ -59,7 +59,12 @@ PREFLIGHT_SET="cargo build --bin ion"
 printf '# user monitor config -- must survive matrix runs\nschedule=* * * * *\n' \
     > "$FP/.ion/monitors/SENTINEL.cfg"
 MON_BEFORE=$(cksum "$FP/.ion/monitors/SENTINEL.cfg" | awk '{print $1}')
-(cd "$FP" && env -u CARGO_TARGET_DIR cargo build --bin ion) > "$SB/setup-build.log" 2>&1 \
+# 三重隔离（同 ci_trust_gates setup）：外层 shim 假 no-op + CARGO_TARGET_DIR 导走产物
+(
+  cd "$FP"
+  CLEAN_PATH_SETUP=$(echo "$PATH" | tr ':' '\n' | grep -v "^${CI_BIN_DIR:-/nonexistent}$" | paste -sd: -)
+  PATH="$CLEAN_PATH_SETUP" env -u CARGO_TARGET_DIR cargo build --bin ion
+) > "$SB/setup-build.log" 2>&1 \
     || { echo "  [FAIL] setup: fake project build error"; cat "$SB/setup-build.log"; exit 1; }
 
 # Fake test scripts: log sub-second timestamps via python3 time.time()

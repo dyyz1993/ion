@@ -106,9 +106,14 @@ MON_BEFORE=$(cksum "$FP/.ion/monitors/SENTINEL.cfg" | awk '{print $1}')
 (cd "$FP" && git init -q && git add -A && \
  git -c user.email=t@t -c user.name=t commit -qm init) >/dev/null 2>&1
 # prebuild the ion bin (runner preflight check needs it to exist)
-# env -u CARGO_TARGET_DIR：外层 runner 的共享 target 会把 fakeproj 产物导走
-# （setup 产物在真项目 target → 内层 runner 的 ION_BIN 预检 "build ion first"）
-(cd "$FP" && env -u CARGO_TARGET_DIR cargo build --bin ion) > "$SB/setup-build.log" 2>&1 \
+# 三重隔离：①env -u CARGO_TARGET_DIR（产物别被导去外层真项目 target）
+# ②CI_BIN_DIR 之外的 PATH（外层 shim 会按外层树 stamp 假 no-op 掉这次构建）
+# ③rustup/cargo 可达（CI 的 cargo 在 ~/.cargo/bin，mktemp HOME 不影响）
+(
+  cd "$FP"
+  CLEAN_PATH_SETUP=$(echo "$PATH" | tr ':' '\n' | grep -v "^${CI_BIN_DIR:-/nonexistent}$" | paste -sd: -)
+  PATH="$CLEAN_PATH_SETUP" env -u CARGO_TARGET_DIR cargo build --bin ion
+) > "$SB/setup-build.log" 2>&1 \
     || { echo "  [FAIL] setup build error:"; tail -5 "$SB/setup-build.log"; exit 1; }
 
 cat > "$FP/tests/a_check_ci.sh" <<'EOF'
