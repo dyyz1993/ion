@@ -2284,12 +2284,12 @@ document.addEventListener('DOMContentLoaded', function() {
     parentSession: <code style="background:rgba(255,255,255,0.2);padding:2px 6px;border-radius:3px;">{}</code>
   </span>
 </div>"#,
-        // 头部字段来自会话 JSONL（可能是外部分享的文件），必须转义后才能进 HTML。
-        // 治理：未转义时 `spawnedBy: "</script><script>alert(1)</script>"` 会直接执行。
-        escape_html_text(&spawned_by),
-        escape_html_text(&relation),
-        escape_html_text(&parent_session),
-    );
+            // 头部字段来自会话 JSONL（可能是外部分享的文件），必须转义后才能进 HTML。
+            // 治理：未转义时 `spawnedBy: "</script><script>alert(1)</script>"` 会直接执行。
+            escape_html_text(spawned_by),
+            escape_html_text(relation),
+            escape_html_text(parent_session),
+        );
         // 在 <body> 后插入 banner
         if let Some(pos) = html.find("<body>") {
             html.insert_str(pos + 6, &origin_banner);
@@ -5203,8 +5203,7 @@ mod tests {
         // 消息/Custom 内容渲染前必须先 HTML 转义再过 markdown（safeMarkedParse）
         assert!(EXPORT_TEMPLATE_JS.contains("function safeMarkedParse"));
         // escapeHtml 必须覆盖 5 个实体（含引号，防属性逃逸）
-        assert!(EXPORT_TEMPLATE_JS
-            .contains(r#".replace(/"/g, '&quot;')"#));
+        assert!(EXPORT_TEMPLATE_JS.contains(r#".replace(/"/g, '&quot;')"#));
         assert!(EXPORT_TEMPLATE_JS.contains(r#".replace(/'/g, '&#39;')"#));
     }
 
@@ -5213,7 +5212,10 @@ mod tests {
     fn test_sub_html_filename_sanitizes_path_characters() {
         assert_eq!(sub_html_filename("../../etc/passwd"), "sub_etcpasswd.html");
         assert_eq!(sub_html_filename("a/b\\c d"), "sub_abcd.html");
-        assert_eq!(sub_html_filename("sess-abc1234567890123"), "sub_sess-abc1234.html");
+        assert_eq!(
+            sub_html_filename("sess-abc1234567890123"),
+            "sub_sess-abc1234.html"
+        );
     }
 
     /// XSS 负向测试：构造含 `<img src=x onerror=...>` / `</script><script>` 载荷的
@@ -5319,7 +5321,9 @@ mod tests {
         // parentSession 载荷以实体转义形态出现在 banner
         assert!(html.contains("&lt;img src=x onerror=alert(1)&gt;"));
         // session_name 进 <title> 前被转义
-        assert!(html.contains("<title>&lt;/title&gt;&lt;script&gt;alert(2)&lt;/script&gt;</title>"));
+        assert!(
+            html.contains("<title>&lt;/title&gt;&lt;script&gt;alert(2)&lt;/script&gt;</title>")
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

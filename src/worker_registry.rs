@@ -165,11 +165,15 @@ pub(crate) fn validate_host_key_fingerprint(fp: &str) -> Result<(), String> {
 pub(crate) fn compute_key_fingerprint(key_b64: &str) -> Option<String> {
     use base64::Engine as _;
     use sha2::{Digest, Sha256};
-    let blob = base64::engine::general_purpose::STANDARD.decode(key_b64.trim()).ok()?;
+    let blob = base64::engine::general_purpose::STANDARD
+        .decode(key_b64.trim())
+        .ok()?;
     let digest = Sha256::digest(&blob);
     Some(format!(
         "SHA256:{}",
-        base64::engine::general_purpose::STANDARD.encode(digest).trim_end_matches('=')
+        base64::engine::general_purpose::STANDARD
+            .encode(digest)
+            .trim_end_matches('=')
     ))
 }
 
@@ -276,7 +280,9 @@ static GLOBAL_EVENT_BUS: std::sync::OnceLock<
 > = std::sync::OnceLock::new();
 
 /// 注入全局事件总线（host 启动时调用一次；重复调用以第一次为准）。
-pub fn set_global_event_bus(bus: std::sync::Arc<tokio::sync::Mutex<crate::event_bus::ExtensionEventBus>>) {
+pub fn set_global_event_bus(
+    bus: std::sync::Arc<tokio::sync::Mutex<crate::event_bus::ExtensionEventBus>>,
+) {
     let _ = GLOBAL_EVENT_BUS.set(bus);
 }
 
@@ -303,7 +309,8 @@ fn tofu_seen_targets() -> &'static parking_lot::Mutex<std::collections::HashSet<
 }
 
 /// pin 结果缓存：dest_key → 临时 known_hosts 路径（进程内 keyscan 一次）。
-fn pin_cache() -> &'static parking_lot::Mutex<std::collections::HashMap<String, std::path::PathBuf>> {
+fn pin_cache() -> &'static parking_lot::Mutex<std::collections::HashMap<String, std::path::PathBuf>>
+{
     static CACHE: std::sync::OnceLock<
         parking_lot::Mutex<std::collections::HashMap<String, std::path::PathBuf>>,
     > = std::sync::OnceLock::new();
@@ -357,13 +364,26 @@ pub(crate) async fn resolve_host_key_policy(
             validate_host_key_fingerprint(fp)?;
             if let Some(p) = pin_cache().lock().get(dest_key) {
                 if p.exists() {
-                    return Ok(HostKeyPolicy::Pinned { known_hosts: p.clone() });
+                    return Ok(HostKeyPolicy::Pinned {
+                        known_hosts: p.clone(),
+                    });
                 }
             }
             let lines = ssh_keyscan(hostname, port).await?;
-            let (path, got_fp) = write_pinned_known_hosts(dest_key, hostname, port, &lines.iter().map(String::as_str).collect::<Vec<_>>(), fp)?;
-            pin_cache().lock().insert(dest_key.to_string(), path.clone());
-            tracing::info!("[ssh-tofu] host key pinned: {dest_key} -> {}", path.display());
+            let (path, got_fp) = write_pinned_known_hosts(
+                dest_key,
+                hostname,
+                port,
+                &lines.iter().map(String::as_str).collect::<Vec<_>>(),
+                fp,
+            )?;
+            pin_cache()
+                .lock()
+                .insert(dest_key.to_string(), path.clone());
+            tracing::info!(
+                "[ssh-tofu] host key pinned: {dest_key} -> {}",
+                path.display()
+            );
             broadcast_host_event_raw(
                 "SshHostKeyPinned",
                 serde_json::json!({
@@ -582,9 +602,8 @@ async fn run_asset_pipeline(
     );
     let tar_status = tar_proc.wait().await;
     let consumer_status = consumer_proc.wait().await;
-    let truncate = |buf: Vec<u8>| -> String {
-        String::from_utf8_lossy(&buf).chars().take(200).collect()
-    };
+    let truncate =
+        |buf: Vec<u8>| -> String { String::from_utf8_lossy(&buf).chars().take(200).collect() };
     if !tar_status.map(|s| s.success()).unwrap_or(false) {
         return Err(format!("assets sync tar failed: {}", truncate(tar_err)));
     }
@@ -677,7 +696,9 @@ fn write_remote_session_payload(
         .append(true)
         .open(&path)
     {
-        let needs_nl = std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
+        let needs_nl = std::fs::metadata(&path)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false);
         let payload_line = if needs_nl { format!("\n{line}") } else { line };
         let _ = f.write_all(payload_line.as_bytes());
     }
@@ -2128,8 +2149,11 @@ impl WorkerRegistry {
                                 // 也由该 helper 统一返回。
                                 let mut need_overview_broadcast = false;
                                 if let Some(record) = reg.workers.get_mut(&sub_wid) {
-                                    need_overview_broadcast =
-                                        update_record_on_pump_event(Some(record), ev_type, now_ms());
+                                    need_overview_broadcast = update_record_on_pump_event(
+                                        Some(record),
+                                        ev_type,
+                                        now_ms(),
+                                    );
                                 }
                                 if ev_type == "text_delta" {
                                     if let Some(delta) = msg
@@ -2210,9 +2234,14 @@ impl WorkerRegistry {
                                         // 等批准 → 超时退场）。判定在短锁内（纯内存），
                                         // 应答动作在锁外 spawn task 执行。
                                         let ev_data = ev.and_then(|e| e.get("data"));
-                                        let kind = crate::sandbox_pool::ApprovalKind::from_event_data(ev_data);
+                                        let kind =
+                                            crate::sandbox_pool::ApprovalKind::from_event_data(
+                                                ev_data,
+                                            );
                                         let entry_id = ev_data
-                                            .and_then(|d| d.get("id").or_else(|| d.get("requestId")))
+                                            .and_then(|d| {
+                                                d.get("id").or_else(|| d.get("requestId"))
+                                            })
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("")
                                             .to_string();
@@ -2239,7 +2268,11 @@ impl WorkerRegistry {
                                 let pw = sub_wid.clone();
                                 tokio::spawn(async move {
                                     WorkerRegistry::approval_pump_fire(
-                                        &rc, &pw, &pump_sid, pump_kind, &pump_entry_id,
+                                        &rc,
+                                        &pw,
+                                        &pump_sid,
+                                        pump_kind,
+                                        &pump_entry_id,
                                     )
                                     .await;
                                 });
@@ -2926,8 +2959,11 @@ impl WorkerRegistry {
                                 // 统一刷新 last_heartbeat；agent_end/agent_stopped/error 的
                                 // Idle 转换与 broadcast 需求由 helper 统一返回。
                                 if let Some(record) = reg.workers.get_mut(&sub_wid) {
-                                    need_overview_broadcast =
-                                        update_record_on_pump_event(Some(record), ev_type, now_ms());
+                                    need_overview_broadcast = update_record_on_pump_event(
+                                        Some(record),
+                                        ev_type,
+                                        now_ms(),
+                                    );
                                 }
                                 if ev_type == "text_delta"
                                     && let Some(delta) = msg
@@ -3017,9 +3053,14 @@ impl WorkerRegistry {
                                         // 统一审批泵（泵2，M3 全来源升级）：同泵1——
                                         // data.kind 识别来源，per-kind 生效策略判定放行
                                         let ev_data = ev.and_then(|e| e.get("data"));
-                                        let kind = crate::sandbox_pool::ApprovalKind::from_event_data(ev_data);
+                                        let kind =
+                                            crate::sandbox_pool::ApprovalKind::from_event_data(
+                                                ev_data,
+                                            );
                                         let entry_id = ev_data
-                                            .and_then(|d| d.get("id").or_else(|| d.get("requestId")))
+                                            .and_then(|d| {
+                                                d.get("id").or_else(|| d.get("requestId"))
+                                            })
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("")
                                             .to_string();
@@ -3043,7 +3084,11 @@ impl WorkerRegistry {
                                 let pw = sub_wid.clone();
                                 tokio::spawn(async move {
                                     WorkerRegistry::approval_pump_fire(
-                                        &rc, &pw, &pump_sid, pump_kind, &pump_entry_id,
+                                        &rc,
+                                        &pw,
+                                        &pump_sid,
+                                        pump_kind,
+                                        &pump_entry_id,
                                     )
                                     .await;
                                 });
@@ -3310,10 +3355,7 @@ impl WorkerRegistry {
                         project_path: plan.project_path.clone(),
                         // 原地重建按 fork-child 文件布局（<sid>.jsonl）预加载；
                         // remote 路径本来就强制 ION_FORK_CHILD=1，这里覆盖本地路径
-                        relation: plan
-                            .session
-                            .as_ref()
-                            .map(|_| WorkerRelation::Child),
+                        relation: plan.session.as_ref().map(|_| WorkerRelation::Child),
                         initial_prompt: Some(plan.prompt),
                         // 默认 20 turns 会让重派 worker 几分钟就烧完预算（探索期一轮一个工具调用）
                         max_turns: Some(200),
@@ -4151,7 +4193,8 @@ impl WorkerRegistry {
         };
         let raw = ovr_worker
             .or_else(|| {
-                host.as_deref().and_then(|h| self.sandbox_policy_overrides.get(h).cloned())
+                host.as_deref()
+                    .and_then(|h| self.sandbox_policy_overrides.get(h).cloned())
             })
             .or(born);
         crate::sandbox_pool::ApprovalPolicy::parse(raw.as_deref().unwrap_or(""))
@@ -4249,10 +4292,7 @@ impl WorkerRegistry {
         // ui_ask 优先走 host 进程 oneshot（host 级 Ask，等价 ui_respond 旧通路）
         if entry.kind == crate::approval_bus::ApprovalKind::UiAsk {
             let native = entry.native_request_id().unwrap_or_default().to_string();
-            let taken = crate::runtime::pending_ui()
-                .lock()
-                .unwrap()
-                .remove(&native);
+            let taken = crate::runtime::pending_ui().lock().unwrap().remove(&native);
             if let Some(tx) = taken {
                 let resp = if approve { "allow" } else { "deny" }.to_string();
                 let _ = tx.send(resp);
@@ -4261,7 +4301,7 @@ impl WorkerRegistry {
                 let entry = bus
                     .resolve_as(&entry.id, approval_decision_of(approve), actor, note)
                     .map_err(|e| e.message())?;
-                return Ok(approval_response_payload(&entry, approve, &bus));
+                return Ok(approval_response_payload(&entry, approve, bus));
             }
         }
 
@@ -4307,7 +4347,7 @@ impl WorkerRegistry {
         let entry = bus
             .resolve_as(&entry.id, approval_decision_of(approve), actor, note)
             .map_err(|e| e.message())?;
-        Ok(approval_response_payload(&entry, approve, &bus))
+        Ok(approval_response_payload(&entry, approve, bus))
     }
 
     /// 统一审批应答薄调用点（审批泵自动放行路径）。
@@ -4376,8 +4416,13 @@ impl WorkerRegistry {
         session_id: &str,
         entry_id: &str,
     ) {
-        match Self::send_async(registry, worker_id, "review_approve_all", serde_json::json!({}))
-            .await
+        match Self::send_async(
+            registry,
+            worker_id,
+            "review_approve_all",
+            serde_json::json!({}),
+        )
+        .await
         {
             Ok(resp) => {
                 let resolved = resp.get("data").cloned().unwrap_or_else(|| resp.clone());
@@ -5013,10 +5058,7 @@ impl WorkerRegistry {
                                     Ok(Ok(v)) => v,
                                     _ => {
                                         // 超时/通道关闭 = 拒绝——同步消除总线条目
-                                        crate::approval_sink::sink().resolve(
-                                            &req_id_o,
-                                            "timeout",
-                                        );
+                                        crate::approval_sink::sink().resolve(&req_id_o, "timeout");
                                         false
                                     }
                                 };
@@ -5148,7 +5190,7 @@ impl WorkerRegistry {
                                 .map(|p| p.to_string_lossy().to_string())
                                 .unwrap_or_default()
                         });
-                    let ok = write_remote_session_payload(&cwd, &sid, &kind, &payload);
+                    let ok = write_remote_session_payload(&cwd, &sid, kind, &payload);
                     if ok {
                         crate::message_retrieval::invalidate_cache(&cwd);
                     }
@@ -6010,7 +6052,7 @@ impl WorkerRegistry {
                     .nth(1)
                     .and_then(|rest| rest.split('/').next())
                     .unwrap_or("");
-                if !grants.http_fetch.iter().any(|d| d == &domain) {
+                if !grants.http_fetch.iter().any(|d| d == domain) {
                     return Err(format!(
                         "verb_denied: http.fetch domain '{domain}' not in grants.http_fetch"
                     ));
@@ -6050,7 +6092,6 @@ impl WorkerRegistry {
     /// 桥接转发任务（tokio::spawn，需 Send）专用——parking_lot guard 非 Send。
     /// 缓冲满时 2ms 自旋重试，5s 上限后放弃该行（warn）。
     fn write_line_to_worker_sync(&mut self, worker_or_session: &str, line: &str) -> bool {
-        use tokio::io::AsyncWriteExt;
         let target = if self.workers.contains_key(worker_or_session) {
             Some(worker_or_session.to_string())
         } else {
@@ -7281,8 +7322,7 @@ mod tests {
     #[test]
     fn test_parse_keyscan_line() {
         // 标准三字段行
-        let (h, t, k) =
-            parse_keyscan_line(&format!("myhost ssh-ed25519 {TEST_KEY_B64}")).unwrap();
+        let (h, t, k) = parse_keyscan_line(&format!("myhost ssh-ed25519 {TEST_KEY_B64}")).unwrap();
         assert_eq!(
             (h.as_str(), t.as_str(), k.as_str()),
             ("myhost", "ssh-ed25519", TEST_KEY_B64)
@@ -7298,8 +7338,7 @@ mod tests {
         assert!(parse_keyscan_line("onlyhost").is_none());
         // key 只取第 3 段（后续尾巴不混入）
         let (_, _, k) =
-            parse_keyscan_line(&format!("host ssh-ed25519 {TEST_KEY_B64} extra trailing"))
-                .unwrap();
+            parse_keyscan_line(&format!("host ssh-ed25519 {TEST_KEY_B64} extra trailing")).unwrap();
         assert_eq!(k, TEST_KEY_B64);
     }
 
@@ -7388,7 +7427,14 @@ mod tests {
 
     #[test]
     fn test_argv_tofu_vs_pinned_options() {
-        let host = rh("sshuser", "win38", None, "", "/usr/local/bin/ion", "/root/ws");
+        let host = rh(
+            "sshuser",
+            "win38",
+            None,
+            "",
+            "/usr/local/bin/ion",
+            "/root/ws",
+        );
         // TOFU：保持 accept-new（无人值守 spawn 不卡交互）
         let tofu = build_remote_worker_argv(&host, &[], &[], &HostKeyPolicy::Tofu);
         assert!(tofu.contains(&"StrictHostKeyChecking=accept-new".to_string()));
@@ -7684,7 +7730,7 @@ mod tests {
                     parent: None,
                     children: vec![],
                     host: None,
-            approval_policy: None,
+                    approval_policy: None,
                     notify_parent: false,
                     started_at: 0,
                     last_heartbeat: 0,
@@ -7800,7 +7846,7 @@ mod tests {
                     parent: None,
                     children: vec![],
                     host: None,
-            approval_policy: None,
+                    approval_policy: None,
                     notify_parent: false,
                     started_at: 0,
                     last_heartbeat: 0,
@@ -8063,9 +8109,10 @@ mod tests {
         // 不同 kind 不受冷却（M3 键隔离：file_snapshot 放行不挡 remote_verb）
         assert!(reg.pump_arm("w2", K::RemoteVerb, 10_000 + 500).is_some());
         // 冷却窗外 → 同 kind 再放行
-        assert!(reg
-            .pump_arm("w2", K::FileSnapshot, 10_000 + PUMP_COOLDOWN_MS as i64)
-            .is_some());
+        assert!(
+            reg.pump_arm("w2", K::FileSnapshot, 10_000 + PUMP_COOLDOWN_MS as i64)
+                .is_some()
+        );
         // 拨回 default → 永不 fire
         reg.set_sandbox_policy("w2", "default").unwrap();
         assert!(reg.pump_arm("w2", K::UiAsk, 100_000).is_none());
@@ -8090,18 +8137,17 @@ mod tests {
         hosted.approval_policy = Some(r#"{"file_snapshot":"auto"}"#.to_string());
         reg.workers.insert("w4".into(), hosted);
         reg.set_sandbox_policy("sbx", "default").unwrap();
-        assert_eq!(
-            reg.effective_approval_policy("w4"),
-            ApprovalPolicy::Default
-        );
+        assert_eq!(reg.effective_approval_policy("w4"), ApprovalPolicy::Default);
         // worker 覆盖（map ui_ask auto）> host 覆盖
-        reg.set_sandbox_policy("w4", r#"{"ui_ask":"auto"}"#).unwrap();
+        reg.set_sandbox_policy("w4", r#"{"ui_ask":"auto"}"#)
+            .unwrap();
         assert_eq!(
             reg.effective_approval_policy("w4").action_for(K::UiAsk),
             PolicyAction::Auto
         );
         assert_eq!(
-            reg.effective_approval_policy("w4").action_for(K::FileSnapshot),
+            reg.effective_approval_policy("w4")
+                .action_for(K::FileSnapshot),
             PolicyAction::Ask
         );
         // set 严格拒绝：非法 map key / 非法 scalar（写路径不静默回落）
@@ -8203,7 +8249,7 @@ mod tests {
                 parent: None,
                 children: Vec::new(),
                 host: None,
-            approval_policy: None,
+                approval_policy: None,
                 notify_parent: false,
                 started_at: 0,
                 last_heartbeat: 0,
@@ -8474,8 +8520,7 @@ mod tests {
         // marker 必须是**无斜杠**的相对名：文件名里不能含 `/`（含 $() 的 evil
         // 文件名一旦带 / 就建不出来）；修复前的 sh -c 在测试进程 cwd 执行
         // `$(touch w8_pwned_marker_PID)`，新实现 argv 直传不解释、永不执行。
-        let marker =
-            std::path::PathBuf::from(format!("w8_pwned_marker_{}", std::process::id()));
+        let marker = std::path::PathBuf::from(format!("w8_pwned_marker_{}", std::process::id()));
         let _ = std::fs::remove_file(&marker);
         let dir = w8_temp_agent_dir("rce");
         let skills = dir.join("skills");
@@ -8524,7 +8569,10 @@ mod tests {
         let stdout = String::from_utf8_lossy(&list.stdout);
         assert!(stdout.contains("skills/good.md"), "listing: {stdout}");
         assert!(stdout.contains("skills/note space.md"), "listing: {stdout}");
-        assert!(!stdout.contains("pwned"), "evil file must be excluded: {stdout}");
+        assert!(
+            !stdout.contains("pwned"),
+            "evil file must be excluded: {stdout}"
+        );
 
         let _ = std::fs::remove_file(&marker);
         let _ = std::fs::remove_file(&archive);
@@ -8545,7 +8593,10 @@ mod tests {
             "exit 3".to_string(),
         ]; // 立即非零退出（等价 ssh 失败）
         let result = run_asset_pipeline(&dir, &tar_args, &consumer).await;
-        assert!(result.is_err(), "consumer failure must propagate: {result:?}");
+        assert!(
+            result.is_err(),
+            "consumer failure must propagate: {result:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -8696,7 +8747,11 @@ mod tests {
     fn test_bug1_text_delta_refreshes_without_broadcast() {
         let mut rec = make_busy_record("wkr_bug1d", "sess_bug1d");
         let t0 = rec.last_heartbeat;
-        assert!(!update_record_on_pump_event(Some(&mut rec), "text_delta", t0 + 1_000));
+        assert!(!update_record_on_pump_event(
+            Some(&mut rec),
+            "text_delta",
+            t0 + 1_000
+        ));
         assert_eq!(rec.last_heartbeat, t0 + 1_000);
         assert_eq!(rec.status, WorkerStatus::Busy);
     }
@@ -8714,7 +8769,10 @@ mod tests {
         assert_eq!(heartbeat_decision(&Dead, 0, i64::MAX), None);
         assert_eq!(heartbeat_decision(&Stale, 0, i64::MAX), None);
         // Bug1 主张：Busy worker 只要事件在刷心跳就永远不判死
-        assert_eq!(heartbeat_decision(&Busy, 500_000, 500_000 + 600_001 - 1), None);
+        assert_eq!(
+            heartbeat_decision(&Busy, 500_000, 500_000 + 600_001 - 1),
+            None
+        );
     }
 
     /// Bug2 复现（真实子进程）：worker 被 SIGKILL（kill -9 / OOM killer）时
@@ -8753,10 +8811,7 @@ mod tests {
     /// - None + None（状态未收割的竞态兜底）→ Unknown（按旧行为走清理，不误报 crash）
     #[test]
     fn test_bug2_exit_classification_matrix() {
-        assert_eq!(
-            classify_worker_exit(Some(0), None),
-            WorkerExitKind::Clean
-        );
+        assert_eq!(classify_worker_exit(Some(0), None), WorkerExitKind::Clean);
         assert_eq!(
             classify_worker_exit(Some(1), None),
             WorkerExitKind::Crashed(1)
@@ -8773,10 +8828,7 @@ mod tests {
             classify_worker_exit(None, Some(11)),
             WorkerExitKind::Signaled(11)
         );
-        assert_eq!(
-            classify_worker_exit(None, None),
-            WorkerExitKind::Unknown
-        );
+        assert_eq!(classify_worker_exit(None, None), WorkerExitKind::Unknown);
         // 异常判定：只有 Crashed/Signaled 走 Dead + child_crashed
         assert!(!exit_kind_is_abnormal(WorkerExitKind::Clean));
         assert!(!exit_kind_is_abnormal(WorkerExitKind::Unknown));
@@ -8929,7 +8981,11 @@ mod tests {
                 w6_user_line("m1", "fix the login bug in auth module", "prompt"),
                 w6_assistant_line("a1", "ok, reading auth module"),
                 // 注入：异步委派完成通知 / channel_send 都以 User+followUp 落盘
-                w6_user_line("m2", "[channel #main from abc123] build passed, CI green", "followUp"),
+                w6_user_line(
+                    "m2",
+                    "[channel #main from abc123] build passed, CI green",
+                    "followUp",
+                ),
                 w6_assistant_line("a2", "noted"),
             ],
         );
@@ -9022,8 +9078,16 @@ mod tests {
         // 非 build agent + set_model 过的会话 → 继承，不回落 "build"/全局默认
         let (agent, model, provider) =
             respawn_inherit_fields("reviewer", Some(("glm-5.2".into(), "zai".into())));
-        assert_eq!(agent.as_deref(), Some("reviewer"), "agent must inherit record value");
-        assert_eq!(model.as_deref(), Some("glm-5.2"), "model must inherit index value");
+        assert_eq!(
+            agent.as_deref(),
+            Some("reviewer"),
+            "agent must inherit record value"
+        );
+        assert_eq!(
+            model.as_deref(),
+            Some("glm-5.2"),
+            "model must inherit index value"
+        );
         assert_eq!(provider.as_deref(), Some("zai"));
     }
 
@@ -9032,11 +9096,15 @@ mod tests {
         // index 无记录 → model/provider 回落 None（走全局默认），agent 仍继承 record
         let (agent, model, provider) = respawn_inherit_fields("developer", None);
         assert_eq!(agent.as_deref(), Some("developer"));
-        assert!(model.is_none(), "missing index model must fall back to None");
+        assert!(
+            model.is_none(),
+            "missing index model must fall back to None"
+        );
         assert!(provider.is_none());
 
         // index model 为空字符串（异常数据）→ 同样回落
-        let (_, model, provider) = respawn_inherit_fields("dev", Some((String::new(), "zai".into())));
+        let (_, model, provider) =
+            respawn_inherit_fields("dev", Some((String::new(), "zai".into())));
         assert!(model.is_none());
         assert!(provider.is_none());
 
@@ -9097,10 +9165,7 @@ mod tests {
         let project = root.join("proj");
         std::fs::create_dir_all(&project).unwrap();
         let sid = "k4-tier1-sid";
-        let f = crate::paths::session_jsonl_path_by_id(
-            project.to_string_lossy().as_ref(),
-            sid,
-        );
+        let f = crate::paths::session_jsonl_path_by_id(project.to_string_lossy().as_ref(), sid);
         std::fs::create_dir_all(f.parent().unwrap()).unwrap();
         std::fs::write(&f, k4_session_jsonl()).unwrap();
 
@@ -9114,7 +9179,9 @@ mod tests {
             .expect("direct hit with messages must decide");
             assert_eq!(
                 s,
-                RespawnStrategy::InPlacePrimary { session_path: f.clone() },
+                RespawnStrategy::InPlacePrimary {
+                    session_path: f.clone()
+                },
                 "respawn_local={respawn_local}"
             );
         }
@@ -9125,10 +9192,19 @@ mod tests {
             .expect("plan must build");
         assert_eq!(plan.session.as_deref(), Some(sid), "must keep original sid");
         assert_eq!(plan.strategy, "inplace_primary");
-        assert_eq!(plan.project_path.as_deref(), Some(project.to_str().unwrap()));
+        assert_eq!(
+            plan.project_path.as_deref(),
+            Some(project.to_str().unwrap())
+        );
         assert!(plan.prompt.contains("原地重建"), "short guidance marker");
-        assert!(plan.prompt.contains("git status"), "guidance tells to inspect git");
-        assert!(plan.prompt.contains("接力纪律"), "discipline injection preserved");
+        assert!(
+            plan.prompt.contains("git status"),
+            "guidance tells to inspect git"
+        );
+        assert!(
+            plan.prompt.contains("接力纪律"),
+            "discipline injection preserved"
+        );
         assert!(
             !plan.prompt.contains("K4TASK"),
             "inplace guidance must NOT quote the task summary (history is preloaded)"
@@ -9173,8 +9249,14 @@ mod tests {
         let plan = plan_auto_respawn(&root, &record, true).expect("plan");
         assert!(plan.session.is_none(), "downgrade = new sid");
         assert_eq!(plan.strategy, "summary_relay");
-        assert!(plan.prompt.contains("K4TASK"), "summary relay quotes the task");
-        assert!(plan.prompt.contains("接力纪律"), "discipline injection preserved");
+        assert!(
+            plan.prompt.contains("K4TASK"),
+            "summary relay quotes the task"
+        );
+        assert!(
+            plan.prompt.contains("接力纪律"),
+            "discipline injection preserved"
+        );
     }
 
     /// 三档降级之一：文件存在但 header-only（无 message）→ 不原地重建；
@@ -9185,20 +9267,15 @@ mod tests {
         let project = root.join("proj");
         std::fs::create_dir_all(&project).unwrap();
         let sid = "k4-header-only";
-        let f = crate::paths::session_jsonl_path_by_id(
-            project.to_string_lossy().as_ref(),
-            sid,
-        );
+        let f = crate::paths::session_jsonl_path_by_id(project.to_string_lossy().as_ref(), sid);
         std::fs::create_dir_all(f.parent().unwrap()).unwrap();
         std::fs::write(&f, r#"{"type":"session","id":"k4","agent":"build"}"#).unwrap();
 
-        let s = decide_respawn_strategy(
-            &root,
-            project.to_string_lossy().as_ref(),
-            sid,
-            true,
+        let s = decide_respawn_strategy(&root, project.to_string_lossy().as_ref(), sid, true);
+        assert!(
+            s.is_none(),
+            "header-only file: no history to preload nor summarize, got {s:?}"
         );
-        assert!(s.is_none(), "header-only file: no history to preload nor summarize, got {s:?}");
     }
 
     /// 三档兜底：完全找不到文件 → None 不重派（现状：resolve 失败即 None）。
@@ -9206,7 +9283,10 @@ mod tests {
     fn test_k4_tier3_no_file_returns_none_no_respawn() {
         let (_g, root) = k4_env_guard("nofile");
         let s = decide_respawn_strategy(&root, "/any/project", "k4-never-existed", true);
-        assert!(s.is_none(), "no file at all must not respawn (current behavior)");
+        assert!(
+            s.is_none(),
+            "no file at all must not respawn (current behavior)"
+        );
         let record = k4_record("k4-never-existed", Some("box1"), "/any/project");
         assert!(plan_auto_respawn(&root, &record, false).is_none());
     }
@@ -9219,10 +9299,7 @@ mod tests {
         let project = root.join("proj");
         std::fs::create_dir_all(&project).unwrap();
         let sid = "k4-failover-sid";
-        let f = crate::paths::session_jsonl_path_by_id(
-            project.to_string_lossy().as_ref(),
-            sid,
-        );
+        let f = crate::paths::session_jsonl_path_by_id(project.to_string_lossy().as_ref(), sid);
         std::fs::create_dir_all(f.parent().unwrap()).unwrap();
         std::fs::write(&f, k4_session_jsonl()).unwrap();
         let record = k4_record(sid, Some("box1"), project.to_string_lossy().as_ref());
@@ -9234,9 +9311,15 @@ mod tests {
             "mode": "pool_failover", "from": "box1", "to": "box2", "poolSize": 3
         });
         let downgraded = finalize_respawn_plan_after_failover(plan.clone(), Some(&moved));
-        assert!(downgraded.session.is_none(), "node change must drop original sid");
+        assert!(
+            downgraded.session.is_none(),
+            "node change must drop original sid"
+        );
         assert_eq!(downgraded.strategy, "summary_relay");
-        assert!(downgraded.prompt.contains("K4TASK"), "downgraded to summary relay");
+        assert!(
+            downgraded.prompt.contains("K4TASK"),
+            "downgraded to summary relay"
+        );
         assert!(downgraded.project_path.is_none());
         assert!(downgraded.relay_prompt.is_none());
 
@@ -9245,7 +9328,11 @@ mod tests {
             "mode": "pool_pick", "from": "box1", "to": "box1", "poolSize": 3
         });
         let kept = finalize_respawn_plan_after_failover(plan.clone(), Some(&same));
-        assert_eq!(kept.session.as_deref(), Some(sid), "same node keeps inplace");
+        assert_eq!(
+            kept.session.as_deref(),
+            Some(sid),
+            "same node keeps inplace"
+        );
         assert_eq!(kept.strategy, "inplace_primary");
         let kept2 = finalize_respawn_plan_after_failover(plan.clone(), None);
         assert_eq!(kept2.session.as_deref(), Some(sid));
@@ -9271,10 +9358,7 @@ mod tests {
         let project = root.join("proj");
         std::fs::create_dir_all(&project).unwrap();
         let sid = "k4-quota-sid";
-        let f = crate::paths::session_jsonl_path_by_id(
-            project.to_string_lossy().as_ref(),
-            sid,
-        );
+        let f = crate::paths::session_jsonl_path_by_id(project.to_string_lossy().as_ref(), sid);
         std::fs::create_dir_all(f.parent().unwrap()).unwrap();
         std::fs::write(&f, k4_session_jsonl()).unwrap();
         let record = k4_record(sid, Some("box1"), project.to_string_lossy().as_ref());
@@ -9341,7 +9425,10 @@ mod tests {
         ));
         let pending = crate::approval_sink::sink().pending();
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].kind, crate::approval_sink::ApprovalKind::RemoteVerb);
+        assert_eq!(
+            pending[0].kind,
+            crate::approval_sink::ApprovalKind::RemoteVerb
+        );
 
         // 应答：旧 API 语义（true = 移除成功 + tx 投递）+ 总线条目消除
         assert!(verb_review(&req_id, true));
@@ -9354,7 +9441,10 @@ mod tests {
             "verb_review must resolve the unified bus entry"
         );
         // 拒绝路径 + 未知 id
-        assert!(!verb_review(&req_id, false), "second review of same id = false");
+        assert!(
+            !verb_review(&req_id, false),
+            "second review of same id = false"
+        );
         crate::approval_sink::set_sink(std::sync::Arc::new(crate::approval_sink::NoopSink));
     }
 
@@ -9365,10 +9455,9 @@ mod tests {
         crate::approval_sink::set_sink(std::sync::Arc::new(
             crate::approval_sink::RecordingSink::new(),
         ));
-        verb_approvals_global()
-            .lock()
-            .unwrap()
-            .insert("vapp_m2t2".into(), VerbApprovalReq {
+        verb_approvals_global().lock().unwrap().insert(
+            "vapp_m2t2".into(),
+            VerbApprovalReq {
                 worker_session: "sess_m2t2".into(),
                 project_path: "/tmp/m2t2".into(),
                 grants: crate::config::RemoteWorkerGrants::default(),
@@ -9376,7 +9465,8 @@ mod tests {
                 args: serde_json::json!({"url": "https://example.com"}),
                 tx: None,
                 created_at: 42,
-            });
+            },
+        );
         let list = verb_pending_list();
         // 进程级全局表可能残留并行测试条目——按本测试自己的 id 断言
         let mine: Vec<_> = list
@@ -9447,7 +9537,11 @@ mod tests {
         assert_eq!(out["decision"], "approve");
         assert_eq!(out["remaining"], 0);
         assert!(out["id"].as_str().unwrap().starts_with("apr_"));
-        assert_eq!(rx.try_recv().unwrap(), "allow", "oneshot 收到 allow（=ui_respond）");
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            "allow",
+            "oneshot 收到 allow（=ui_respond）"
+        );
         assert!(bus.pending().is_empty(), "条目出表");
 
         // reject → deny
@@ -9505,7 +9599,10 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(err.contains("ui ask request not found or already expired"), "{err}");
+        assert!(
+            err.contains("ui ask request not found or already expired"),
+            "{err}"
+        );
         assert_eq!(bus.pending().len(), 1, "失败不应答 → 条目保留");
         unified_teardown();
     }
@@ -9552,7 +9649,11 @@ mod tests {
         .expect("verb approve ok");
         assert_eq!(out["kind"], "remote_verb");
         assert!(rx.await.unwrap_or(false), "决定投递给等待中的 verb 任务");
-        assert!(crate::approval_bus::ApprovalBus::global().pending().is_empty());
+        assert!(
+            crate::approval_bus::ApprovalBus::global()
+                .pending()
+                .is_empty()
+        );
         // 已收口：二次应答 → not found
         let err = WorkerRegistry::execute_unified_approval(
             &registry,
@@ -9923,7 +10024,9 @@ fn approval_response_payload(
 }
 
 /// 总线条目 → sink 条目（respond_route 纯函数决策的输入形状）
-fn bus_entry_to_sink(entry: &crate::approval_bus::ApprovalEntry) -> crate::approval_sink::ApprovalEntry {
+fn bus_entry_to_sink(
+    entry: &crate::approval_bus::ApprovalEntry,
+) -> crate::approval_sink::ApprovalEntry {
     crate::approval_sink::ApprovalEntry {
         id: entry
             .native_request_id()
@@ -9966,10 +10069,7 @@ pub fn verb_review(request_id: &str, approve: bool) -> bool {
         return false;
     };
     // M2 来源 2：应答同步消除统一审批总线条目（旧 API 语义不变）
-    crate::approval_sink::sink().resolve(
-        request_id,
-        if approve { "approved" } else { "rejected" },
-    );
+    crate::approval_sink::sink().resolve(request_id, if approve { "approved" } else { "rejected" });
     if let Some(tx) = req.tx.take() {
         let _ = tx.send(approve);
     }
@@ -10000,7 +10100,7 @@ pub fn verb_pending_list() -> Vec<serde_json::Value> {
 /// 纯执行器（无 registry 依赖）：grants 已校验通过后落地动词。
 /// 供 verb_gate 快路径与审批放行后的 spawn 任务共用。
 fn execute_verb_checked(
-    grants: &crate::config::RemoteWorkerGrants,
+    _grants: &crate::config::RemoteWorkerGrants,
     verb: &str,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
@@ -10196,7 +10296,10 @@ pub fn classify_worker_exit(exit_code: Option<i32>, signal: Option<i32>) -> Work
 
 /// 该退出类别是否属于异常死亡（需要 Dead 标记 + child_crashed 通知）。
 pub fn exit_kind_is_abnormal(kind: WorkerExitKind) -> bool {
-    matches!(kind, WorkerExitKind::Crashed(_) | WorkerExitKind::Signaled(_))
+    matches!(
+        kind,
+        WorkerExitKind::Crashed(_) | WorkerExitKind::Signaled(_)
+    )
 }
 
 /// auto-respawn 门禁（纯函数）：是否放行进入会话解析/配额检查。
@@ -10226,9 +10329,7 @@ pub fn try_auto_respawn_gated(
 /// 本地 worker 的 auto-respawn 必须走 `try_auto_respawn_gated` +
 /// config `runtime.auto_respawn_local` 开关（默认 false，不改变现有行为）。
 pub fn try_auto_respawn(record: &WorkerRecord, exit_code: Option<i32>) -> Option<RespawnPlan> {
-    if record.host.is_none() {
-        return None;
-    }
+    record.host.as_ref()?;
     try_auto_respawn_impl(record, exit_code)
 }
 
@@ -10349,7 +10450,8 @@ pub fn build_respawn_plan(strategy: RespawnStrategy, record: &WorkerRecord) -> R
             strategy: "summary_relay",
             relay_prompt: None,
         },
-        RespawnStrategy::InPlacePrimary { ref session_path } | RespawnStrategy::InPlaceReflowScan { ref session_path } => {
+        RespawnStrategy::InPlacePrimary { ref session_path }
+        | RespawnStrategy::InPlaceReflowScan { ref session_path } => {
             let tier = if matches!(strategy, RespawnStrategy::InPlacePrimary { .. }) {
                 "inplace_primary"
             } else {
@@ -10365,7 +10467,7 @@ pub fn build_respawn_plan(strategy: RespawnStrategy, record: &WorkerRecord) -> R
                     Some(record.project_path.clone())
                 },
                 strategy: tier,
-                relay_prompt: generate_resume_prompt(&session_path).map(append_relay_discipline),
+                relay_prompt: generate_resume_prompt(session_path).map(append_relay_discipline),
             }
         }
     }
@@ -10425,10 +10527,7 @@ pub fn finalize_respawn_plan_after_failover(
 /// K4 升级：会话文件可解析且有内容 → 原 sid 原地重建（全历史预加载 + 短引导）；
 /// 否则降级摘要接力（现状）；文件不存在 → None 不重派（现状）。
 /// 配额照旧：原地重建与摘要接力同池计数，每 sid 最多 3 次。
-fn try_auto_respawn_impl(
-    record: &WorkerRecord,
-    exit_code: Option<i32>,
-) -> Option<RespawnPlan> {
+fn try_auto_respawn_impl(record: &WorkerRecord, exit_code: Option<i32>) -> Option<RespawnPlan> {
     let is_remote = record.host.is_some();
     let died_unexpectedly = exit_code != Some(0);
     tracing::info!(
@@ -10456,7 +10555,10 @@ fn try_auto_respawn_impl(
     tracing::info!(
         "[auto-recovery] plan: strategy={} session={} project_path={:?}",
         plan.strategy,
-        plan.session.as_deref().map(|s| &s[..s.len().min(12)]).unwrap_or("(new)"),
+        plan.session
+            .as_deref()
+            .map(|s| &s[..s.len().min(12)])
+            .unwrap_or("(new)"),
         plan.project_path
     );
     Some(plan)
@@ -10479,7 +10581,8 @@ fn auto_respawn_counts() -> &'static std::sync::Mutex<std::collections::HashMap<
 pub async fn respawn_host_failover(original_host: &str) -> (String, Option<serde_json::Value>) {
     let cfg = crate::config::IonConfig::load();
     // 快路径：非池成员且非 auto → 不构建探测（本地 worker / 显式外部 host 场景零开销）
-    if original_host != "auto" && !crate::sandbox_pool::SandboxPool::from_config(&cfg).contains(original_host)
+    if original_host != "auto"
+        && !crate::sandbox_pool::SandboxPool::from_config(&cfg).contains(original_host)
     {
         return (original_host.to_string(), None);
     }
@@ -10531,9 +10634,7 @@ pub async fn respawn_host_failover(original_host: &str) -> (String, Option<serde
                 })),
             )
         }
-        crate::sandbox_pool::FailoverDecision::NotPoolMember => {
-            (original_host.to_string(), None)
-        }
+        crate::sandbox_pool::FailoverDecision::NotPoolMember => (original_host.to_string(), None),
     }
 }
 
@@ -10551,9 +10652,7 @@ pub fn respawn_inherit_fields(
         Some(record_agent.to_string())
     };
     match index_model {
-        Some((model, provider)) if !model.trim().is_empty() => {
-            (agent, Some(model), Some(provider))
-        }
+        Some((model, provider)) if !model.trim().is_empty() => (agent, Some(model), Some(provider)),
         _ => (agent, None, None),
     }
 }
@@ -10578,9 +10677,10 @@ pub fn respawn_inherit_from_index(
 ) -> (Option<String>, Option<String>, Option<String>) {
     let idx = crate::session_index::SessionIndex::load();
     match idx.get(session_id) {
-        Some(meta) => {
-            respawn_inherit_fields(&meta.agent, Some((meta.model.clone(), meta.provider.clone())))
-        }
+        Some(meta) => respawn_inherit_fields(
+            &meta.agent,
+            Some((meta.model.clone(), meta.provider.clone())),
+        ),
         None => (None, None, None),
     }
 }
@@ -10642,11 +10742,7 @@ fn collect_input_origin_marks(lines: &[&str]) -> Vec<(usize, String, String)> {
 /// 取位于它之前、离它最近的 input_origin 标记；无标记或 origin == "user" → 真实
 /// 用户；textPreview（留痕时 prompt 文本前 80 字符截断）不是消息文本前缀 →
 /// 保守视为真实用户（宁可漏排除，不可把真实任务当注入跳过）。
-fn origin_injects_message(
-    line_idx: usize,
-    text: &str,
-    marks: &[(usize, String, String)],
-) -> bool {
+fn origin_injects_message(line_idx: usize, text: &str, marks: &[(usize, String, String)]) -> bool {
     let Some((_, origin, preview)) = marks.iter().rev().find(|(i, _, _)| *i < line_idx) else {
         return false;
     };

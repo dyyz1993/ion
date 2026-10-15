@@ -4,8 +4,18 @@ version = "0.1.0"
 edition = "2024"
 description = "ION CLI — Agent orchestration and AI agent loop"
 
+[lints]
+workspace = true
+
 [workspace]
 members = []
+
+[workspace.lints.clippy]
+# async_trait 0.1.89 展开会给生成的 trait 方法加 #[must_use]，而返回的
+# Pin<Box<dyn Future>> 本身已是 must_use——clippy 1.99 起 double_must_use
+# 对全部 async trait 误报（ion-provider ApiProvider + ion lib 9 处）。
+# 等 async-trait 上游修复后移除此豁免。
+double_must_use = "allow"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

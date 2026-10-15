@@ -135,14 +135,18 @@ struct TestHost {
 
 impl Drop for TestHost {
     fn drop(&mut self) {
-        let _ = Command::new("/bin/kill").args(["-15", &self.pid.to_string()]).status();
+        let _ = Command::new("/bin/kill")
+            .args(["-15", &self.pid.to_string()])
+            .status();
         for _ in 0..50 {
             match self.child.try_wait() {
                 Ok(Some(_)) => return,
                 _ => std::thread::sleep(Duration::from_millis(100)),
             }
         }
-        let _ = Command::new("/bin/kill").args(["-9", &self.pid.to_string()]).status();
+        let _ = Command::new("/bin/kill")
+            .args(["-9", &self.pid.to_string()])
+            .status();
         let _ = self.child.wait();
     }
 }
@@ -196,7 +200,12 @@ fn start_host(root: &std::path::Path, port: u16, auto_respawn: bool) -> TestHost
         .stderr(Stdio::from(log_err));
     let child = cmd.spawn().expect("spawn ion serve failed");
     let pid = child.id();
-    let mut host = TestHost { child, pid, sock, log: log_path };
+    let mut host = TestHost {
+        child,
+        pid,
+        sock,
+        log: log_path,
+    };
 
     // 等 socket 就绪（list_sessions 可答，30s 上限）
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -209,7 +218,11 @@ fn start_host(root: &std::path::Path, port: u16, auto_respawn: bool) -> TestHost
                 break;
             }
         }
-        assert!(Instant::now() < deadline, "host 30s 未就绪。log:\n{}", host_log_tail(&host, 30));
+        assert!(
+            Instant::now() < deadline,
+            "host 30s 未就绪。log:\n{}",
+            host_log_tail(&host, 30)
+        );
         std::thread::sleep(Duration::from_millis(300));
     }
     host
@@ -226,7 +239,13 @@ fn host_log_tail(host: &TestHost, n: usize) -> String {
 // Unix socket RPC 客户端（一问一答，跳过事件帧）
 // ─────────────────────────────────────────────────────────────
 
-fn unix_rpc(sock: &std::path::Path, id: &str, method: &str, params: &str, session: Option<&str>) -> Option<serde_json::Value> {
+fn unix_rpc(
+    sock: &std::path::Path,
+    id: &str,
+    method: &str,
+    params: &str,
+    session: Option<&str>,
+) -> Option<serde_json::Value> {
     let mut stream = std::os::unix::net::UnixStream::connect(sock).ok()?;
     stream.set_read_timeout(Some(RPC_TIMEOUT)).ok()?;
     let mut req = serde_json::json!({"id": id, "method": method, "params": serde_json::from_str::<serde_json::Value>(params).unwrap_or_default()});
@@ -239,7 +258,9 @@ fn unix_rpc(sock: &std::path::Path, id: &str, method: &str, params: &str, sessio
     let deadline = Instant::now() + RPC_TIMEOUT;
     loop {
         if Instant::now() > deadline {
-            return Some(serde_json::json!({"type": "response", "id": id, "success": false, "error": "client-side read timeout"}));
+            return Some(
+                serde_json::json!({"type": "response", "id": id, "success": false, "error": "client-side read timeout"}),
+            );
         }
         let mut line = String::new();
         match reader.read_line(&mut line) {
@@ -249,7 +270,9 @@ fn unix_rpc(sock: &std::path::Path, id: &str, method: &str, params: &str, sessio
                 if trimmed.is_empty() {
                     continue;
                 }
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) else { continue };
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+                    continue;
+                };
                 // 响应帧：type=response（事件帧跳过）
                 if v.get("type").and_then(|t| t.as_str()) == Some("response") {
                     return Some(v);
@@ -265,7 +288,12 @@ fn host_rpc(host: &TestHost, method: &str, params: &str) -> Option<serde_json::V
     unix_rpc(&host.sock, &id, method, params, None)
 }
 
-fn session_rpc(host: &TestHost, sid: &str, method: &str, params: &str) -> Option<serde_json::Value> {
+fn session_rpc(
+    host: &TestHost,
+    sid: &str,
+    method: &str,
+    params: &str,
+) -> Option<serde_json::Value> {
     let id = format!("s{}", rand_suffix());
     unix_rpc(&host.sock, &id, method, params, Some(sid))
 }
@@ -276,7 +304,12 @@ fn session_rpc(host: &TestHost, sid: &str, method: &str, params: &str) -> Option
 
 fn find_worker_pid(host_pid: u32, sid: &str) -> Option<u32> {
     let out = Command::new("/usr/bin/pgrep")
-        .args(["-P", &host_pid.to_string(), "-f", &format!("rpc --session {sid}")])
+        .args([
+            "-P",
+            &host_pid.to_string(),
+            "-f",
+            &format!("rpc --session {sid}"),
+        ])
         .output()
         .ok()?;
     let line = String::from_utf8_lossy(&out.stdout);
@@ -292,7 +325,9 @@ fn pid_alive(pid: u32) -> bool {
 }
 
 fn kill_worker_sigkill(pid: u32) {
-    let _ = Command::new("/bin/kill").args(["-9", &pid.to_string()]).status();
+    let _ = Command::new("/bin/kill")
+        .args(["-9", &pid.to_string()])
+        .status();
     for _ in 0..50 {
         if !pid_alive(pid) {
             return;
@@ -315,7 +350,11 @@ fn session_jsonl(root: &std::path::Path, sid: &str) -> Option<std::path::PathBuf
                 let p = e.path();
                 if p.is_dir() {
                     stack.push(p);
-                } else if p.file_name().map(|n| n.to_string_lossy() == target).unwrap_or(false) {
+                } else if p
+                    .file_name()
+                    .map(|n| n.to_string_lossy() == target)
+                    .unwrap_or(false)
+                {
                     return Some(p);
                 }
             }
@@ -347,30 +386,43 @@ struct ProbeResult {
 
 fn probe_offset(offset_ms: u64, auto_respawn: bool) -> ProbeResult {
     let port = spawn_mock_sse_server(300);
-    let root = std::env::temp_dir().join(format!("ion-prsw-{}-{}", std::process::id(), rand_suffix()));
+    let root =
+        std::env::temp_dir().join(format!("ion-prsw-{}-{}", std::process::id(), rand_suffix()));
     let host = start_host(&root, port, auto_respawn);
 
     // 1) create session + 等 worker 进程出现
-    let create = host_rpc(&host, "create_session", r#"{"agent":"build"}"#)
-        .expect("create_session 无响应");
+    let create =
+        host_rpc(&host, "create_session", r#"{"agent":"build"}"#).expect("create_session 无响应");
     assert!(
         create["success"].as_bool() == Some(true),
         "create_session 失败: {create}"
     );
-    let sid = create["data"]["session_id"].as_str().expect("无 session_id").to_string();
+    let sid = create["data"]["session_id"]
+        .as_str()
+        .expect("无 session_id")
+        .to_string();
     let deadline = Instant::now() + Duration::from_secs(15);
     let worker_pid = loop {
         if let Some(p) = find_worker_pid(host.pid, &sid) {
             break p;
         }
-        assert!(Instant::now() < deadline, "15s 未见 worker 进程。log:\n{}", host_log_tail(&host, 30));
+        assert!(
+            Instant::now() < deadline,
+            "15s 未见 worker 进程。log:\n{}",
+            host_log_tail(&host, 30)
+        );
         std::thread::sleep(Duration::from_millis(200));
     };
 
     // 2) warm-up prompt（验证管道通畅；码词落盘 = 前置条件）
     let warm_marker = format!("WARMUP_{}", rand_suffix());
-    let warm = session_rpc(&host, &sid, "prompt", &format!(r#"{{"text":"{warm_marker}"}}"#))
-        .expect("warm-up prompt 无响应");
+    let warm = session_rpc(
+        &host,
+        &sid,
+        "prompt",
+        &format!(r#"{{"text":"{warm_marker}"}}"#),
+    )
+    .expect("warm-up prompt 无响应");
     assert!(
         warm["success"].as_bool() == Some(true),
         "warm-up prompt 失败（前置条件不成立）: {warm}"
@@ -391,7 +443,11 @@ fn probe_offset(offset_ms: u64, auto_respawn: bool) -> ProbeResult {
         if !info["data"]["is_running"].as_bool().unwrap_or(true) {
             break;
         }
-        assert!(Instant::now() < deadline, "warm-up 轮 15s 未结束。log:\n{}", host_log_tail(&host, 40));
+        assert!(
+            Instant::now() < deadline,
+            "warm-up 轮 15s 未结束。log:\n{}",
+            host_log_tail(&host, 40)
+        );
         std::thread::sleep(Duration::from_millis(500));
     }
 
@@ -402,7 +458,12 @@ fn probe_offset(offset_ms: u64, auto_respawn: bool) -> ProbeResult {
     // 4) 窗口期探测：等 offset 后发 prompt
     std::thread::sleep(Duration::from_millis(offset_ms));
     let probe_marker = format!("PROBE_{}", rand_suffix());
-    let resp = session_rpc(&host, &sid, "prompt", &format!(r#"{{"text":"{probe_marker}"}}"#));
+    let resp = session_rpc(
+        &host,
+        &sid,
+        "prompt",
+        &format!(r#"{{"text":"{probe_marker}"}}"#),
+    );
     let rpc_raw = serde_json::to_string(&resp).unwrap_or_default();
 
     // 5) 观察窗：码词是否落盘 / 新 worker 是否出现
@@ -423,7 +484,12 @@ fn probe_offset(offset_ms: u64, auto_respawn: bool) -> ProbeResult {
     }
 
     let _ = std::fs::remove_dir_all(&root);
-    ProbeResult { rpc: resp, rpc_raw, delivered, new_worker_spawned }
+    ProbeResult {
+        rpc: resp,
+        rpc_raw,
+        delivered,
+        new_worker_spawned,
+    }
 }
 
 /// 契约断言（修复后）：
@@ -432,7 +498,11 @@ fn probe_offset(offset_ms: u64, auto_respawn: bool) -> ProbeResult {
 /// 2. 不得出现误导性错误 "worker not found: sess_xxx"（session 明明存在，
 ///    只是 worker 死了——这是 P0 吞没的表象之一）。
 fn assert_no_swallow(label: &str, r: &ProbeResult) -> Option<String> {
-    let success = r.rpc.as_ref().and_then(|v| v["success"].as_bool()).unwrap_or(false);
+    let success = r
+        .rpc
+        .as_ref()
+        .and_then(|v| v["success"].as_bool())
+        .unwrap_or(false);
     if r.rpc_raw.contains("worker not found: sess_") {
         return Some(format!(
             "{label}: 出现误导性错误 \"worker not found: sess_*\"（session 存在，worker 死亡不应报 worker 不存在）。resp={}",
@@ -450,7 +520,10 @@ fn assert_no_swallow(label: &str, r: &ProbeResult) -> Option<String> {
             r.rpc_raw
         ))
     } else {
-        println!("  [{label}] delivered ✓ (resp={}, new_worker={})", r.rpc_raw, r.new_worker_spawned);
+        println!(
+            "  [{label}] delivered ✓ (resp={}, new_worker={})",
+            r.rpc_raw, r.new_worker_spawned
+        );
         None
     }
 }

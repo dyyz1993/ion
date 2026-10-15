@@ -512,7 +512,10 @@ impl Extension for HookExtension {
     }
 
     async fn on_agent_end(&self, ctx: &AgentContext) -> AgentResult<()> {
-        tracing::info!("[hooks] on_agent_end fired: last_content_len={}", ctx.last_content.as_ref().map(|s| s.len()).unwrap_or(0));
+        tracing::info!(
+            "[hooks] on_agent_end fired: last_content_len={}",
+            ctx.last_content.as_ref().map(|s| s.len()).unwrap_or(0)
+        );
         // last_content：真实最后 assistant 文本（内核 agent_loop 填充）；无则回退统计摘要
         let last_msg = ctx.last_content.clone().unwrap_or_else(|| {
             format!(
@@ -573,7 +576,8 @@ impl Extension for HookExtension {
         let stdin = stdin_builder::stop(&last_msg, 0);
         // Stop（turn 级）同样带六要素：与 SubagentStop 口径一致，hook 脚本可统一消费
         let end_ctx = stdin_builder::AgentEndContext {
-            project_name: std::env::current_dir().ok()
+            project_name: std::env::current_dir()
+                .ok()
                 .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string())),
             session_name: None, // turn 级无 AgentContext；session_id 兜底（脚本回退 sid 短码）
             session_id: std::env::var("ION_SESSION_ID").ok(),

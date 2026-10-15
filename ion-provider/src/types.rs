@@ -504,7 +504,10 @@ mod tests {
 
     // ── 空补全判定（is_empty_completion）──
 
-    fn msg_with_content(content: Vec<AssistantContentBlock>, reason: StopReason) -> AssistantMessage {
+    fn msg_with_content(
+        content: Vec<AssistantContentBlock>,
+        reason: StopReason,
+    ) -> AssistantMessage {
         AssistantMessage {
             role: "assistant".into(),
             content,

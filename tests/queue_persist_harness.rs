@@ -119,7 +119,9 @@ fn static_step(text: &str) -> faux::FauxResponseStep {
     ))
 }
 
-fn new_registry_with(steps: Vec<faux::FauxResponseStep>) -> (Arc<ApiRegistry>, Arc<faux::FauxProvider>) {
+fn new_registry_with(
+    steps: Vec<faux::FauxResponseStep>,
+) -> (Arc<ApiRegistry>, Arc<faux::FauxProvider>) {
     let mut registry = ApiRegistry::new();
     let handle = faux::register_faux(&mut registry);
     handle.set_responses(steps);
@@ -230,7 +232,13 @@ fn count_queued_in_file(cwd: &str) -> usize {
         .count()
 }
 
-fn setup_session(tag: &str) -> (std::sync::MutexGuard<'static, ()>, String, std::path::PathBuf) {
+fn setup_session(
+    tag: &str,
+) -> (
+    std::sync::MutexGuard<'static, ()>,
+    String,
+    std::path::PathBuf,
+) {
     let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = std::env::temp_dir().join(format!(
         "ion_h3_queue_{}_{}_{tag}",
@@ -453,10 +461,8 @@ async fn t4_steer_routing_and_normal_consumption_regression() {
     let ts2: i64 = 555_555;
     let seen2 = Arc::new(AtomicUsize::new(0));
     {
-        let (registry, handle) = new_registry_with(vec![
-            static_step("turn one"),
-            factory_step(seen2.clone()),
-        ]);
+        let (registry, handle) =
+            new_registry_with(vec![static_step("turn one"), factory_step(seen2.clone())]);
         let mut agent_c = new_agent(registry);
         let msg = user_msg(QUEUED_TEXT, ts2, MessageSource::FollowUp);
         ion::session_jsonl::append_queued_input(&cwd, "followUp", &msg);
@@ -490,8 +496,7 @@ fn t5_session_jsonl_queued_entry_lifecycle() {
     let (guard, cwd, dir) = setup_session("t5_lifecycle");
     let m1 = user_msg("first queued", 1000, MessageSource::FollowUp);
     let m2 = user_msg("second queued", 2000, MessageSource::Steer);
-    let id1 = ion::session_jsonl::append_queued_input(&cwd, "followUp", &m1)
-        .expect("append m1");
+    let id1 = ion::session_jsonl::append_queued_input(&cwd, "followUp", &m1).expect("append m1");
     let id2 = ion::session_jsonl::append_queued_input(&cwd, "steer", &m2).expect("append m2");
     assert_ne!(id1, id2);
 
@@ -507,7 +512,10 @@ fn t5_session_jsonl_queued_entry_lifecycle() {
         pending[1].1.get("kind").and_then(|v| v.as_str()),
         Some("steer")
     );
-    assert!(pending[1].1.get("message").is_some(), "完整 message 应在 data 里");
+    assert!(
+        pending[1].1.get("message").is_some(),
+        "完整 message 应在 data 里"
+    );
 
     // 消费 m1（按序列化消息对账）
     let m1_json = serde_json::to_value(&m1).unwrap();

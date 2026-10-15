@@ -708,10 +708,7 @@ fn u16_all_supported_commands() {
         "fork without params should fail validation"
     );
     assert!(
-        fork_resp["error"]
-            .as_str()
-            .unwrap_or("")
-            .contains("turnId"),
+        fork_resp["error"].as_str().unwrap_or("").contains("turnId"),
         "fork error should mention turnId, got: {}",
         fork_resp["error"]
     );

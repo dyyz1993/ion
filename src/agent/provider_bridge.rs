@@ -249,7 +249,10 @@ impl BridgeProvider {
         }
 
         Ok(watchdog_bridge_stream(
-            id, inner, first_chunk_ms, idle_chunk_ms,
+            id,
+            inner,
+            first_chunk_ms,
+            idle_chunk_ms,
         ))
     }
 }

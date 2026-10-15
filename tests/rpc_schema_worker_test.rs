@@ -10,7 +10,7 @@
 //! 运行：`cargo build --bin ion && cargo test --test rpc_schema_worker_test`
 
 use jsonschema::Validator;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -29,16 +29,15 @@ fn schema_dir() -> PathBuf {
 }
 
 fn read_json(path: &std::path::Path) -> Value {
-    let text = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let text =
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 }
 
 /// 编译一个 schema 文件（失败即 panic，带文件名与错误）
 fn compile_file(path: &std::path::Path) -> Validator {
     let doc = read_json(path);
-    jsonschema::validator_for(&doc)
-        .unwrap_or_else(|e| panic!("compile {}: {e}", path.display()))
+    jsonschema::validator_for(&doc).unwrap_or_else(|e| panic!("compile {}: {e}", path.display()))
 }
 
 fn assert_valid(schema: &Validator, doc_name: &str, instance: &Value, label: &str) {
@@ -87,7 +86,10 @@ fn static_index_matches_files() {
         let file = c["file"].as_str().expect("file 字段");
         let level = c["level"].as_str().expect("level 字段");
         assert!(
-            matches!(level, "host" | "worker" | "bridge" | "host+worker" | "host+worker-bridge"),
+            matches!(
+                level,
+                "host" | "worker" | "bridge" | "host+worker" | "host+worker-bridge"
+            ),
             "{cmd}: level 非法：{level}"
         );
         let path = dir.join(file);
@@ -97,10 +99,7 @@ fn static_index_matches_files() {
             stem, cmd,
             "index 条目 command='{cmd}' 与文件名 '{stem}' 不一致"
         );
-        assert!(
-            !referenced.contains(file),
-            "{file} 在 index 里出现两次"
-        );
+        assert!(!referenced.contains(file), "{file} 在 index 里出现两次");
         referenced.insert(file.to_string());
     }
 
@@ -262,7 +261,12 @@ fn static_params_positive_and_negative_samples() {
 
     // kill_worker：类型正确的 params 通过；cleanupWorktree 传字符串不通过
     let schema = params_schema(&dir, "kill_worker.json");
-    assert_valid(&schema, "kill_worker", &json!({"workerId":"wkr_ab12cd34"}), "params 正样本");
+    assert_valid(
+        &schema,
+        "kill_worker",
+        &json!({"workerId":"wkr_ab12cd34"}),
+        "params 正样本",
+    );
     assert_invalid(
         &schema,
         "kill_worker",
@@ -347,7 +351,11 @@ fn spawn_isolated_host() -> HostGuard {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .subsec_nanos();
-    let root = std::env::temp_dir().join(format!("ion_rpc_schema_s2_{}_{}", std::process::id(), nanos));
+    let root = std::env::temp_dir().join(format!(
+        "ion_rpc_schema_s2_{}_{}",
+        std::process::id(),
+        nanos
+    ));
     let home = root.join("home");
     std::fs::create_dir_all(home.join(".ion")).expect("私有 HOME");
     std::fs::create_dir_all(root.join("sessions")).expect("私有 sessions");
@@ -527,26 +535,42 @@ fn dynamic_worker_domain_responses_match_schemas() {
 
     // 9. create_session → worker 起来后 session 域命令
     let schema_cs = compile_file(&dir.join("create_session.json"));
-    let sid = format!("sess_schema_{:08x}", std::process::id() as u32 % 0xffff_ffff);
+    let sid = format!(
+        "sess_schema_{:08x}",
+        std::process::id() as u32 % 0xffff_ffff
+    );
     let resp = rpc_once(
         &guard,
         "create_session",
         json!({"session_id": sid, "agent": "build", "project_path": guard.root.join("proj")}),
         None,
     );
-    assert_eq!(resp["success"].as_bool(), Some(true), "create_session 失败：{resp}");
+    assert_eq!(
+        resp["success"].as_bool(),
+        Some(true),
+        "create_session 失败：{resp}"
+    );
     assert_valid(&schema_cs, "create_session", &resp, "真实响应");
     wait_worker_for_session(&guard, &sid);
 
     // 10. get_state（worker 级信封，经 session 转发）
     let schema = compile_file(&dir.join("get_state.json"));
     let resp = rpc_once(&guard, "get_state", json!({}), Some(&sid));
-    assert_eq!(resp["success"].as_bool(), Some(true), "get_state 失败：{resp}");
+    assert_eq!(
+        resp["success"].as_bool(),
+        Some(true),
+        "get_state 失败：{resp}"
+    );
     assert_valid(&schema, "get_state", &resp, "真实响应");
 
     // 11. steer（data=null 分支）
     let schema = compile_file(&dir.join("steer.json"));
-    let resp = rpc_once(&guard, "steer", json!({"text":"schema test steer"}), Some(&sid));
+    let resp = rpc_once(
+        &guard,
+        "steer",
+        json!({"text":"schema test steer"}),
+        Some(&sid),
+    );
     assert_eq!(resp["success"].as_bool(), Some(true), "steer 失败：{resp}");
     assert_valid(&schema, "steer", &resp, "真实响应");
 
@@ -576,9 +600,16 @@ fn dynamic_worker_domain_responses_match_schemas() {
         json!({"agent":"build","project_path": guard.root.join("proj").to_string_lossy()}),
         None,
     );
-    assert_eq!(resp["success"].as_bool(), Some(true), "create_worker 失败：{resp}");
+    assert_eq!(
+        resp["success"].as_bool(),
+        Some(true),
+        "create_worker 失败：{resp}"
+    );
     assert_valid(&schema_cw, "create_worker", &resp, "真实响应");
-    let spawned = resp["data"]["workerId"].as_str().expect("workerId").to_string();
+    let spawned = resp["data"]["workerId"]
+        .as_str()
+        .expect("workerId")
+        .to_string();
 
     let resp = rpc_once(&guard, "get_agents", json!({}), Some(&sid));
     let schema = compile_file(&dir.join("get_agents.json"));
@@ -603,7 +634,11 @@ fn dynamic_worker_domain_responses_match_schemas() {
         json!({"workerId": spawned, "cleanupWorktree": true, "deleteBranch": false}),
         None,
     );
-    assert_eq!(resp["success"].as_bool(), Some(true), "kill_worker 失败：{resp}");
+    assert_eq!(
+        resp["success"].as_bool(),
+        Some(true),
+        "kill_worker 失败：{resp}"
+    );
     assert_valid(&schema, "kill_worker", &resp, "真实响应");
 
     // 收尾：把 session worker 也杀掉（复用 create_session 会话的 worker_id 需要

@@ -419,11 +419,7 @@ fn wait_llm_request_count(state: &MockState, want: usize, window: Duration) {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    panic!(
-        "mock LLM server 只收到 {}/{} 个请求",
-        state.count(),
-        want
-    );
+    panic!("mock LLM server 只收到 {}/{} 个请求", state.count(), want);
 }
 /// 限时轮询：等一个 body 包含 marker 的 LLM 请求到达（内容匹配，不受旁路 LLM 调用干扰）。
 fn wait_llm_request_with(state: &MockState, marker: &str, window: Duration) {
@@ -491,7 +487,11 @@ fn next_run_after_abort_must_not_hang() {
     let mut worker = TestWorker::spawn(&tmp, &session);
 
     // ── 第 1 轮：prompt → LLM 请求#1（bash sleep 60 脚本）→ 工具执行中 abort ──
-    worker.send("p1", "prompt", serde_json::json!({"text": "run the long sleep"}));
+    worker.send(
+        "p1",
+        "prompt",
+        serde_json::json!({"text": "run the long sleep"}),
+    );
     worker.wait_agent_start("run 1");
     wait_llm_request_count(&llm, 1, STEP_TIMEOUT);
     // 给工具执行留出进入窗口（SSE 响应是即时的，sleep 60 已在跑）
@@ -503,7 +503,11 @@ fn next_run_after_abort_must_not_hang() {
     worker.wait_agent_end("run 1 aborted");
 
     // ── 第 2 轮（红态在这里暴露）：新 prompt 必须真的发出 LLM 请求并完成 ──
-    worker.send("p2", "prompt", serde_json::json!({"text": "second prompt after abort"}));
+    worker.send(
+        "p2",
+        "prompt",
+        serde_json::json!({"text": "second prompt after abort"}),
+    );
     worker.wait_agent_start("run 2 (zombie candidate)");
     // 核心断言：限时内 run 2 自己的 LLM 请求（body 含 second prompt）到达 mock server。
     // 僵尸 run 特征 = agent_start 出现但该请求永远不发（红态在这里 panic）。

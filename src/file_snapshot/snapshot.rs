@@ -283,7 +283,10 @@ impl SnapshotStore {
                 .max()
                 .unwrap_or(0)
         });
-        base + self.step_seq_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+        base + self
+            .step_seq_counter
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1
     }
 
     /// 读取全部 step-snapshot（按 timestamp → seq → turn_id 排序）。
@@ -551,7 +554,7 @@ mod tests {
                 deleted: vec![],
             },
             timestamp: ts.into(),
-        seq: 0,
+            seq: 0,
         };
         store.save_step_snapshot(&first);
         // 后写：turn_id 字典序小（"ts_a1"），tree 状态 = latest
@@ -566,7 +569,7 @@ mod tests {
                 deleted: vec![],
             },
             timestamp: ts.into(),
-        seq: 0,
+            seq: 0,
         };
         store.save_step_snapshot(&second);
 
@@ -657,7 +660,11 @@ mod tests {
         let store = SnapshotStore::new_at(tmp.clone());
         let steps = store.load_all_step_snapshots();
         let ids: Vec<&str> = steps.iter().map(|s| s.turn_id.as_str()).collect();
-        assert_eq!(ids, vec!["ts_a", "ts_b", "ts_c"], "seq 全 0 时退化为 turn_id 字典序");
+        assert_eq!(
+            ids,
+            vec!["ts_a", "ts_b", "ts_c"],
+            "seq 全 0 时退化为 turn_id 字典序"
+        );
 
         std::fs::remove_dir_all(&tmp).ok();
     }

@@ -278,16 +278,17 @@ pub async fn host_running_verified(timeout: std::time::Duration) -> HostIdentity
 pub async fn probe_hello_host_id(timeout: std::time::Duration) -> Option<String> {
     use tokio::io::AsyncReadExt as _;
     use tokio::io::AsyncWriteExt as _;
-    let mut stream = tokio::time::timeout(
-        timeout,
-        tokio::net::UnixStream::connect(host_socket_path()),
-    )
-    .await
-    .ok()?
-    .ok()?;
+    let mut stream =
+        tokio::time::timeout(timeout, tokio::net::UnixStream::connect(host_socket_path()))
+            .await
+            .ok()?
+            .ok()?;
     let req = ion_protocol::Request::rpc("pid-verify", "hello", serde_json::json!({}));
     let line = serde_json::to_string(&req).ok()?;
-    stream.write_all(format!("{line}\n").as_bytes()).await.ok()?;
+    stream
+        .write_all(format!("{line}\n").as_bytes())
+        .await
+        .ok()?;
     // 读一行响应（timeout 兜底防挂）
     let mut buf = Vec::with_capacity(256);
     let mut chunk = [0u8; 512];
@@ -1288,11 +1289,7 @@ mod tests {
     // ── G1 加固：pid 文件身份 + host_running 判定矩阵（文件系统级模拟）──────
 
     fn pid_tmp_path(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!(
-            "ion-pid-test-{}-{}",
-            tag,
-            std::process::id()
-        ));
+        let d = std::env::temp_dir().join(format!("ion-pid-test-{}-{}", tag, std::process::id()));
         let _ = std::fs::create_dir_all(&d);
         d.join("host.pid")
     }
@@ -1347,11 +1344,14 @@ mod tests {
         assert_eq!(host_running(), None);
 
         // 场景 2：本进程 pid（存活）+ JSON 带 hostId → Some(own pid)
-        write_host_pid_file_at(&pid_file, &HostPidInfo {
-            pid: std::process::id(),
-            host_id: Some("live-host-id".into()),
-            started_at_ms: Some(1),
-        })
+        write_host_pid_file_at(
+            &pid_file,
+            &HostPidInfo {
+                pid: std::process::id(),
+                host_id: Some("live-host-id".into()),
+                started_at_ms: Some(1),
+            },
+        )
         .unwrap();
         assert_eq!(host_running(), Some(std::process::id()));
 
@@ -1373,11 +1373,14 @@ mod tests {
                 .unwrap()
         };
         std::thread::sleep(std::time::Duration::from_millis(50)); // 确保 reaped
-        write_host_pid_file_at(&pid_file, &HostPidInfo {
-            pid: dead,
-            host_id: Some("ghost".into()),
-            started_at_ms: Some(1),
-        })
+        write_host_pid_file_at(
+            &pid_file,
+            &HostPidInfo {
+                pid: dead,
+                host_id: Some("ghost".into()),
+                started_at_ms: Some(1),
+            },
+        )
         .unwrap();
         assert_eq!(host_running(), None, "死 pid 必须判不在跑");
         assert!(!pid_file.exists(), "陈旧 pid 文件应被清理（自愈）");
@@ -1406,11 +1409,14 @@ mod tests {
 
         // 场景 A：pid 存活 + socket 背后 host 的 hostId 与 pid 文件一致 → Verified
         let live_id = ion_protocol::generate_host_id();
-        write_host_pid_file_at(&pid_file, &HostPidInfo {
-            pid: std::process::id(),
-            host_id: Some(live_id.clone()),
-            started_at_ms: Some(1),
-        })
+        write_host_pid_file_at(
+            &pid_file,
+            &HostPidInfo {
+                pid: std::process::id(),
+                host_id: Some(live_id.clone()),
+                started_at_ms: Some(1),
+            },
+        )
         .unwrap();
         // 起一个真 socket 假装 host：accept 后按 hello 协议回报 hostId
         let listener = std::sync::Arc::new(tokio::net::UnixListener::bind(&sock).unwrap());
@@ -1429,9 +1435,7 @@ mod tests {
                     "success": true,
                     "data": {"protocolVersion": 1, "hostId": server_id},
                 });
-                let _ = s
-                    .write_all(format!("{}\n", reply).as_bytes())
-                    .await;
+                let _ = s.write_all(format!("{}\n", reply).as_bytes()).await;
             }
         });
         let checked = host_running_verified(std::time::Duration::from_secs(2)).await;
@@ -1456,15 +1460,15 @@ mod tests {
                     "success": true,
                     "data": {"protocolVersion": 1, "hostId": "a-different-host"},
                 });
-                let _ = s
-                    .write_all(format!("{}\n", reply).as_bytes())
-                    .await;
+                let _ = s.write_all(format!("{}\n", reply).as_bytes()).await;
             }
         });
         let checked = host_running_verified(std::time::Duration::from_secs(2)).await;
         assert_eq!(
             checked,
-            HostIdentityCheck::IdentityMismatch { pid: std::process::id() },
+            HostIdentityCheck::IdentityMismatch {
+                pid: std::process::id()
+            },
             "身份不一致必须拒绝（pid 复用防线）"
         );
         server.await.unwrap();
@@ -1473,13 +1477,20 @@ mod tests {
         drop(listener);
         let _ = std::fs::remove_file(&sock);
         let checked = host_running_verified(std::time::Duration::from_millis(300)).await;
-        assert_eq!(checked, HostIdentityCheck::Unconfirmed, "探活失败 → Unconfirmed");
+        assert_eq!(
+            checked,
+            HostIdentityCheck::Unconfirmed,
+            "探活失败 → Unconfirmed"
+        );
         // 场景 D：死 pid → Unconfirmed + 陈旧文件清理
-        write_host_pid_file_at(&pid_file, &HostPidInfo {
-            pid: 2_000_000_000, // 远超正常 pid 上限的值，确定无此进程
-            host_id: Some("ghost".into()),
-            started_at_ms: Some(1),
-        })
+        write_host_pid_file_at(
+            &pid_file,
+            &HostPidInfo {
+                pid: 2_000_000_000, // 远超正常 pid 上限的值，确定无此进程
+                host_id: Some("ghost".into()),
+                started_at_ms: Some(1),
+            },
+        )
         .unwrap();
         let checked = host_running_verified(std::time::Duration::from_millis(100)).await;
         assert_eq!(checked, HostIdentityCheck::Unconfirmed);

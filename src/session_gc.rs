@@ -164,8 +164,7 @@ fn iter_jsonl_files(sessions_dir: &Path) -> Vec<(PathBuf, Option<String>)> {
                 for f in files.flatten() {
                     let fp = f.path();
                     if fp.extension().is_some_and(|e| e == "jsonl") {
-                        let stem =
-                            fp.file_stem().and_then(|s| s.to_str()).map(String::from);
+                        let stem = fp.file_stem().and_then(|s| s.to_str()).map(String::from);
                         out.push((fp, stem));
                     }
                 }
@@ -497,7 +496,10 @@ mod tests {
             Some(1_748_779_200_000)
         );
         // 无小数秒
-        assert_eq!(parse_iso_ms("2025-06-01T12:00:00Z"), Some(1_748_779_200_000));
+        assert_eq!(
+            parse_iso_ms("2025-06-01T12:00:00Z"),
+            Some(1_748_779_200_000)
+        );
         // epoch 起点
         assert_eq!(parse_iso_ms("1970-01-01T00:00:00Z"), Some(0));
         // 时区偏移：+08:00 的 20:00 == UTC 12:00
@@ -516,7 +518,10 @@ mod tests {
             Some(1_748_779_200_123)
         );
         // 闰日
-        assert_eq!(parse_iso_ms("2024-02-29T00:00:00Z"), Some(1_709_164_800_000));
+        assert_eq!(
+            parse_iso_ms("2024-02-29T00:00:00Z"),
+            Some(1_709_164_800_000)
+        );
         // 非法输入
         assert_eq!(parse_iso_ms("not-a-timestamp"), None);
         assert_eq!(parse_iso_ms("2025-13-01T00:00:00Z"), None);

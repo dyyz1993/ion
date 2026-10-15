@@ -106,8 +106,7 @@ async fn run_command(
             .execute_command(&cmd_with_redirect, handler.timeout.unwrap_or(30) as u64)
             .await;
         let _ = std::fs::remove_file(cleanup);
-        match result
-        {
+        match result {
             Ok(result) => result,
             Err(e) => {
                 tracing::warn!("[hooks] command failed: {e}");

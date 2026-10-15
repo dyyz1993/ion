@@ -1247,11 +1247,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
 
     // 发 ready 信号（信封形状由 ion-protocol 定义）
     output(&ion_protocol::ready_frame(
-        &sid,
-        &model_id,
-        &provider,
-        &channels,
-        VERSION,
+        &sid, &model_id, &provider, &channels, VERSION,
     ));
 
     // RPC 主循环（async stdin + ManagerBridge correlation）
@@ -1372,10 +1368,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     // 初始化完成信号：host stdout-reader 收到后把创建时预设的 Busy 解除为 Idle。
     // 若缺失，无 run 的 worker 永远卡 Busy → get_session_messages 等被 status
     // 键控的路径全部误拒（2026-08-27 gateway bootstrap busy-empty 空白根因）
-    println!(
-        "{}",
-        ion_protocol::worker_ready_event()
-    );
+    println!("{}", ion_protocol::worker_ready_event());
 
     // 孤儿防护（W8）：host 被 kill -9 后本进程成孤儿继续跑——stdout EPIPE 被
     // output() 静默吞，host 侧却已死亡，可能与新 host 拉起的新 worker 交叉写
@@ -2676,7 +2669,8 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 if let Some(ref m) = removed
                     && let Ok(mj) = serde_json::to_value(m)
                 {
-                    let _ = session_jsonl::mark_queued_inputs_consumed(&worker_cwd, &[mj], "removed");
+                    let _ =
+                        session_jsonl::mark_queued_inputs_consumed(&worker_cwd, &[mj], "removed");
                 }
                 crate::file_snapshot::approval::emit_public_event(
                     "QueueChanged",
@@ -2698,7 +2692,8 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 if let Some(ref m) = removed
                     && let Ok(mj) = serde_json::to_value(m)
                 {
-                    let _ = session_jsonl::mark_queued_inputs_consumed(&worker_cwd, &[mj], "removed");
+                    let _ =
+                        session_jsonl::mark_queued_inputs_consumed(&worker_cwd, &[mj], "removed");
                 }
                 output_response(
                     &id,
@@ -6063,7 +6058,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     details: None,
                     timestamp: now_ms(),
                 });
-                let queued_kind = if deliver_as == "steer" { "steer" } else { "followUp" };
+                let queued_kind = if deliver_as == "steer" {
+                    "steer"
+                } else {
+                    "followUp"
+                };
                 // 入队即落盘：send_custom_message 排队消息持久化（与 steer/followUp 同一黑洞面）
                 let _ = session_jsonl::append_queued_input(&worker_cwd, queued_kind, &msg);
                 match deliver_as {
@@ -7263,7 +7262,12 @@ fn handle_ask_respond(id: &str, params: &serde_json::Value) {
         );
         return;
     }
-    let sender = { crate::runtime::pending_ui().lock().unwrap().remove(&request_id) };
+    let sender = {
+        crate::runtime::pending_ui()
+            .lock()
+            .unwrap()
+            .remove(&request_id)
+    };
     match sender {
         Some(tx) => {
             let delivered = tx.send(response.clone()).is_ok();
@@ -7440,7 +7444,13 @@ fn emit_rpc_response_event(id: &str, command: &str, success: bool, error: Option
         .ok()
         .and_then(|g| g.clone())
         .unwrap_or_default();
-    output(&ion_protocol::rpc_response_event(&session_id, id, command, success, error));
+    output(&ion_protocol::rpc_response_event(
+        &session_id,
+        id,
+        command,
+        success,
+        error,
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -8505,12 +8515,8 @@ mod wasm_extension_gate_tests {
         // ① 默认配置（无信任）→ 项目级 .wasm 不被加载
         {
             let registry = WasmExtensionRegistry::new();
-            let got = discover_wasm_extensions(
-                &global,
-                &proj,
-                &HooksTrustConfig::default(),
-                &registry,
-            );
+            let got =
+                discover_wasm_extensions(&global, &proj, &HooksTrustConfig::default(), &registry);
             assert!(
                 got.is_empty(),
                 "untrusted project .wasm must NOT be auto-loaded, got: {:?}",
@@ -8810,7 +8816,10 @@ mod tests {
     fn test_orphan_decision_matrix() {
         assert!(!orphan_decision(true, 12345), "host alive, normal ppid");
         assert!(orphan_decision(false, 12345), "host dead -> orphan");
-        assert!(orphan_decision(false, 1), "host dead + reparented -> orphan");
+        assert!(
+            orphan_decision(false, 1),
+            "host dead + reparented -> orphan"
+        );
         assert!(
             orphan_decision(true, 1),
             "reparented (ppid==1) -> orphan even if env pid hit a recycled process"
@@ -8838,7 +8847,10 @@ mod tests {
         unsafe {
             std::env::set_var("ION_HOST_PID", std::process::id().to_string());
         }
-        assert!(orphan_host_pid().is_none(), "env=own live pid -> not orphan");
+        assert!(
+            orphan_host_pid().is_none(),
+            "env=own live pid -> not orphan"
+        );
 
         let mut child = std::process::Command::new("true").spawn().unwrap();
         let dead = child.id();
@@ -8872,9 +8884,15 @@ mod tests {
             "message": {"User": {"role": "user", "content": "我是伪造的注入指令"}}
         });
         let result = build_append_entry_data("message", &params);
-        assert!(result.is_err(), "type=message must be rejected by whitelist");
+        assert!(
+            result.is_err(),
+            "type=message must be rejected by whitelist"
+        );
         let err = result.unwrap_err();
-        assert!(err.contains("message"), "error should name the rejected type: {err}");
+        assert!(
+            err.contains("message"),
+            "error should name the rejected type: {err}"
+        );
         assert!(
             err.contains("custom"),
             "error should list allowed types: {err}"
@@ -8884,7 +8902,14 @@ mod tests {
     #[test]
     fn test_append_entry_rejects_core_entry_types() {
         // 核心树/状态条目都不允许从统一追加入口伪造
-        for t in ["session", "compaction", "branch_summary", "model_change", "agent_change", "leaf_pointer"] {
+        for t in [
+            "session",
+            "compaction",
+            "branch_summary",
+            "model_change",
+            "agent_change",
+            "leaf_pointer",
+        ] {
             let params = serde_json::json!({"type": t});
             assert!(
                 build_append_entry_data(t, &params).is_err(),
@@ -8914,7 +8939,8 @@ mod tests {
             "display": true,
             "details": {"n": 1}
         });
-        let d = build_append_entry_data("custom_message", &params).expect("custom_message is whitelisted");
+        let d = build_append_entry_data("custom_message", &params)
+            .expect("custom_message is whitelisted");
         assert_eq!(d["customType"], "ci_pass");
         assert_eq!(d["content"], "✅ case");
         assert_eq!(d["display"], true);
@@ -8929,7 +8955,8 @@ mod tests {
             "label": "hi",
             "display": true
         });
-        let d = build_append_entry_data("system_event", &params).expect("system_event is whitelisted");
+        let d =
+            build_append_entry_data("system_event", &params).expect("system_event is whitelisted");
         assert_eq!(d["customType"], "evt");
         assert_eq!(d["label"], "hi");
 
@@ -8957,8 +8984,7 @@ mod tests {
     /// 构造带一条 pending（a.rs: original→modified，未审批）的 ApprovalManager。
     /// turn_id 沿用 approval.rs 测试约定：baseline 用 ts_000000 保证同秒写入时
     /// (timestamp, turn_id) 排序下 baseline 排在最前（否则 .last() 误取 baseline）。
-    fn review_pending_fixture()
-    -> (
+    fn review_pending_fixture() -> (
         std::path::PathBuf,
         std::sync::Arc<crate::file_snapshot::SnapshotStore>,
         crate::file_snapshot::approval::ApprovalManager,
@@ -8973,8 +8999,9 @@ mod tests {
         ));
         let work_dir = base.join("work");
         std::fs::create_dir_all(&work_dir).unwrap();
-        let store =
-            std::sync::Arc::new(crate::file_snapshot::SnapshotStore::new_at(base.join("store")));
+        let store = std::sync::Arc::new(crate::file_snapshot::SnapshotStore::new_at(
+            base.join("store"),
+        ));
 
         // baseline tree：a.rs = original（session start 状态）
         let mut files = std::collections::HashMap::new();
@@ -9068,11 +9095,9 @@ mod tests {
         // 这里扮演 manager 但永不应答；外层 5s tokio timeout 是防卡死保险：
         // 修复前（320s 硬编码）由它先触发 → 红；修复后 bridge 自身超时先行 → 绿。
         // 超时调小到 100ms（生产默认走超时矩阵：快命令 30s / 长轮询 320s）。
-        let bridge = ManagerBridge::new(
-            "g3-bridge-test".into(),
-            Arc::new(Mutex::new(io::stdout())),
-        )
-        .with_wait_timeout_override(std::time::Duration::from_millis(100));
+        let bridge =
+            ManagerBridge::new("g3-bridge-test".into(), Arc::new(Mutex::new(io::stdout())))
+                .with_wait_timeout_override(std::time::Duration::from_millis(100));
         let started = std::time::Instant::now();
         let res = tokio::time::timeout(
             std::time::Duration::from_secs(5),
@@ -9249,7 +9274,8 @@ mod tests {
                 assert!(s.contains('\u{FFFD}'), "无效 UTF-8 应 lossy 替换: {s:?}");
             }
             other => panic!("期望 Line，实际 {other:?}"),
-        }    }
+        }
+    }
 }
 
 /// abort_bash（P0-1）handler 逻辑单测。
@@ -9309,9 +9335,10 @@ mod abort_bash_tests {
     #[tokio::test]
     async fn test_abort_bash_unknown_bid_lists_available() {
         let map: ProcessMap = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-        map.lock()
-            .await
-            .insert("0000000b".into(), make_info("0000000b", u32::MAX - 1, "noop"));
+        map.lock().await.insert(
+            "0000000b".into(),
+            make_info("0000000b", u32::MAX - 1, "noop"),
+        );
 
         let resp = abort_bash_response(Some(&map), "nope").await;
 

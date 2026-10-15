@@ -107,6 +107,16 @@ ION 的错题本：复盘**已合并/已修复**的工作——返工的、不�
 - 证据：u16 失败复现（tests/unit_rpc_test.rs:693 报 "fork: missing param: turnId"，2026-10-14 发现）；修复 = fork 移出无参冒烟 + 专项断言验分发与校验（完整行为归 branch_tree_ci）；缺口对照 `.github/workflows/ci.yml` vs `pr-gate.yml`（`cargo test --tests` 仅后者有；同日 ci.yml 增 integration-tests job 补位）。
 - Seen 1× (2026-10-14)
 
+**CI 门禁用浮动 stable 而开发机版本滞后时，"本地全绿"与 CI 会长期漂移——修红前先用与 CI 同版工具链复现，修完双版验证；上游宏引发的 lint 误报收口到 workspace 级豁免而非散布 allow。**
+- Before, ci.yml 用 `dtolnay/rust-toolchain@stable`（已浮到 1.99，double_must_use 对 async_trait 0.1.89 展开全线误报），本地默认 1.97 看不到该错误、只看得到另外 12 个旧 lint；build-and-test 自 2026-08-31（01f2b37）后连红六周无人见——每次直推都被 clippy 挡在 fmt/test 步骤之前，红被误读为"CI 问题"而非"门禁在报存量"。
+- 证据：CI run 38577387691 连红记录；本地 `cargo +1.99.0 clippy` 复现同错；修复 = `[workspace.lints.clippy]` 一处豁免 double_must_use + 12 个 lint 清零 + 全仓 fmt（本 commit）；`cargo fmt --check` 双版（1.97/1.99）验证一致通过。
+- Seen 1× (2026-10-15)
+
+**"持有外层 registry 锁跨 .await 调会回锁同一互斥量的方法"是确定性死锁模式——测试与生产代码同罪；一个挂死测试会拖死整个二进制与 CI 门禁，发现即 ignore + 取证留痕，不许带病入库。**
+- Before, manager_integration（i06/i15/i17/i24/i31）与 e2e_stress（e01b/s01/s04）共 8 个测试持 `registry.lock()` 守卫跨 `.await` 做事件/channel/create 操作，采样栈卡在 `WorkerRegistry` 内 parking_lot `lock_slow`；空闲环境逐测试超时扫描逐一确认（并发扫描会出假阳性——bash02/e01/e04 三例并发挂、单跑过，复验必须在空闲环境做）。该家族从未被发现，因为集成套件在 bde4655 加 CI 门禁前从未全量跑过（正是上一条 u16 教训的延续）；并发跑时挂死测试还会连坐同批测试（i30 曾被误判）。
+- 证据：本 commit（8 处 `#[ignore]` 带证据注释 + 保留用例）；复现 `timeout 25 target/debug/deps/manager_integration-<hash> --exact i06_worker_events_forwarded --test-threads=1`（EXIT=124，其余同法）；采样栈 `sample <pid>` 显示测试线程 lock_slow、worker 子进程 idle parked；既有先例 `#[ignore = "drain_events disabled..."]`（manager_integration L572，drain_events 架构改造时只处理了一个）；修复方向=channel/drain/create 路径与外层锁的持锁顺序审计（参考 7b4dfc4 lock-split）。
+- Seen 1× (2026-10-15)
+
 **静态化/锁拆分重构时核对被绕开的实例状态——静态路径重建的解析优先级会与实例路径分家（worker_bin vs find_ion_binary），测试进程里 current_exe 不是 ion。**
 - Before, `76121de`（2026-08-09）把委托 create_worker 切到静态 `prepare_worker_spawn` 后，其 `find_ion_binary` current_exe 优先、拿不到 `with_binary` 注入的 worker_bin——测试进程里 current_exe 是测试二进制（libtest 不认 `--mode`），委托/respawn/host 静态路径 spawn 的子 worker 秒死 exit=101 "Unrecognized option: 'mode'"，e01 红了两个月无人见（与直推不跑集成测试叠加）。
 - 证据：诊断实证（reviewer exit_reason=测试二进制的 libtest 措辞，单独运行测试二进制复现同错）；修复 = `WORKER_BIN_OVERRIDE` 进程级（with_binary 设置 / find_ion_binary 最优先），e2e_stress 18/18 复绿；生产不受影响（serve 不调 with_binary）。

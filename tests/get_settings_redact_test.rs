@@ -151,7 +151,10 @@ impl TestWorker {
 
         let deadline = Instant::now() + RESPONSE_TIMEOUT;
         loop {
-            assert!(Instant::now() < deadline, "timeout waiting {method} response");
+            assert!(
+                Instant::now() < deadline,
+                "timeout waiting {method} response"
+            );
             let mut line = String::new();
             let n = worker_read(&mut self.reader, &mut line);
             assert!(n > 0, "worker closed stdout during {method}");
@@ -238,10 +241,7 @@ fn worker_get_settings_single_key_api_key_masks() {
     let session = format!("gs_redact_k_{}", rand_hex());
     let mut worker = TestWorker::spawn(&tmp, &session);
 
-    let resp = worker.request_with_params(
-        "get_settings",
-        serde_json::json!({ "key": "api_key" }),
-    );
+    let resp = worker.request_with_params("get_settings", serde_json::json!({ "key": "api_key" }));
     assert_eq!(resp.get("success").and_then(|s| s.as_bool()), Some(true));
     let raw = serde_json::to_string(&resp).unwrap();
     assert!(!raw.contains("sk-top-GSRED1"), "单键查询泄漏明文: {raw}");
@@ -250,7 +250,11 @@ fn worker_get_settings_single_key_api_key_masks() {
 }
 
 impl TestWorker {
-    fn request_with_params(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+    fn request_with_params(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> serde_json::Value {
         let id = format!("gs_{method}_p");
         let cmd = serde_json::json!({ "id": id, "method": method, "params": params });
         writeln!(self.stdin, "{}", cmd).expect("write to worker stdin");
@@ -258,7 +262,10 @@ impl TestWorker {
 
         let deadline = Instant::now() + RESPONSE_TIMEOUT;
         loop {
-            assert!(Instant::now() < deadline, "timeout waiting {method}(params) response");
+            assert!(
+                Instant::now() < deadline,
+                "timeout waiting {method}(params) response"
+            );
             let mut line = String::new();
             let n = worker_read(&mut self.reader, &mut line);
             assert!(n > 0, "worker closed stdout during {method}(params)");

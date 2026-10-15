@@ -158,7 +158,10 @@ impl ApprovalSink for RecordingSink {
         let mut es = self.entries.write().unwrap();
         es.retain(|e| e.id != id);
         drop(es);
-        self.resolutions.write().unwrap().push((id.to_string(), decision.to_string()));
+        self.resolutions
+            .write()
+            .unwrap()
+            .push((id.to_string(), decision.to_string()));
     }
 
     fn resolve_kind_for_worker(&self, worker_id: &str, kind: ApprovalKind, decision: &str) {
@@ -324,7 +327,12 @@ impl BusBackedSink {
     }
 
     /// decision 字符串 → (总线决定, 决定者)
-    fn classify_decision(decision: &str) -> (crate::approval_bus::ApprovalDecision, crate::approval_bus::ApprovalActor) {
+    fn classify_decision(
+        decision: &str,
+    ) -> (
+        crate::approval_bus::ApprovalDecision,
+        crate::approval_bus::ApprovalActor,
+    ) {
         match decision.trim().to_lowercase().as_str() {
             "timeout" => (
                 crate::approval_bus::ApprovalDecision::Reject,
@@ -368,7 +376,15 @@ impl ApprovalSink for BusBackedSink {
         let kind = Self::to_bus_kind(entry.kind);
         let summary = Self::summary(&entry);
         let payload = Self::normalized_payload(&entry);
-        bus.register(kind, &entry.session_id, worker, &summary, payload, &dedupe, ttl);
+        bus.register(
+            kind,
+            &entry.session_id,
+            worker,
+            &summary,
+            payload,
+            &dedupe,
+            ttl,
+        );
     }
 
     fn resolve(&self, id: &str, decision: &str) {
@@ -427,15 +443,16 @@ impl ApprovalSink for BusBackedSink {
                 move |e| {
                     e.kind == crate::approval_bus::ApprovalKind::FileSnapshot
                         && e.worker_id.as_deref() == Some(worker.as_str())
-                        && e.payload.get("files").and_then(|v| v.as_array()).is_some_and(
-                            |fs| {
+                        && e.payload
+                            .get("files")
+                            .and_then(|v| v.as_array())
+                            .is_some_and(|fs| {
                                 fs.iter().any(|f| {
                                     f.get("path")
                                         .and_then(|v| v.as_str())
                                         .is_some_and(|p| owned.contains(&p.to_string()))
                                 })
-                            },
-                        )
+                            })
                 },
                 dec,
                 actor,
@@ -531,10 +548,13 @@ pub fn try_register_from_worker_event(
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             if !request_id.is_empty() {
-                let decision = data
-                    .get("response")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(if custom_type == "AskTimedOut" { "timeout" } else { "resolved" });
+                let decision = data.get("response").and_then(|v| v.as_str()).unwrap_or(
+                    if custom_type == "AskTimedOut" {
+                        "timeout"
+                    } else {
+                        "resolved"
+                    },
+                );
                 s.resolve(request_id, decision);
             }
         }
@@ -830,7 +850,10 @@ mod tests {
     fn respond_route_verb_maps_to_verb_review() {
         let e = entry(ApprovalKind::RemoteVerb, "vapp_1", "w2");
         match respond_route(&e, "approve").unwrap() {
-            RespondRoute::VerbReview { request_id, approve } => {
+            RespondRoute::VerbReview {
+                request_id,
+                approve,
+            } => {
                 assert_eq!(request_id, "vapp_1");
                 assert!(approve);
             }
@@ -868,7 +891,13 @@ mod tests {
 
     #[test]
     fn verb_entry_shape() {
-        let e = verb_entry("vapp_9", "sess_v", "w_v", "http.fetch", &serde_json::json!({"url":"https://x"}));
+        let e = verb_entry(
+            "vapp_9",
+            "sess_v",
+            "w_v",
+            "http.fetch",
+            &serde_json::json!({"url":"https://x"}),
+        );
         assert_eq!(e.kind, ApprovalKind::RemoteVerb);
         assert_eq!(e.id, "vapp_9");
         assert_eq!(e.session_id, "sess_v");
@@ -934,7 +963,11 @@ mod tests {
         );
         let after = bus.pending();
         assert_eq!(after.len(), 1, "双路径同 key 去重，不产生第二条");
-        assert_eq!(after[0].worker_id.as_deref(), Some("w1"), "先到的 worker 信息保留");
+        assert_eq!(
+            after[0].worker_id.as_deref(),
+            Some("w1"),
+            "先到的 worker 信息保留"
+        );
         assert_eq!(after[0].session_id, "sess_w1");
         assert_eq!(after[0].native_request_id(), Some("req_d1"));
         bus_sink_teardown();
@@ -967,11 +1000,21 @@ mod tests {
         let bus = crate::approval_bus::ApprovalBus::global();
         let list = bus.pending();
         assert_eq!(list.len(), 2);
-        let verb = list.iter().find(|e| e.kind == crate::approval_bus::ApprovalKind::RemoteVerb).unwrap();
+        let verb = list
+            .iter()
+            .find(|e| e.kind == crate::approval_bus::ApprovalKind::RemoteVerb)
+            .unwrap();
         assert_eq!(verb.native_request_id(), Some("vapp_7"));
-        assert!(verb.summary.contains("http.fetch"), "summary: {}", verb.summary);
+        assert!(
+            verb.summary.contains("http.fetch"),
+            "summary: {}",
+            verb.summary
+        );
         assert!(verb.expires_at_ms.is_some(), "verb TTL 300s 对齐等待窗");
-        let fs = list.iter().find(|e| e.kind == crate::approval_bus::ApprovalKind::FileSnapshot).unwrap();
+        let fs = list
+            .iter()
+            .find(|e| e.kind == crate::approval_bus::ApprovalKind::FileSnapshot)
+            .unwrap();
         assert!(fs.summary.contains("a.rs"));
         assert!(fs.expires_at_ms.is_none(), "file_snapshot 持续型无 TTL");
         // file_snapshot 同文件集重发（requestId 不同）→ dedupe 签名幂等
@@ -1005,7 +1048,11 @@ mod tests {
         });
         // native id resolve（verb_gate 超时路径用）
         s.resolve("req_r1", "timeout");
-        assert!(crate::approval_bus::ApprovalBus::global().pending().is_empty());
+        assert!(
+            crate::approval_bus::ApprovalBus::global()
+                .pending()
+                .is_empty()
+        );
 
         // file_snapshot：superseded no-op（dedupe 兜）；per-path resolved 收口
         s.register(ApprovalEntry {
@@ -1020,9 +1067,18 @@ mod tests {
             created_at_ms: 1,
         });
         s.resolve_kind_for_worker("w9", ApprovalKind::FileSnapshot, "superseded");
-        assert_eq!(crate::approval_bus::ApprovalBus::global().pending().len(), 1, "superseded 不清场");
+        assert_eq!(
+            crate::approval_bus::ApprovalBus::global().pending().len(),
+            1,
+            "superseded 不清场"
+        );
         s.resolve_file_paths("w9", "s9", &["x.rs".to_string()], "approved");
-        assert!(crate::approval_bus::ApprovalBus::global().pending().is_empty(), "per-path 收口整条");
+        assert!(
+            crate::approval_bus::ApprovalBus::global()
+                .pending()
+                .is_empty(),
+            "per-path 收口整条"
+        );
         bus_sink_teardown();
     }
 
@@ -1043,7 +1099,10 @@ mod tests {
         assert_eq!(p.len(), 1);
         assert_eq!(p[0].id, "req_p1", "native id（非 apr_ 前缀）");
         assert_eq!(p[0].worker_id, "w1");
-        assert!(p[0].created_at_ms > 0, "created_at_ms 取总线 raisedAtMs（注册时刻）");
+        assert!(
+            p[0].created_at_ms > 0,
+            "created_at_ms 取总线 raisedAtMs（注册时刻）"
+        );
         bus_sink_teardown();
     }
 }

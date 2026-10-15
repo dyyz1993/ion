@@ -277,8 +277,8 @@ fn model_fallback_event_is_emitted_on_worker_stdout() {
     // ── 副作用断言：SessionIndex.set_model 已把索引里的当前模型切成 backup ──
     drop(worker); // 先收 worker（flush 由 worker 侧负责，这里只需等文件已写）
     let index_path = ion_dir.join("agent").join("sessions.index.json");
-    let index_raw = std::fs::read_to_string(&index_path)
-        .expect("sessions.index.json 应已由 set_model 写出");
+    let index_raw =
+        std::fs::read_to_string(&index_path).expect("sessions.index.json 应已由 set_model 写出");
     let index: serde_json::Value = serde_json::from_str(&index_raw).expect("index 是合法 JSON");
     let meta = &index["sessions"][&session];
     assert_eq!(

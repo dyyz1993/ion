@@ -65,8 +65,8 @@ fn detect_fast() -> (String, String) {
     ) {
         return (p, m);
     }
-    let cfg_path = PathBuf::from(std::env::var("HOME").unwrap_or_default())
-        .join(".ion/config.json");
+    let cfg_path =
+        PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".ion/config.json");
     if let Ok(raw) = std::fs::read_to_string(&cfg_path) {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
             if let Some(fast) = v["tier_models"]["fast"].as_str() {
@@ -76,10 +76,7 @@ fn detect_fast() -> (String, String) {
                     }
                 }
             }
-            let p = v["default_provider"]
-                .as_str()
-                .unwrap_or("zai")
-                .to_string();
+            let p = v["default_provider"].as_str().unwrap_or("zai").to_string();
             let m = v["default_model"].as_str().unwrap_or("glm-5.2").to_string();
             return (p, m);
         }
@@ -137,12 +134,8 @@ fn setup_env(tag: &str, allow_local_respawn: bool) -> TestEnv {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis();
-    let dir = PathBuf::from("/tmp").join(format!(
-        "ion-j7-{}-{}-{}",
-        tag,
-        std::process::id(),
-        nanos
-    ));
+    let dir =
+        PathBuf::from("/tmp").join(format!("ion-j7-{}-{}-{}", tag, std::process::id(), nanos));
     assert!(
         dir.join("host.sock").to_string_lossy().len() < 100,
         "socket path too long for AF_UNIX: {}",
@@ -183,7 +176,8 @@ fn setup_env(tag: &str, allow_local_respawn: bool) -> TestEnv {
     cfg["remote_workers"] = serde_json::json!({});
     if let Some(ext) = cfg["extensions"].as_object_mut() {
         for k in NOISY_EXTENSIONS {
-            ext.entry(k.to_string()).or_insert_with(|| serde_json::json!({}));
+            ext.entry(k.to_string())
+                .or_insert_with(|| serde_json::json!({}));
             ext[*k]["enabled"] = serde_json::Value::Bool(false);
         }
     }
@@ -225,7 +219,12 @@ fn ion_cmd(env: &TestEnv, args: &[&str]) -> Command {
 }
 
 /// 跑 `ion rpc`，返回 (exit_ok, stdout, stderr)
-fn rpc_raw(env: &TestEnv, session: Option<&str>, method: &str, params: &str) -> (bool, String, String) {
+fn rpc_raw(
+    env: &TestEnv,
+    session: Option<&str>,
+    method: &str,
+    params: &str,
+) -> (bool, String, String) {
     let mut args = vec!["rpc".to_string()];
     if let Some(sid) = session {
         args.push("--session".into());
@@ -236,7 +235,9 @@ fn rpc_raw(env: &TestEnv, session: Option<&str>, method: &str, params: &str) -> 
     args.push("--params".into());
     args.push(params.to_string());
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let out = ion_cmd(env, &arg_refs).output().expect("failed to run ion rpc");
+    let out = ion_cmd(env, &arg_refs)
+        .output()
+        .expect("failed to run ion rpc");
     (
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).to_string(),
@@ -251,7 +252,9 @@ fn host_rpc(env: &TestEnv, method: &str, params: &str) -> serde_json::Value {
     let v: serde_json::Value = serde_json::from_str(out.trim())
         .unwrap_or_else(|e| panic!("host rpc {method} 响应非 JSON: {e}; raw={out}"));
     assert_eq!(
-        v["success"].as_str().or_else(|| v["success"].as_bool().map(|_| "true")),
+        v["success"]
+            .as_str()
+            .or_else(|| v["success"].as_bool().map(|_| "true")),
         Some("true"),
         "host rpc {method} success!=true: {v}"
     );
@@ -259,7 +262,12 @@ fn host_rpc(env: &TestEnv, method: &str, params: &str) -> serde_json::Value {
 }
 
 /// session 级 RPC，返回完整响应（不 assert success——部分命令语义上允许失败）
-fn session_rpc(env: &TestEnv, sid: &str, method: &str, params: &str) -> (bool, serde_json::Value, String) {
+fn session_rpc(
+    env: &TestEnv,
+    sid: &str,
+    method: &str,
+    params: &str,
+) -> (bool, serde_json::Value, String) {
     let (ok, out, err) = rpc_raw(env, Some(sid), method, params);
     let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap_or(serde_json::Value::Null);
     (ok, v, format!("{out}{err}"))
@@ -345,14 +353,22 @@ fn create_session(env: &TestEnv) -> String {
         .as_str()
         .map(String::from)
         .unwrap_or_else(|| panic!("create_session 未返回 session_id: {data}"));
-    println!("  [session] {sid} (provider={} model={})", env.provider, env.model);
+    println!(
+        "  [session] {sid} (provider={} model={})",
+        env.provider, env.model
+    );
     sid
 }
 
 /// 定位 worker PID：host 的直接子进程且命令行含 "rpc --session <sid>"。
 fn find_worker_pid(_env: &TestEnv, host_pid: u32, sid: &str) -> Option<u32> {
     let out = Command::new("/usr/bin/pgrep")
-        .args(["-P", &host_pid.to_string(), "-f", &format!("rpc --session {sid}")])
+        .args([
+            "-P",
+            &host_pid.to_string(),
+            "-f",
+            &format!("rpc --session {sid}"),
+        ])
         .output()
         .ok()?;
     let line = String::from_utf8_lossy(&out.stdout);
@@ -403,9 +419,7 @@ fn kill_worker_sigkill(env: &TestEnv, host_pid: u32, sid: &str, label: &str) -> 
         }
         std::thread::sleep(Duration::from_millis(700));
     }
-    println!(
-        "  [warn] {label}: worker 已自行退出（未及 kill -9），worker 流关闭前提仍成立"
-    );
+    println!("  [warn] {label}: worker 已自行退出（未及 kill -9），worker 流关闭前提仍成立");
     0
 }
 
@@ -472,7 +486,14 @@ fn prompt(env: &TestEnv, sid: &str, text: &str) {
 /// 再发 prompt；发完后 30s 内磁盘必须增长，否则判定 prompt 撞上重建窗口
 /// 被吞（rpc success 但无 agent_start，run9 实测），重发（≤3 次）。
 /// 返回是否成功开跑——不 panic，调用方决定重试/恢复策略。
-fn prompt_after_restart(env: &TestEnv, host_pid: u32, sid: &str, text: &str, baseline: u64, label: &str) -> bool {
+fn prompt_after_restart(
+    env: &TestEnv,
+    host_pid: u32,
+    sid: &str,
+    text: &str,
+    baseline: u64,
+    label: &str,
+) -> bool {
     let mut live = false;
     for _ in 0..30 {
         if let Some(pid) = find_worker_pid(env, host_pid, sid) {
@@ -500,7 +521,9 @@ fn prompt_after_restart(env: &TestEnv, host_pid: u32, sid: &str, text: &str, bas
             }
             std::thread::sleep(Duration::from_millis(1500));
         }
-        println!("  [warn] {label}: prompt 30s 未落盘（attempt {attempt}，疑似重建窗口竞态），重发");
+        println!(
+            "  [warn] {label}: prompt 30s 未落盘（attempt {attempt}，疑似重建窗口竞态），重发"
+        );
     }
     false
 }
@@ -553,7 +576,11 @@ fn flush_and_read_messages(env: &TestEnv, sid: &str) -> Vec<(String, String)> {
     out
 }
 
-fn extract_role_and_text(v: &serde_json::Value, role: &mut Option<String>, texts: &mut Vec<String>) {
+fn extract_role_and_text(
+    v: &serde_json::Value,
+    role: &mut Option<String>,
+    texts: &mut Vec<String>,
+) {
     match v {
         serde_json::Value::Object(o) => {
             for (k, x) in o {
@@ -597,13 +624,20 @@ fn session_jsonl(env: &TestEnv, sid: &str) -> PathBuf {
                 let p = e.path();
                 if p.is_dir() {
                     stack.push(p);
-                } else if p.file_name().map(|n| n.to_string_lossy() == target).unwrap_or(false) {
+                } else if p
+                    .file_name()
+                    .map(|n| n.to_string_lossy() == target)
+                    .unwrap_or(false)
+                {
                     return p;
                 }
             }
         }
     }
-    panic!("session 文件不存在（递归搜索 {target}）于 {}", env.sessions.display());
+    panic!(
+        "session 文件不存在（递归搜索 {target}）于 {}",
+        env.sessions.display()
+    );
 }
 
 fn count_file_occurrences(path: &Path, needle: &str) -> usize {
@@ -661,14 +695,19 @@ impl Collector {
                             }
                         }
                     }
-                    Err(_) => { // timeout → 回环检查 stop
+                    Err(_) => {
+                        // timeout → 回环检查 stop
                         continue;
                     }
                 }
             }
             // 收尾：把残余不满一行的也丢掉（按协议每帧一行）
         });
-        Collector { frames, stop, handle: Some(handle) }
+        Collector {
+            frames,
+            stop,
+            handle: Some(handle),
+        }
     }
 
     fn snapshot(&self) -> Vec<String> {
@@ -722,7 +761,9 @@ fn sock_one_shot(sock: &Path, send_line: &str, timeout: Duration, max_lines: usi
                 buf.extend_from_slice(&tmp[..n]);
                 while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
                     let line: Vec<u8> = buf.drain(..=pos).collect();
-                    let t = String::from_utf8_lossy(&line[..line.len() - 1]).trim().to_string();
+                    let t = String::from_utf8_lossy(&line[..line.len() - 1])
+                        .trim()
+                        .to_string();
                     if !t.is_empty() {
                         lines.push(t);
                     }
@@ -738,7 +779,12 @@ fn sock_one_shot(sock: &Path, send_line: &str, timeout: Duration, max_lines: usi
 }
 
 fn hello_host_id(sock: &Path) -> String {
-    let lines = sock_one_shot(sock, r#"{"id":"h","method":"hello"}"#, Duration::from_secs(8), 2);
+    let lines = sock_one_shot(
+        sock,
+        r#"{"id":"h","method":"hello"}"#,
+        Duration::from_secs(8),
+        2,
+    );
     let v = lines
         .first()
         .map(|l| parse_frame(l))
@@ -767,7 +813,10 @@ fn e2e_01_hostid_pin_and_restart() {
     println!("  hostId(host#1) = {hid1}");
 
     // 2. pin 正确值 → rpc 放行
-    let mut cmd = ion_cmd(&env, &["rpc", "--method", "list_sessions", "--params", "{}"]);
+    let mut cmd = ion_cmd(
+        &env,
+        &["rpc", "--method", "list_sessions", "--params", "{}"],
+    );
     cmd.env("ION_EXPECT_HOST_ID", &hid1);
     let out = cmd.output().unwrap();
     assert!(
@@ -778,7 +827,10 @@ fn e2e_01_hostid_pin_and_restart() {
     println!("  [ok] pin 正确 hostId → list_sessions 放行");
 
     // 3. pin 错误值 → 拒绝（exit != 0，stderr 提示 pin）
-    let mut cmd = ion_cmd(&env, &["rpc", "--method", "list_sessions", "--params", "{}"]);
+    let mut cmd = ion_cmd(
+        &env,
+        &["rpc", "--method", "list_sessions", "--params", "{}"],
+    );
     cmd.env("ION_EXPECT_HOST_ID", "00000000-0000-4000-8000-000000000000");
     let out = cmd.output().unwrap();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
@@ -790,25 +842,40 @@ fn e2e_01_hostid_pin_and_restart() {
         stderr.contains("hostId") || stderr.contains("pin"),
         "拒绝信息应说明 hostId pin 原因: {stderr}"
     );
-    println!("  [ok] pin 错误 hostId → 拒绝: {}", stderr.trim().lines().next().unwrap_or(""));
+    println!(
+        "  [ok] pin 错误 hostId → 拒绝: {}",
+        stderr.trim().lines().next().unwrap_or("")
+    );
 
     // 4. 重启 host → hostId 换新；旧 pin 拒绝、新 pin 放行
     drop(host);
     std::thread::sleep(Duration::from_millis(500));
     let host2 = start_host(&env, &[]);
     let hid2 = hello_host_id(&env.sock);
-    assert_ne!(hid1, hid2, "host 重启后 hostId 必须换新（{hid1} == {hid2}）");
+    assert_ne!(
+        hid1, hid2,
+        "host 重启后 hostId 必须换新（{hid1} == {hid2}）"
+    );
     println!("  [ok] host 重启换新 hostId: {hid1} → {hid2}");
 
-    let mut cmd = ion_cmd(&env, &["rpc", "--method", "list_sessions", "--params", "{}"]);
+    let mut cmd = ion_cmd(
+        &env,
+        &["rpc", "--method", "list_sessions", "--params", "{}"],
+    );
     cmd.env("ION_EXPECT_HOST_ID", &hid1);
     assert!(
         !cmd.output().unwrap().status.success(),
         "重启后旧 pin 必须被拒绝"
     );
-    let mut cmd = ion_cmd(&env, &["rpc", "--method", "list_sessions", "--params", "{}"]);
+    let mut cmd = ion_cmd(
+        &env,
+        &["rpc", "--method", "list_sessions", "--params", "{}"],
+    );
     cmd.env("ION_EXPECT_HOST_ID", &hid2);
-    assert!(cmd.output().unwrap().status.success(), "重启后新 pin 应放行");
+    assert!(
+        cmd.output().unwrap().status.success(),
+        "重启后新 pin 应放行"
+    );
     println!("  [ok] 旧 pin 拒绝 / 新 pin 放行");
     let _ = host2; // Drop 清理
 }
@@ -838,11 +905,18 @@ fn e2e_02_subscribe_snapshot_epoch_stale_route() {
     let ack_idx = col.wait_for("\"subscribed\"", Duration::from_secs(10));
     let ack_idx = ack_idx.unwrap_or_else(|| panic!("未收到 subscribed ack: {:?}", col.snapshot()));
     let ack = parse_frame(&col.snapshot()[ack_idx]);
-    let epoch1 = ack["epoch"].as_u64().unwrap_or_else(|| panic!("ack 无 epoch: {ack}"));
-    assert_eq!(ack["type"].as_str(), Some("subscribed"), "第一帧应为 subscribed ack: {ack}");
+    let epoch1 = ack["epoch"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("ack 无 epoch: {ack}"));
+    assert_eq!(
+        ack["type"].as_str(),
+        Some("subscribed"),
+        "第一帧应为 subscribed ack: {ack}"
+    );
     println!("  [ok] subscribed ack，epoch={epoch1}");
 
-    let snap_idx = col.wait_for("\"snapshot\":true", Duration::from_secs(10))
+    let snap_idx = col
+        .wait_for("\"snapshot\":true", Duration::from_secs(10))
         .unwrap_or_else(|| panic!("未收到 snapshot 帧: {:?}", col.snapshot()));
     let snap = parse_frame(&col.snapshot()[snap_idx]);
     assert_eq!(
@@ -857,7 +931,9 @@ fn e2e_02_subscribe_snapshot_epoch_stale_route() {
         "快照应含 session.sessionId"
     );
     assert!(
-        snap["event"]["data"]["worker"]["workerId"].as_str().is_some(),
+        snap["event"]["data"]["worker"]["workerId"]
+            .as_str()
+            .is_some(),
         "快照应含 worker 状态: {snap}"
     );
     println!("  [ok] snapshot 先行（customType=snapshot, epoch={epoch1}, session/worker 字段齐）");
@@ -867,11 +943,20 @@ fn e2e_02_subscribe_snapshot_epoch_stale_route() {
     prompt(&env, &sid, "Reply with exactly: STREAM OK");
     let delta_idx = col.wait_for("text_delta", Duration::from_secs(120));
     let end_idx = col.wait_for("agent_end", Duration::from_secs(120));
-    let delta_idx = delta_idx
-        .unwrap_or_else(|| panic!("实时 text_delta 未到达（真实流式缺失）。frames: {:?}", {
-            let f = col.snapshot();
-            f.len().min(30).checked_sub(10).map(|s| &f[s..]).map(<[String]>::to_vec).unwrap_or(f)
-        }));
+    let delta_idx = delta_idx.unwrap_or_else(|| {
+        panic!(
+            "实时 text_delta 未到达（真实流式缺失）。frames: {:?}",
+            {
+                let f = col.snapshot();
+                f.len()
+                    .min(30)
+                    .checked_sub(10)
+                    .map(|s| &f[s..])
+                    .map(<[String]>::to_vec)
+                    .unwrap_or(f)
+            }
+        )
+    });
     assert!(
         delta_idx > snap_idx,
         "实时事件必须晚于 snapshot（delta@{delta_idx} <= snap@{snap_idx}）"
@@ -895,8 +980,14 @@ fn e2e_02_subscribe_snapshot_epoch_stale_route() {
     let _ = col2.wait_for("\"snapshot\":true", Duration::from_secs(10));
     kill_worker_sigkill(&env, host.pid, &sid, "T2");
 
-    let stale_idx = col2.wait_for("stale_route", Duration::from_secs(45))
-        .unwrap_or_else(|| panic!("kill -9 后旧订阅未收 stale_route。frames: {:?}", col2.snapshot()));
+    let stale_idx = col2
+        .wait_for("stale_route", Duration::from_secs(45))
+        .unwrap_or_else(|| {
+            panic!(
+                "kill -9 后旧订阅未收 stale_route。frames: {:?}",
+                col2.snapshot()
+            )
+        });
     let stale = parse_frame(&col2.snapshot()[stale_idx]);
     assert_eq!(stale["type"].as_str(), Some("stale_route"), "{stale}");
     let new_epoch = stale["currentEpoch"].as_u64().unwrap_or(0);
@@ -904,13 +995,23 @@ fn e2e_02_subscribe_snapshot_epoch_stale_route() {
         new_epoch > epoch1,
         "epoch 必须单调推进: old={epoch1} current={new_epoch}"
     );
-    println!("  [ok] 旧订阅收 stale_route（epoch {epoch1} → currentEpoch {new_epoch}），共 {} 帧", col2.snapshot().len());
+    println!(
+        "  [ok] 旧订阅收 stale_route（epoch {epoch1} → currentEpoch {new_epoch}），共 {} 帧",
+        col2.snapshot().len()
+    );
     col2.stop();
 
     // 轮 3：重派（router 自动拉起/prompt 自建）→ 新订阅 epoch 递增 + 快照先行
     let c2 = msg_count(&env, &sid);
     assert!(
-        prompt_after_restart(&env, host.pid, &sid, "Reply with exactly: PONG", c2, "turn3"),
+        prompt_after_restart(
+            &env,
+            host.pid,
+            &sid,
+            "Reply with exactly: PONG",
+            c2,
+            "turn3"
+        ),
         "重派后 PONG 轮未开跑（重建窗口丢 prompt 超过重试预算）"
     );
     wait_turn_done(&env, &sid, "turn3", c2);
@@ -924,13 +1025,20 @@ fn e2e_02_subscribe_snapshot_epoch_stale_route() {
         .first()
         .map(|l| parse_frame(l))
         .unwrap_or(serde_json::Value::Null);
-    assert_eq!(ack2["type"].as_str(), Some("subscribed"), "重订阅 ack 异常: {ack2}");
+    assert_eq!(
+        ack2["type"].as_str(),
+        Some("subscribed"),
+        "重订阅 ack 异常: {ack2}"
+    );
     assert_eq!(
         ack2["epoch"].as_u64(),
         Some(new_epoch),
         "重订阅 epoch 应 = stale_route 的 currentEpoch（{new_epoch}），got {ack2}"
     );
-    let snap2 = lines.get(1).map(|l| parse_frame(l)).unwrap_or(serde_json::Value::Null);
+    let snap2 = lines
+        .get(1)
+        .map(|l| parse_frame(l))
+        .unwrap_or(serde_json::Value::Null);
     assert_eq!(
         snap2["event"]["customType"].as_str(),
         Some("snapshot"),
@@ -942,10 +1050,15 @@ fn e2e_02_subscribe_snapshot_epoch_stale_route() {
     let msgs = flush_and_read_messages(&env, &sid);
     let last_assistant = msgs.iter().rev().find(|(r, _)| r == "assistant");
     assert!(
-        last_assistant.map(|(_, t)| t.contains("PONG")).unwrap_or(false),
+        last_assistant
+            .map(|(_, t)| t.contains("PONG"))
+            .unwrap_or(false),
         "重派后真实应答应含 PONG: {msgs:?}"
     );
-    println!("  [ok] 重派后真实 LLM 应答含 PONG（共 {} 条消息）", msgs.len());
+    println!(
+        "  [ok] 重派后真实 LLM 应答含 PONG（共 {} 条消息）",
+        msgs.len()
+    );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -967,7 +1080,11 @@ fn e2e_03_queued_input_survives_sigkill() {
 
     // 轮 1：种码词
     let q0 = msg_count(&env, &sid);
-    prompt(&env, &sid, &format!("Remember the codeword {CODEWORD} for later. Reply with just: OK"));
+    prompt(
+        &env,
+        &sid,
+        &format!("Remember the codeword {CODEWORD} for later. Reply with just: OK"),
+    );
     wait_turn_done(&env, &sid, "turn1", q0);
 
     // 轮 2：长 bash（sleep 25）占用 run，等 tool_execution_start 确认 bash 已起
@@ -975,14 +1092,32 @@ fn e2e_03_queued_input_survives_sigkill() {
     let _ = col.wait_for("\"subscribed\"", Duration::from_secs(10));
     let q0b = msg_count(&env, &sid);
     assert!(
-        prompt_after_restart(&env, host.pid, &sid, "Use the bash tool to run exactly: sleep 25. Do nothing else. After the command completes reply: SLEEP_DONE", q0b, "turn2"),
+        prompt_after_restart(
+            &env,
+            host.pid,
+            &sid,
+            "Use the bash tool to run exactly: sleep 25. Do nothing else. After the command completes reply: SLEEP_DONE",
+            q0b,
+            "turn2"
+        ),
         "T3 turn2（长 bash）未开跑"
     );
-    let tool_idx = col.wait_for("tool_execution_start", Duration::from_secs(90))
-        .unwrap_or_else(|| panic!("90s 内未见 tool_execution_start（LLM 未按指示调 bash），frames 末尾: {:?}", {
-            let f = col.snapshot();
-            f.len().min(40).checked_sub(10).map(|s| &f[s..]).map(<[String]>::to_vec).unwrap_or(f)
-        }));
+    let tool_idx = col
+        .wait_for("tool_execution_start", Duration::from_secs(90))
+        .unwrap_or_else(|| {
+            panic!(
+                "90s 内未见 tool_execution_start（LLM 未按指示调 bash），frames 末尾: {:?}",
+                {
+                    let f = col.snapshot();
+                    f.len()
+                        .min(40)
+                        .checked_sub(10)
+                        .map(|s| &f[s..])
+                        .map(<[String]>::to_vec)
+                        .unwrap_or(f)
+                }
+            )
+        });
     println!("  [ok] bash 工具已启动（frame#{tool_idx}），sleep 25 进行中");
 
     // 忙时排队 followUp → 入队即落盘
@@ -993,8 +1128,14 @@ fn e2e_03_queued_input_survives_sigkill() {
         "followUp",
     );
     let q_status = queued["status"].as_str().unwrap_or("");
-    assert_eq!(q_status, "queued", "忙时 followUp 应返回 queued: {queued:?}");
-    println!("  [ok] followUp 已排队（status=queued queue={:?}）", queued["queue"]);
+    assert_eq!(
+        q_status, "queued",
+        "忙时 followUp 应返回 queued: {queued:?}"
+    );
+    println!(
+        "  [ok] followUp 已排队（status=queued queue={:?}）",
+        queued["queue"]
+    );
 
     let jsonl = session_jsonl(&env, &sid);
     assert_eq!(
@@ -1025,7 +1166,9 @@ fn e2e_03_queued_input_survives_sigkill() {
     let msgs = flush_and_read_messages(&env, &sid);
     let last_assistant = msgs.iter().rev().find(|(r, _)| r == "assistant");
     assert!(
-        last_assistant.map(|(_, t)| t.contains(CODEWORD)).unwrap_or(false),
+        last_assistant
+            .map(|(_, t)| t.contains(CODEWORD))
+            .unwrap_or(false),
         "重建回放后新轮 assistant 应答必须包含码词 {CODEWORD}。末尾消息: {:?}",
         msgs.iter().rev().take(6).collect::<Vec<_>>()
     );
@@ -1043,11 +1186,17 @@ fn e2e_03_queued_input_survives_sigkill() {
     );
     // 排队文本作为 user 消息真实进了历史
     assert!(
-        msgs.iter().any(|(r, t)| r == "user" && t.contains(QUEUE_MARK)),
+        msgs.iter()
+            .any(|(r, t)| r == "user" && t.contains(QUEUE_MARK)),
         "排队消息必须作为 user 消息出现在历史里: {:?}",
-        msgs.iter().map(|(r, t)| (r.clone(), t.chars().take(40).collect::<String>())).collect::<Vec<_>>()
+        msgs.iter()
+            .map(|(r, t)| (r.clone(), t.chars().take(40).collect::<String>()))
+            .collect::<Vec<_>>()
     );
-    println!("  [ok] 幂等：queued_input 恰好 1 份 + consumed 标记在案 + 排队文本进了历史（共 {} 条消息）", msgs.len());
+    println!(
+        "  [ok] 幂等：queued_input 恰好 1 份 + consumed 标记在案 + 排队文本进了历史（共 {} 条消息）",
+        msgs.len()
+    );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1062,7 +1211,9 @@ fn e2e_04_inplace_rebuild_after_sigkill() {
     }
     const CODEWORD: &str = "MANGO77";
     let env = setup_env("t4-inplace", true);
-    println!("== T4 原地重建：auto_respawn_local + kill -9 busy worker → 同 sid 重建 + 全历史续作 ==");
+    println!(
+        "== T4 原地重建：auto_respawn_local + kill -9 busy worker → 同 sid 重建 + 全历史续作 =="
+    );
     // 心跳参数调快：stdout-EOF 即时重派为主，心跳兜底（6s busy-dead）；
     // RUST_LOG=info 让 [auto-recovery] tracing 行进 host log（断言三要用）
     let host = start_host(
@@ -1077,7 +1228,11 @@ fn e2e_04_inplace_rebuild_after_sigkill() {
 
     // 轮 1：种码词（进会话文件 = 全历史的一部分）
     let k0 = msg_count(&env, &sid);
-    prompt(&env, &sid, &format!("Remember the codeword {CODEWORD} for later. Reply with just: OK"));
+    prompt(
+        &env,
+        &sid,
+        &format!("Remember the codeword {CODEWORD} for later. Reply with just: OK"),
+    );
     wait_turn_done(&env, &sid, "turn1", k0);
 
     // 轮 2：长 bash 占住 run → kill -9 → 等 host 自动原地重派
@@ -1087,11 +1242,24 @@ fn e2e_04_inplace_rebuild_after_sigkill() {
     // 会被吞（rpc success 但无 agent_start，run1 实测），需要重发兜底
     let k1 = msg_count(&env, &sid);
     assert!(
-        prompt_after_restart(&env, host.pid, &sid, "Use the bash tool to run exactly: sleep 60. Do nothing else. After the command completes reply: SLEEP_DONE", k1, "turn2"),
+        prompt_after_restart(
+            &env,
+            host.pid,
+            &sid,
+            "Use the bash tool to run exactly: sleep 60. Do nothing else. After the command completes reply: SLEEP_DONE",
+            k1,
+            "turn2"
+        ),
         "T4 turn2（长 bash）未开跑"
     );
-    let tool_idx = col.wait_for("tool_execution_start", Duration::from_secs(90))
-        .unwrap_or_else(|| panic!("90s 内未见 tool_execution_start（LLM 未调 bash），frames: {:?}", col.snapshot()));
+    let tool_idx = col
+        .wait_for("tool_execution_start", Duration::from_secs(90))
+        .unwrap_or_else(|| {
+            panic!(
+                "90s 内未见 tool_execution_start（LLM 未调 bash），frames: {:?}",
+                col.snapshot()
+            )
+        });
     println!("  [ok] bash 已启动（frame#{tool_idx}）");
 
     let old_pid = find_worker_pid(&env, host.pid, &sid).expect("未找到 worker 进程");
@@ -1128,7 +1296,10 @@ fn e2e_04_inplace_rebuild_after_sigkill() {
         if !running && i["message_count"].as_u64().is_some() {
             break i;
         }
-        assert!(Instant::now() < settle_deadline, "重派 worker 150s 未空闲。info={i}");
+        assert!(
+            Instant::now() < settle_deadline,
+            "重派 worker 150s 未空闲。info={i}"
+        );
         std::thread::sleep(Duration::from_millis(1500));
     };
 
@@ -1139,23 +1310,37 @@ fn e2e_04_inplace_rebuild_after_sigkill() {
         users_preload >= 2,
         "原地重建必须全历史预加载（重派后未发新 prompt，user_messages 应 ≥2，got {users_preload}）。info={info}"
     );
-    println!("  [ok] 全历史预加载：新 worker 内存 user_messages={users_preload}（含短引导，未发新 prompt）");
+    println!(
+        "  [ok] 全历史预加载：新 worker 内存 user_messages={users_preload}（含短引导，未发新 prompt）"
+    );
 
     // 轮 3：续作——只有带着全历史的 worker 才答得出码词
     let k1 = msg_count(&env, &sid);
     assert!(
-        prompt_after_restart(&env, host.pid, &sid, "What is the codeword I asked you to remember earlier in this session? Reply with just the codeword.", k1, "turn3"),
+        prompt_after_restart(
+            &env,
+            host.pid,
+            &sid,
+            "What is the codeword I asked you to remember earlier in this session? Reply with just the codeword.",
+            k1,
+            "turn3"
+        ),
         "续作码词轮未开跑（重建窗口丢 prompt 超过重试预算）"
     );
     wait_turn_done(&env, &sid, "turn3", k1);
     let msgs = flush_and_read_messages(&env, &sid);
     let last_assistant = msgs.iter().rev().find(|(r, _)| r == "assistant");
     assert!(
-        last_assistant.map(|(_, t)| t.contains(CODEWORD)).unwrap_or(false),
+        last_assistant
+            .map(|(_, t)| t.contains(CODEWORD))
+            .unwrap_or(false),
         "原地重建后续作必须答出码词 {CODEWORD}（全历史保真）。末尾消息: {:?}",
         msgs.iter().rev().take(6).collect::<Vec<_>>()
     );
-    println!("  [ok] 续作真实答出码词 {CODEWORD}（会话 {sid} 全程同 sid，共 {} 条消息）", msgs.len());
+    println!(
+        "  [ok] 续作真实答出码词 {CODEWORD}（会话 {sid} 全程同 sid，共 {} 条消息）",
+        msgs.len()
+    );
 
     // 断言三：host log 里有 auto-recovery 决策痕迹
     let log = std::fs::read_to_string(&env.host_log).unwrap_or_default();
@@ -1187,9 +1372,19 @@ fn e2e_05_abort_bash_worker_survives() {
     // 轮 1：长 bash 占住 run
     let col = Collector::start(&env.sock, &sid);
     let _ = col.wait_for("\"subscribed\"", Duration::from_secs(10));
-    prompt(&env, &sid, "Use the bash tool to run exactly: sleep 45. Do nothing else. After the command completes reply: DONE");
-    let tool_idx = col.wait_for("tool_execution_start", Duration::from_secs(90))
-        .unwrap_or_else(|| panic!("90s 内未见 tool_execution_start（LLM 未调 bash），frames: {:?}", col.snapshot()));
+    prompt(
+        &env,
+        &sid,
+        "Use the bash tool to run exactly: sleep 45. Do nothing else. After the command completes reply: DONE",
+    );
+    let tool_idx = col
+        .wait_for("tool_execution_start", Duration::from_secs(90))
+        .unwrap_or_else(|| {
+            panic!(
+                "90s 内未见 tool_execution_start（LLM 未调 bash），frames: {:?}",
+                col.snapshot()
+            )
+        });
     // 模拟真实用户：看到工具启动后 ~3s 才点中止（400ms 内的极限竞态会命中
     // tool-start 记账窗口，run3 实测会触发"下一轮挂起"的产品问题，见报告）
     std::thread::sleep(Duration::from_secs(3));
@@ -1230,13 +1425,27 @@ fn e2e_05_abort_bash_worker_survives() {
     // 后续 prompt 全被吞进僵尸 run，run1/run2 两轮真实复现）。这里按文档化
     // 恢复路径走：SIGKILL 僵尸 worker（精确 PID）→ prompt 自建新 worker 续作。
     let a0 = msg_count(&env, &sid);
-    if !prompt_after_restart(&env, host.pid, &sid, "Reply with exactly: STILL_ALIVE", a0, "turn2-direct") {
+    if !prompt_after_restart(
+        &env,
+        host.pid,
+        &sid,
+        "Reply with exactly: STILL_ALIVE",
+        a0,
+        "turn2-direct",
+    ) {
         // 命中挂起 bug → 走重建恢复
         println!("  [warn] post-abort 下一轮挂起（已知产品问题），走重建恢复路径");
         kill_worker_sigkill(&env, host.pid, &sid, "T5-recovery");
         let a1 = msg_count(&env, &sid);
         assert!(
-            prompt_after_restart(&env, host.pid, &sid, "Reply with exactly: STILL_ALIVE", a1, "turn2-recovery"),
+            prompt_after_restart(
+                &env,
+                host.pid,
+                &sid,
+                "Reply with exactly: STILL_ALIVE",
+                a1,
+                "turn2-recovery"
+            ),
             "重建后 STILL_ALIVE 轮仍未开跑"
         );
         wait_turn_done(&env, &sid, "turn2-recovery", a1);
@@ -1246,9 +1455,14 @@ fn e2e_05_abort_bash_worker_survives() {
     let msgs = flush_and_read_messages(&env, &sid);
     let last_assistant = msgs.iter().rev().find(|(r, _)| r == "assistant");
     assert!(
-        last_assistant.map(|(_, t)| t.contains("STILL_ALIVE")).unwrap_or(false),
+        last_assistant
+            .map(|(_, t)| t.contains("STILL_ALIVE"))
+            .unwrap_or(false),
         "abort 后会话必须能继续应答 STILL_ALIVE。末尾消息: {:?}",
         msgs.iter().rev().take(6).collect::<Vec<_>>()
     );
-    println!("  [ok] abort 后会话继续应答 STILL_ALIVE（共 {} 条消息）", msgs.len());
+    println!(
+        "  [ok] abort 后会话继续应答 STILL_ALIVE（共 {} 条消息）",
+        msgs.len()
+    );
 }

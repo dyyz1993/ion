@@ -114,9 +114,7 @@ pub struct ApprovalEntry {
 impl ApprovalEntry {
     /// payload 里的来源原生 id（各来源注册时约定写入 `nativeRequestId`）
     pub fn native_request_id(&self) -> Option<&str> {
-        self.payload
-            .get("nativeRequestId")
-            .and_then(|v| v.as_str())
+        self.payload.get("nativeRequestId").and_then(|v| v.as_str())
     }
 }
 
@@ -363,9 +361,7 @@ impl ApprovalBus {
                     dedupe_key: dedupe_key.to_string(),
                 };
                 let id = entry.id.clone();
-                inner
-                    .by_dedupe
-                    .insert(dedupe_key.to_string(), id.clone());
+                inner.by_dedupe.insert(dedupe_key.to_string(), id.clone());
                 inner.entries.insert(id.clone(), entry.clone());
                 to_fire.push(ApprovalChange::Registered(entry.clone()));
                 RegisterOutcome {
@@ -756,7 +752,9 @@ mod tests {
             &[ApprovalDecision::Approve]
         );
         // 再 resolve 同 id → NotFound
-        let err = b.resolve(&out.id, ApprovalDecision::Reject, None).unwrap_err();
+        let err = b
+            .resolve(&out.id, ApprovalDecision::Reject, None)
+            .unwrap_err();
         assert!(matches!(err, ResolveError::NotFound(_)));
         assert!(err.message().contains(out.id.as_str()));
     }
@@ -901,8 +899,13 @@ mod tests {
         let v = serde_json::to_value(&out.entry).unwrap();
         assert!(v.get("workerId").is_none(), "workerId=None 省略");
         assert!(v.get("expiresAtMs").is_none(), "expiresAtMs=None 省略");
-        b.resolve_as(&out.id, ApprovalDecision::Approve, ApprovalActor::Pump, Some("policy"))
-            .expect("resolve_as ok");
+        b.resolve_as(
+            &out.id,
+            ApprovalDecision::Approve,
+            ApprovalActor::Pump,
+            Some("policy"),
+        )
+        .expect("resolve_as ok");
         assert_eq!(
             fired.lock().unwrap().as_slice(),
             &[ApprovalActor::Pump],

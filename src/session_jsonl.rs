@@ -1087,14 +1087,12 @@ pub fn replay_queued_inputs(cwd: &str) -> Vec<(String, serde_json::Value)> {
         .unwrap_or("")
         .to_string();
     let live = live_entry_ids(&entries, &header_id);
-    let on_live = |id: &str| live.as_ref().map_or(true, |ids| ids.contains(id));
+    let on_live = |id: &str| live.as_ref().is_none_or(|ids| ids.contains(id));
     // 已被吸收的排队消息（真实 message 条目里 timestamp+text 相同的）
     let saved_keys: std::collections::HashSet<(i64, String)> = entries
         .iter()
         .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("message"))
-        .filter(|e| {
-            on_live(e.get("id").and_then(|v| v.as_str()).unwrap_or(""))
-        })
+        .filter(|e| on_live(e.get("id").and_then(|v| v.as_str()).unwrap_or("")))
         .filter_map(|e| e.get("message"))
         .filter_map(queued_msg_key)
         .collect();

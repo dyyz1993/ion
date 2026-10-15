@@ -184,7 +184,7 @@ fn spawn_host() -> (Child, std::path::PathBuf, std::path::PathBuf) {
         }
         if std::time::Instant::now() >= deadline {
             let dbg = std::fs::read_to_string(tmp.join("host_stderr.log")).unwrap_or_default();
-            panic!("host socket 30s 未就绪 | tmp={tmp:?} | host_stderr:\n{dbg}");  
+            panic!("host socket 30s 未就绪 | tmp={tmp:?} | host_stderr:\n{dbg}");
         }
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -234,10 +234,17 @@ fn host_hello_carries_protocol_version_and_stable_host_id() {
             _ => panic!("UUID 段数异常: {host_id}"),
         }
     }
-    assert!(host_id.chars().all(|c| c == '-' || c.is_ascii_lowercase() || c.is_ascii_digit()),
-        "hostId 全小写 hex: {host_id}");
+    assert!(
+        host_id
+            .chars()
+            .all(|c| c == '-' || c.is_ascii_lowercase() || c.is_ascii_digit()),
+        "hostId 全小写 hex: {host_id}"
+    );
     assert_eq!(&host_id[14..15], "4", "UUIDv4 version 位: {host_id}");
-    assert!(matches!(&host_id[19..20], "8" | "9" | "a" | "b"), "UUIDv4 variant 位: {host_id}");
+    assert!(
+        matches!(&host_id[19..20], "8" | "9" | "a" | "b"),
+        "UUIDv4 variant 位: {host_id}"
+    );
 
     // 新连接再次 hello：同一 host 进程 hostId 稳定（pin 校验的前提）
     let r2 = hello_roundtrip(&sock, "h2");
@@ -258,7 +265,10 @@ fn startup_sequence_ready_then_worker_ready_shell() {
     let (child, rx) = spawn_worker();
     // 首帧：ready 公告（裸帧，不带事件外壳）
     let first = next_json(&rx);
-    assert_eq!(first["type"], "ready", "worker 首帧必须是 ready 公告: {first}");
+    assert_eq!(
+        first["type"], "ready",
+        "worker 首帧必须是 ready 公告: {first}"
+    );
     assert_eq!(first["session"], "proto-char-test");
     assert!(first["model"].is_string());
     assert!(first["provider"].is_string());
@@ -268,7 +278,10 @@ fn startup_sequence_ready_then_worker_ready_shell() {
     let ready_ev = next_json_matching(&rx, |v| {
         v["type"] == "event" && v["event"]["type"] == "worker_ready"
     });
-    assert_eq!(ready_ev["type"], "event", "worker_ready 外壳 type 必须是 event: {ready_ev}");
+    assert_eq!(
+        ready_ev["type"], "event",
+        "worker_ready 外壳 type 必须是 event: {ready_ev}"
+    );
     assert_eq!(ready_ev["event"]["type"], "worker_ready");
     shutdown(child);
 }
@@ -290,19 +303,23 @@ fn success_response_envelope_shape() {
         &mut stdin,
         serde_json::json!({"id": "1", "method": "health", "params": {}}),
     );
-    let resp = next_json_matching(&rx, |v| {
-        v.get("id").is_some() && v["type"] == "response"
-    });
+    let resp = next_json_matching(&rx, |v| v.get("id").is_some() && v["type"] == "response");
     assert_eq!(resp["id"], "1");
     assert_eq!(resp["type"], "response");
-    assert_eq!(resp["command"], "health", "worker 响应必须带 command 字段: {resp}");
+    assert_eq!(
+        resp["command"], "health",
+        "worker 响应必须带 command 字段: {resp}"
+    );
     assert_eq!(resp["success"], true);
     assert_eq!(resp["data"]["status"], "ok");
     assert!(resp["data"]["uptime_secs"].is_u64());
     assert!(resp["data"]["pid"].is_u64());
     assert!(resp["data"]["version"].is_string());
     // 成功响应不出现 error 字段
-    assert!(resp.get("error").is_none(), "成功信封不应有 error 字段: {resp}");
+    assert!(
+        resp.get("error").is_none(),
+        "成功信封不应有 error 字段: {resp}"
+    );
     shutdown(child);
 }
 
@@ -320,16 +337,17 @@ fn error_response_envelope_shape() {
         &mut stdin,
         serde_json::json!({"id": "2", "method": "definitely_not_a_real_method", "params": {}}),
     );
-    let resp = next_json_matching(&rx, |v| {
-        v.get("id").is_some() && v["type"] == "response"
-    });
+    let resp = next_json_matching(&rx, |v| v.get("id").is_some() && v["type"] == "response");
     assert_eq!(resp["id"], "2");
     assert_eq!(resp["type"], "response");
     assert_eq!(resp["command"], "definitely_not_a_real_method");
     assert_eq!(resp["success"], false);
     let err = resp["error"].as_str().expect("error 必须是字符串");
     assert!(err.contains("Unknown command"), "错误文本要可诊断: {err}");
-    assert!(resp.get("data").is_none(), "失败信封不应有 data 字段: {resp}");
+    assert!(
+        resp.get("data").is_none(),
+        "失败信封不应有 data 字段: {resp}"
+    );
     shutdown(child);
 }
 
@@ -356,7 +374,10 @@ fn rpc_response_event_shell_shape() {
     assert_eq!(inner["method"], "health");
     assert_eq!(inner["success"], true);
     // sessionId / timestamp 摘要字段存在（直 spawn worker 时 sessionId 可为空串）
-    assert!(inner.get("sessionId").is_some(), "事件要带 sessionId 键: {inner}");
+    assert!(
+        inner.get("sessionId").is_some(),
+        "事件要带 sessionId 键: {inner}"
+    );
     assert!(inner["timestamp"].is_u64(), "事件要带 timestamp: {inner}");
     shutdown(child);
 }
@@ -374,7 +395,9 @@ fn invalid_json_yields_error_frame() {
     send_raw(&mut stdin, "{ this is really not json");
     let frame = next_json_matching(&rx, |v| v["type"] == "error");
     assert!(frame.get("id").is_none(), "error 帧不应带 id: {frame}");
-    let msg = frame["error"]["message"].as_str().expect("error.message 字符串");
+    let msg = frame["error"]["message"]
+        .as_str()
+        .expect("error.message 字符串");
     assert!(msg.contains("invalid JSON"), "错误信息: {msg}");
     shutdown(child);
 }
@@ -398,9 +421,7 @@ fn request_with_session_field_is_accepted() {
             "session": "proto-char-test"
         }),
     );
-    let resp = next_json_matching(&rx, |v| {
-        v.get("id").is_some() && v["type"] == "response"
-    });
+    let resp = next_json_matching(&rx, |v| v.get("id").is_some() && v["type"] == "response");
     assert_eq!(resp["id"], "rpc-client");
     assert_eq!(resp["success"], true);
     shutdown(child);
@@ -440,10 +461,7 @@ fn oversized_line_rejected_with_error_frame() {
         v["type"] == "error" && v.get("limitBytes").is_some()
     });
     let err = frame["error"].as_str().expect("error 必须是字符串");
-    assert!(
-        err.contains("line too large"),
-        "错误信息要可诊断: {frame}"
-    );
+    assert!(err.contains("line too large"), "错误信息要可诊断: {frame}");
     assert_eq!(
         frame["limitBytes"].as_u64(),
         Some(16 * 1024 * 1024),

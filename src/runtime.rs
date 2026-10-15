@@ -103,8 +103,7 @@ pub fn pending_ui() -> &'static Mutex<HashMap<String, oneshot::Sender<String>>> 
 // approval_respond 经 `ask_respond` 命令转发回本 worker（worker_rpc.rs 处理，
 // 从 pending_ui 取 oneshot 放行）。场景 1/2（无 worker 进程）不受影响。
 // ---------------------------------------------------------------------------
-static WORKER_RPC_MODE: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static WORKER_RPC_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// 标记当前进程是 `--mode rpc` worker（run_worker_rpc 入口调用）。
 pub fn set_worker_rpc_mode(v: bool) {
@@ -2602,19 +2601,16 @@ mod tests {
     // 远端 shell 的解析行为逐字节等价。
 
     /// 攻击载荷：文件内容夹一行 heredoc 结束符 + 后续 shell 命令
-    const W5_MALICIOUS: &str = "safe-line-one\nIONEOF\ntouch pwned_marker\necho pwned > pwned2.txt\nsafe-line-three\n";
+    const W5_MALICIOUS: &str =
+        "safe-line-one\nIONEOF\ntouch pwned_marker\necho pwned > pwned2.txt\nsafe-line-three\n";
 
     fn w5_tmp_dir(tag: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let d = std::env::temp_dir().join(format!(
-            "ion_w5_{}_{}_{}",
-            tag,
-            std::process::id(),
-            nanos
-        ));
+        let d =
+            std::env::temp_dir().join(format!("ion_w5_{}_{}_{}", tag, std::process::id(), nanos));
         std::fs::create_dir_all(&d).unwrap();
         d
     }
@@ -2710,14 +2706,7 @@ mod tests {
     async fn remote_write_file_blocks_heredoc_injection() {
         let dir = w5_tmp_dir("remote_heredoc");
         let target = dir.join("victim.txt");
-        let remote = RemoteRuntime::new(
-            FakeRemoteShell { dir: dir.clone() },
-            "u",
-            "h",
-            22,
-            "",
-            "",
-        );
+        let remote = RemoteRuntime::new(FakeRemoteShell { dir: dir.clone() }, "u", "h", 22, "", "");
 
         let res = remote
             .write_file(&target.to_string_lossy(), W5_MALICIOUS)
@@ -2728,10 +2717,7 @@ mod tests {
         );
         assert_no_rce(&dir);
         let written = std::fs::read_to_string(&target).unwrap();
-        assert_eq!(
-            written, W5_MALICIOUS,
-            "落盘内容必须与原文逐字节一致"
-        );
+        assert_eq!(written, W5_MALICIOUS, "落盘内容必须与原文逐字节一致");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2779,10 +2765,7 @@ mod tests {
             .expect("含 shell 元字符的内容应写入成功");
 
         assert!(!dir.join("bt_marker").exists(), "反引号命令被执行（RCE）");
-        assert!(
-            !dir.join("cmdsub_marker").exists(),
-            "$() 命令被执行（RCE）"
-        );
+        assert!(!dir.join("cmdsub_marker").exists(), "$() 命令被执行（RCE）");
         let written = std::fs::read_to_string(&target).unwrap();
         assert_eq!(written, content, "元字符内容必须逐字节落盘");
         let _ = std::fs::remove_dir_all(&dir);

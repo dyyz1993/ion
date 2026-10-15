@@ -200,7 +200,11 @@ fn reconcile_rebuilds_missing_index_entries_from_disk() {
         // 字段正确性（header 派生）
         let idx = SessionIndex::load();
         let b = idx.get("sess_b").expect("R1: sess_b 应在索引");
-        assert_eq!(b.project.as_deref(), Some(cwd_b), "R1: project 来自 header.cwd");
+        assert_eq!(
+            b.project.as_deref(),
+            Some(cwd_b),
+            "R1: project 来自 header.cwd"
+        );
         assert_eq!(
             b.project_name.as_deref(),
             Some("proj-b"),
@@ -249,7 +253,11 @@ fn reconcile_rebuilds_missing_index_entries_from_disk() {
         // R3：sess_a 的自定义字段未被对账重置
         let idx = SessionIndex::load();
         let a = idx.get("sess_a").unwrap();
-        assert_eq!(a.name.as_deref(), Some("custom-name-a"), "R3: name 不被覆盖");
+        assert_eq!(
+            a.name.as_deref(),
+            Some("custom-name-a"),
+            "R3: name 不被覆盖"
+        );
         assert_eq!(a.model, "custom-model-a", "R3: model 不被覆盖");
         assert_eq!(a.message_count, 7, "R3: 已有统计不被清零");
 
@@ -333,16 +341,17 @@ fn reconcile_rebuilds_missing_index_entries_from_disk() {
             "",
         ));
         body.push('\n');
-        for (i, role) in ["user", "assistant", "user", "assistant"].iter().enumerate() {
+        for (i, role) in ["user", "assistant", "user", "assistant"]
+            .iter()
+            .enumerate()
+        {
             body.push_str(&format!(
                 r#"{{"type":"message","id":"m{}","parentId":"p{}","timestamp":"2025-06-01T12:00:0{}.000Z","message":{{"role":"{}","content":[{{"type":"text","text":"hi"}}]}}}}"#,
                 i, i, i, role
             ));
             body.push('\n');
         }
-        body.push_str(
-            r#"{"type":"custom","customType":"note","data":{"x":1}}"#,
-        );
+        body.push_str(r#"{"type":"custom","customType":"note","data":{"x":1}}"#);
         body.push('\n');
         body.push_str("not json\n");
         std::fs::write(dir.join("sess_stats.jsonl"), body).unwrap();

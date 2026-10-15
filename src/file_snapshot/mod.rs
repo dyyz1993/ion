@@ -165,14 +165,9 @@ impl Extension for FileSnapshotExtension {
         // session-start 会排到 turn step 之后，current_tree_hash() 因此取到陈旧的
         // session-start 快照（快测里整个 prompt 周期 <1ms，实测可复现）。
         // 全零前缀保证同毫秒时 session-start 稳定排在所有 turn step 之前。
-        let baseline_exists = self
-            .store
-            .load_all_step_snapshots()
-            .iter()
-            .any(|s| {
-                s.turn_id == "ts_000000000000_session_start"
-                    && s.session_id == self.storage.session_id
-            });
+        let baseline_exists = self.store.load_all_step_snapshots().iter().any(|s| {
+            s.turn_id == "ts_000000000000_session_start" && s.session_id == self.storage.session_id
+        });
         if baseline_exists {
             // 本会话 baseline 已存在：只补内存锚点（worker 重启后为 None）。
             // 接在最新已提交快照上（不重扫磁盘）——重启期间的写入要在下一轮

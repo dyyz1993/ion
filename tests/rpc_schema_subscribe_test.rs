@@ -28,15 +28,13 @@ fn schema_dir() -> PathBuf {
 
 fn read_schema(rel: &str) -> Value {
     let p = schema_dir().join(rel);
-    let raw = std::fs::read_to_string(&p)
-        .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+    let raw = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
     serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {}: {e}", p.display()))
 }
 
 fn compile(rel: &str) -> Validator {
     let schema = read_schema(rel);
-    jsonschema::validator_for(&schema)
-        .unwrap_or_else(|e| panic!("schema {} 不合法: {e}", rel))
+    jsonschema::validator_for(&schema).unwrap_or_else(|e| panic!("schema {} 不合法: {e}", rel))
 }
 
 /// 命令文件是「request/response 多变体容器」：验证具体帧必须取对应子 schema。
@@ -152,7 +150,11 @@ fn inner_event_type_enum_is_exhaustive() {
         .iter()
         .map(|v| v.as_str().expect("str"))
         .collect();
-    assert_eq!(we.len(), 19, "worker_event event.type 全集应有 19 种: {we:?}");
+    assert_eq!(
+        we.len(),
+        19,
+        "worker_event event.type 全集应有 19 种: {we:?}"
+    );
     assert_eq!(
         we, ie,
         "worker_event 与 instance_event 的 event.type 枚举必须一致"
@@ -202,8 +204,14 @@ fn hello_request_and_response_validate() {
     assert!(Validator::new(resp).expect("c").is_valid(&vresp));
     // 负例：版本错 / method 错 / 缺 hostId / hostId 非规范 UUIDv4
     assert!(!Validator::new(resp).expect("c").is_valid(&json!({"type":"response","id":"h1","success":true,"data":{"protocolVersion":2,"hostId":"3f2b8c6a-1d4e-4f50-9a1b-2c3d4e5f6078"}})));
-    assert!(!Validator::new(req).expect("c").is_valid(&json!({"id":"h1","method":"hello2"})));
-    assert!(!Validator::new(resp).expect("c").is_valid(&json!({"type":"response","id":"h1","success":true,"data":{"protocolVersion":1}})));
+    assert!(
+        !Validator::new(req)
+            .expect("c")
+            .is_valid(&json!({"id":"h1","method":"hello2"}))
+    );
+    assert!(!Validator::new(resp).expect("c").is_valid(
+        &json!({"type":"response","id":"h1","success":true,"data":{"protocolVersion":1}})
+    ));
     assert!(!Validator::new(resp).expect("c").is_valid(&json!({"type":"response","id":"h1","success":true,"data":{"protocolVersion":1,"hostId":"NOT-A-UUID"}})));
 }
 
@@ -255,16 +263,24 @@ fn connection_error_frames_validate() {
 fn subscribed_ack_variants_validate() {
     let c = compile("events/subscribed_ack.json");
     // instance ack（带 epoch）— 源码：SessionRouter::handle_subscribe
-    assert!(c.is_valid(&json!({"type":"subscribed","session":"sess_x","stream":"instance","epoch":1,"replayed":0})));
-    assert!(c.is_valid(&json!({"type":"subscribed","session":"sess_x","stream":"instance","epoch":2,"replayed":3})));
+    assert!(c.is_valid(
+        &json!({"type":"subscribed","session":"sess_x","stream":"instance","epoch":1,"replayed":0})
+    ));
+    assert!(c.is_valid(
+        &json!({"type":"subscribed","session":"sess_x","stream":"instance","epoch":2,"replayed":3})
+    ));
     // ui ack — 源码：{"type":"subscribed","stream":"ui"}
     assert!(c.is_valid(&json!({"type":"subscribed","stream":"ui"})));
     // extension ack — 源码：{"type":"subscribed","extension":ext,"session":sid|null}
     assert!(c.is_valid(&json!({"type":"subscribed","extension":"memory","session":"sess_x"})));
     assert!(c.is_valid(&json!({"type":"subscribed","extension":"","session":null})));
     // 负例：instance ack 缺 epoch / epoch=0 / 缺 replayed
-    assert!(!c.is_valid(&json!({"type":"subscribed","session":"s","stream":"instance","replayed":0})));
-    assert!(!c.is_valid(&json!({"type":"subscribed","session":"s","stream":"instance","epoch":0,"replayed":0})));
+    assert!(
+        !c.is_valid(&json!({"type":"subscribed","session":"s","stream":"instance","replayed":0}))
+    );
+    assert!(!c.is_valid(
+        &json!({"type":"subscribed","session":"s","stream":"instance","epoch":0,"replayed":0})
+    ));
     // 负例：unknown 帧
     assert!(!c.is_valid(&json!({"type":"subscribed"})));
 }
@@ -277,7 +293,9 @@ fn instance_event_frames_validate() {
     // replay 帧
     assert!(c.is_valid(&json!({"type":"instance_event","session":"sess_x","epoch":1,"replayed":true,"event":{"type":"worker_ready"}})));
     // 负例：缺 epoch / 非法内层事件类型
-    assert!(!c.is_valid(&json!({"type":"instance_event","session":"sess_x","event":{"type":"text_delta"}})));
+    assert!(!c.is_valid(
+        &json!({"type":"instance_event","session":"sess_x","event":{"type":"text_delta"}})
+    ));
     assert!(!c.is_valid(&json!({"type":"instance_event","session":"sess_x","epoch":1,"event":{"type":"unknown_event_type"}})));
     assert!(!c.is_valid(&json!({"type":"stale_route","session":"sess_x","epoch":1})));
 }
@@ -309,10 +327,20 @@ fn snapshot_frame_validates_both_worker_states() {
     let bad = with_worker.clone();
     assert!(!c.is_valid(&drop_key(&bad, &["event", "data", "generatedAt"])));
     let bad2 = with_worker.clone();
-    assert!(!c.is_valid(&drop_key(&bad2, &["event", "data", "pendingApprovals", "count"])));
+    assert!(!c.is_valid(&drop_key(
+        &bad2,
+        &["event", "data", "pendingApprovals", "count"]
+    )));
     assert!(!c.is_valid(&drop_key(&with_worker, &["snapshot"])));
-    let lower_status = set_at(&with_worker, &["event", "data", "worker", "status"], json!("busy"));
-    assert!(!c.is_valid(&lower_status), "快照 worker.status 是 Display 大写，snake_case 必须拒绝");
+    let lower_status = set_at(
+        &with_worker,
+        &["event", "data", "worker", "status"],
+        json!("busy"),
+    );
+    assert!(
+        !c.is_valid(&lower_status),
+        "快照 worker.status 是 Display 大写，snake_case 必须拒绝"
+    );
 }
 
 #[test]
@@ -320,8 +348,12 @@ fn stale_route_frame_validates() {
     let c = compile("events/stale_route.json");
     assert!(c.is_valid(&json!({"type":"stale_route","customType":"stale_route","session":"sess_x","epoch":1,"currentEpoch":2})));
     // 负例：缺 currentEpoch / currentEpoch <= epoch 不可能（schema 层至少拦缺字段与类型）
-    assert!(!c.is_valid(&json!({"type":"stale_route","customType":"stale_route","session":"sess_x","epoch":1})));
-    assert!(!c.is_valid(&json!({"type":"stale_route","session":"sess_x","epoch":1,"currentEpoch":2})));
+    assert!(!c.is_valid(
+        &json!({"type":"stale_route","customType":"stale_route","session":"sess_x","epoch":1})
+    ));
+    assert!(
+        !c.is_valid(&json!({"type":"stale_route","session":"sess_x","epoch":1,"currentEpoch":2}))
+    );
 }
 
 #[test]
@@ -330,7 +362,9 @@ fn rpc_response_event_validates() {
     assert!(c.is_valid(&json!({"type":"rpc_response","id":"r1","method":"set_model","success":true,"sessionId":"sess_x","timestamp":1757900000000i64})));
     assert!(c.is_valid(&json!({"type":"rpc_response","id":"r2","method":"prompt","success":false,"sessionId":"sess_x","timestamp":1757900000001i64,"error":"model not found"})));
     // 负例：缺 method / success 非布尔
-    assert!(!c.is_valid(&json!({"type":"rpc_response","id":"r1","success":true,"sessionId":"s","timestamp":1})));
+    assert!(!c.is_valid(
+        &json!({"type":"rpc_response","id":"r1","success":true,"sessionId":"s","timestamp":1})
+    ));
     assert!(!c.is_valid(&json!({"type":"rpc_response","id":"r1","method":"m","success":"yes","sessionId":"s","timestamp":1})));
 }
 
@@ -379,10 +413,15 @@ fn overview_shapes_validate() {
     assert!(cl.is_valid(&json!({"type":"response","id":"l1","success":true,"data":{"sessions":[
         {"session_id":"sess_x","agent":"build","status":"Busy","model":"glm-5.2",
          "started_at":1757900000000i64,"latest_output":["hi"],"log_short":"hi","model_size":128000}]}})));
-    let mut bad_ls = v(r#"{"type":"response","id":"l1","success":true,"data":{"sessions":[
+    let mut bad_ls = v(
+        r#"{"type":"response","id":"l1","success":true,"data":{"sessions":[
         {"session_id":"sess_x","agent":"build","status":"busy","model":"m",
-         "started_at":1757900000000,"latest_output":[],"log_short":null,"model_size":null}]}}"#);
-    assert!(!cl.is_valid(&bad_ls), "list_sessions status 大小写是两套序列化的真实差异");
+         "started_at":1757900000000,"latest_output":[],"log_short":null,"model_size":null}]}}"#,
+    );
+    assert!(
+        !cl.is_valid(&bad_ls),
+        "list_sessions status 大小写是两套序列化的真实差异"
+    );
     bad_ls["data"]["sessions"][0]["status"] = json!("Idle");
     assert!(cl.is_valid(&bad_ls));
 }
@@ -394,35 +433,57 @@ fn ui_respond_and_verb_schemas_validate() {
     let c_ok = sub_validator("ui_respond.json", "responseSuccess");
     let c_rej = sub_validator("ui_respond.json", "responseRejected");
     let c_nf = sub_validator("ui_respond.json", "responseNotFound");
-    assert!(c_req.is_valid(&json!({"id":"u1","method":"ui_respond","params":{"request_id":"r","response":"allow"}})));
+    assert!(c_req.is_valid(
+        &json!({"id":"u1","method":"ui_respond","params":{"request_id":"r","response":"allow"}})
+    ));
     assert!(!c_req.is_valid(&json!({"id":"u1","method":"ui_respond"})));
     assert!(c_ok.is_valid(&json!({"type":"response","id":"u1","success":true,"data":{"request_id":"r","response":"allow"}})));
     assert!(c_rej.is_valid(&json!({"type":"response","id":"u1","success":false,"error":"ui_respond rejected: requires a prior subscribe {ui:true} on the same connection"})));
     assert!(c_nf.is_valid(&json!({"type":"response","id":"u1","success":false,"error":"request not found or already expired"})));
     // 负例：同源错误信息格式错 / not found 文案错 / success 形状错
-    assert!(!c_rej.is_valid(&json!({"type":"response","id":"u1","success":false,"error":"rejected"})));
-    assert!(!c_nf.is_valid(&json!({"type":"response","id":"u1","success":false,"error":"not found"})));
-    assert!(!c_ok.is_valid(&json!({"type":"response","id":"u1","success":true,"data":{"request_id":"r"}})));
+    assert!(
+        !c_rej.is_valid(&json!({"type":"response","id":"u1","success":false,"error":"rejected"}))
+    );
+    assert!(
+        !c_nf.is_valid(&json!({"type":"response","id":"u1","success":false,"error":"not found"}))
+    );
+    assert!(
+        !c_ok.is_valid(
+            &json!({"type":"response","id":"u1","success":true,"data":{"request_id":"r"}})
+        )
+    );
     assert!(!c_ok.is_valid(&json!({"type":"response","id":"u1","success":false,"data":{"request_id":"r","response":"allow"}})));
 
     let cv = sub_validator("verb_pending.json", "response");
     assert!(cv.is_valid(&json!({"type":"response","id":"v1","success":true,"data":{"pending":[
         {"requestId":"vr-1","session":"sess_x","verb":"write_file","args":{"path":"a.txt"},"ageMs":1200}]}})));
-    assert!(cv.is_valid(&json!({"type":"response","id":"v1","success":true,"data":{"pending":[]}})));
-    assert!(!cv.is_valid(&json!({"type":"response","id":"v1","success":true,"data":{"pending":[{"requestId":"x"}]}})));
+    assert!(
+        cv.is_valid(&json!({"type":"response","id":"v1","success":true,"data":{"pending":[]}}))
+    );
+    assert!(!cv.is_valid(
+        &json!({"type":"response","id":"v1","success":true,"data":{"pending":[{"requestId":"x"}]}})
+    ));
 
     let cw_req = sub_validator("verb_review.json", "request");
     let cw_ok = sub_validator("verb_review.json", "responseSuccess");
     let cw_nf = sub_validator("verb_review.json", "responseNotFound");
     let cw_miss = sub_validator("verb_review.json", "responseMissingParam");
-    assert!(cw_req.is_valid(&json!({"id":"v2","method":"verb_review","params":{"requestId":"vr-1","approve":true}})));
-    assert!(cw_req.is_valid(&json!({"id":"v2","method":"verb_review","params":{"requestId":"vr-1"}})));
+    assert!(cw_req.is_valid(
+        &json!({"id":"v2","method":"verb_review","params":{"requestId":"vr-1","approve":true}})
+    ));
+    assert!(
+        cw_req.is_valid(&json!({"id":"v2","method":"verb_review","params":{"requestId":"vr-1"}}))
+    );
     assert!(!cw_req.is_valid(&json!({"id":"v2","method":"verb_review","params":{}})));
     assert!(cw_ok.is_valid(&json!({"type":"response","id":"v2","success":true,"data":{"requestId":"vr-1","approved":true}})));
-    assert!(!cw_ok.is_valid(&json!({"type":"response","id":"v2","success":true,"data":{"requestId":"vr-1"}})));
+    assert!(!cw_ok.is_valid(
+        &json!({"type":"response","id":"v2","success":true,"data":{"requestId":"vr-1"}})
+    ));
     assert!(cw_nf.is_valid(&json!({"type":"response","id":"v2","success":false,"error":"verb approval not found: vr-1"})));
     assert!(!cw_nf.is_valid(&json!({"type":"response","id":"v2","success":false,"error":"other"})));
-    assert!(cw_miss.is_valid(&json!({"type":"response","id":"v2","success":false,"error":"missing params.requestId"})));
+    assert!(cw_miss.is_valid(
+        &json!({"type":"response","id":"v2","success":false,"error":"missing params.requestId"})
+    ));
 }
 
 /// 统一审批总线（M3 固化的协议形状）：approvals_pending / approval_respond 命令
@@ -444,11 +505,16 @@ fn approval_bus_schemas_validate() {
         "payload":{"files":[{"path":"src/a.rs","status":"pending","diffStat":"+10 -2"}]},
         "raisedAtMs":1757900000000i64
     });
-    assert!(ap_resp.is_valid(&json!({"type":"response","id":"a1","success":true,
-        "data":{"pending":[entry]}})));
-    assert!(ap_resp.is_valid(&json!({"type":"response","id":"a1","success":true,"data":{"pending":[]}})));
+    assert!(
+        ap_resp.is_valid(&json!({"type":"response","id":"a1","success":true,
+        "data":{"pending":[entry]}}))
+    );
+    assert!(
+        ap_resp
+            .is_valid(&json!({"type":"response","id":"a1","success":true,"data":{"pending":[]}}))
+    );
     // 每来源 kind 一个正例（workerId/expiresAtMs 可选）
-    for kind in ["ui_ask","file_snapshot","remote_verb"] {
+    for kind in ["ui_ask", "file_snapshot", "remote_verb"] {
         let mut e = json!({
             "id":"x","kind":kind,"sessionId":"s","summary":"sum",
             "payload":{"k":"v"},"raisedAtMs":1i64
@@ -456,8 +522,12 @@ fn approval_bus_schemas_validate() {
         if kind == "remote_verb" {
             e["expiresAtMs"] = json!(60000i64);
         }
-        assert!(ap_resp.is_valid(&json!({"type":"response","id":"a1","success":true,"data":{"pending":[e]}})),
-            "kind={kind} 应通过");
+        assert!(
+            ap_resp.is_valid(
+                &json!({"type":"response","id":"a1","success":true,"data":{"pending":[e]}})
+            ),
+            "kind={kind} 应通过"
+        );
     }
     // 负例：缺 kind / kind 非法 / 缺 raisedAtMs / 缺 payload / 未知额外字段（表行封闭）
     let bad = json!({"type":"response","id":"a1","success":true,"data":{"pending":[
@@ -468,41 +538,76 @@ fn approval_bus_schemas_validate() {
     assert!(!ap_resp.is_valid(&bad_kind), "非法 kind 必须拒绝");
     let mut extra = entry.clone();
     extra["extraField"] = json!(1);
-    assert!(!ap_resp.is_valid(&json!({"type":"response","id":"a1","success":true,"data":{"pending":[extra]}})),
-        "ApprovalEntry additionalProperties=false");
+    assert!(
+        !ap_resp.is_valid(
+            &json!({"type":"response","id":"a1","success":true,"data":{"pending":[extra]}})
+        ),
+        "ApprovalEntry additionalProperties=false"
+    );
 
     // ── approval_respond：请求 + 四种响应变体 ──
     let ar_req = sub_validator("approval_respond.json", "request");
-    assert!(ar_req.is_valid(&json!({"id":"r1","method":"approval_respond",
-        "params":{"id":"appr_1","decision":"approve"}})));
-    assert!(ar_req.is_valid(&json!({"id":"r2","method":"approval_respond",
-        "params":{"id":"appr_1","decision":"reject","reason":"too risky"}})));
+    assert!(
+        ar_req.is_valid(&json!({"id":"r1","method":"approval_respond",
+        "params":{"id":"appr_1","decision":"approve"}}))
+    );
+    assert!(
+        ar_req.is_valid(&json!({"id":"r2","method":"approval_respond",
+        "params":{"id":"appr_1","decision":"reject","reason":"too risky"}}))
+    );
     // fail-closed：decision 必填、无缺省、枚举封闭
-    assert!(!ar_req.is_valid(&json!({"id":"r3","method":"approval_respond","params":{"id":"appr_1"}})));
-    assert!(!ar_req.is_valid(&json!({"id":"r4","method":"approval_respond","params":{"id":"appr_1","decision":"yes"}})));
-    assert!(!ar_req.is_valid(&json!({"id":"r5","method":"approval_respond","params":{"decision":"approve"}})));
+    assert!(
+        !ar_req.is_valid(&json!({"id":"r3","method":"approval_respond","params":{"id":"appr_1"}}))
+    );
+    assert!(!ar_req.is_valid(
+        &json!({"id":"r4","method":"approval_respond","params":{"id":"appr_1","decision":"yes"}})
+    ));
+    assert!(
+        !ar_req.is_valid(
+            &json!({"id":"r5","method":"approval_respond","params":{"decision":"approve"}})
+        )
+    );
 
     let ar_ok = sub_validator("approval_respond.json", "responseSuccess");
-    assert!(ar_ok.is_valid(&json!({"type":"response","id":"r1","success":true,
-        "data":{"id":"appr_1","kind":"remote_verb","decision":"approve"}})));
-    assert!(ar_ok.is_valid(&json!({"type":"response","id":"r1","success":true,
-        "data":{"id":"appr_1","kind":"ui_ask","decision":"reject","remaining":2}})));
-    assert!(!ar_ok.is_valid(&json!({"type":"response","id":"r1","success":true,
-        "data":{"id":"appr_1","decision":"approve"}})), "缺 kind 必须拒绝");
+    assert!(
+        ar_ok.is_valid(&json!({"type":"response","id":"r1","success":true,
+        "data":{"id":"appr_1","kind":"remote_verb","decision":"approve"}}))
+    );
+    assert!(
+        ar_ok.is_valid(&json!({"type":"response","id":"r1","success":true,
+        "data":{"id":"appr_1","kind":"ui_ask","decision":"reject","remaining":2}}))
+    );
+    assert!(
+        !ar_ok.is_valid(&json!({"type":"response","id":"r1","success":true,
+        "data":{"id":"appr_1","decision":"approve"}})),
+        "缺 kind 必须拒绝"
+    );
 
     let ar_nf = sub_validator("approval_respond.json", "responseNotFound");
-    assert!(ar_nf.is_valid(&json!({"type":"response","id":"r1","success":false,
-        "error":"approval not found: appr_gone"})));
-    assert!(!ar_nf.is_valid(&json!({"type":"response","id":"r1","success":false,"error":"not found"})));
+    assert!(
+        ar_nf.is_valid(&json!({"type":"response","id":"r1","success":false,
+        "error":"approval not found: appr_gone"}))
+    );
+    assert!(
+        !ar_nf.is_valid(&json!({"type":"response","id":"r1","success":false,"error":"not found"}))
+    );
 
     let ar_miss = sub_validator("approval_respond.json", "responseMissingParam");
-    assert!(ar_miss.is_valid(&json!({"type":"response","id":"r1","success":false,"error":"missing params.id"})));
-    assert!(ar_miss.is_valid(&json!({"type":"response","id":"r1","success":false,"error":"missing params.decision"})));
+    assert!(ar_miss.is_valid(
+        &json!({"type":"response","id":"r1","success":false,"error":"missing params.id"})
+    ));
+    assert!(ar_miss.is_valid(
+        &json!({"type":"response","id":"r1","success":false,"error":"missing params.decision"})
+    ));
 
     let ar_bad = sub_validator("approval_respond.json", "responseBadDecision");
-    assert!(ar_bad.is_valid(&json!({"type":"response","id":"r1","success":false,
-        "error":"invalid decision 'yes' (expected approve | reject)"})));
-    assert!(!ar_bad.is_valid(&json!({"type":"response","id":"r1","success":false,"error":"invalid"})));
+    assert!(
+        ar_bad.is_valid(&json!({"type":"response","id":"r1","success":false,
+        "error":"invalid decision 'yes' (expected approve | reject)"}))
+    );
+    assert!(
+        !ar_bad.is_valid(&json!({"type":"response","id":"r1","success":false,"error":"invalid"}))
+    );
 
     // ── 事件 data 载荷：ApprovalRequest（统一 + legacy 两形态）──
     let evq = compile("events/approval_request.json");
@@ -528,10 +633,14 @@ fn approval_bus_schemas_validate() {
         "result":{"approved":1}
     })));
     // 人工拒绝（带 reason）+ 系统收尾（无 result）
-    assert!(evr.is_valid(&json!({"id":"x","kind":"remote_verb","decision":"reject","by":"user","reason":"too risky"})));
+    assert!(evr.is_valid(
+        &json!({"id":"x","kind":"remote_verb","decision":"reject","by":"user","reason":"too risky"})
+    ));
     assert!(evr.is_valid(&json!({"id":"y","kind":"ui_ask","decision":"reject","by":"system"})));
     // 批量放行语义下 id 可空串
-    assert!(evr.is_valid(&json!({"id":"","kind":"file_snapshot","decision":"approve","by":"pump"})));
+    assert!(
+        evr.is_valid(&json!({"id":"","kind":"file_snapshot","decision":"approve","by":"pump"}))
+    );
     // 负例：decision 非法 / by 非法 / 缺 kind / 缺 id
     assert!(!evr.is_valid(&json!({"id":"x","kind":"ui_ask","decision":"maybe","by":"user"})));
     assert!(!evr.is_valid(&json!({"id":"x","kind":"ui_ask","decision":"approve","by":"someone"})));
@@ -546,28 +655,88 @@ fn approval_bus_schemas_validate() {
 fn inner_typed_event_schemas_validate() {
     // 每个内层事件 schema 一个正例（形状转录自源码产生点）
     let cases: &[(&str, Value)] = &[
-        ("events/text_delta.json", json!({"type":"text_delta","delta":"hi","sessionId":"s"})),
+        (
+            "events/text_delta.json",
+            json!({"type":"text_delta","delta":"hi","sessionId":"s"}),
+        ),
         // faux 快速路径无 sessionId
-        ("events/text_delta.json", json!({"type":"text_delta","delta":"hi"})),
-        ("events/agent_start.json", json!({"type":"agent_start","sessionId":"s","timestamp":1})),
-        ("events/agent_end.json", json!({"type":"agent_end","sessionId":"s","willRetry":false,"messages":3,"timestamp":1})),
-        ("events/agent_stopped.json", json!({"type":"agent_stopped","sessionId":"s","timestamp":1,"reason":"user_abort"})),
-        ("events/message_start.json", json!({"type":"message_start","sessionId":"s","role":"assistant","content_length":10,"timestamp":1})),
-        ("events/message_end.json", json!({"type":"message_end","sessionId":"s","role":"assistant","usage":{"input":10,"output":5,"total":15},"timestamp":1})),
-        ("events/tool_call_delta.json", json!({"type":"tool_call_delta","sessionId":"s","delta":"{\"a\"","toolName":"read","timestamp":1})),
-        ("events/tool_call.json", json!({"type":"tool_call","tool":"read"})),
-        ("events/tool_execution_start.json", json!({"type":"tool_execution_start","sessionId":"s","toolCallId":"tc1","toolName":"read","args":{"path":"a"},"timestamp":1})),
-        ("events/tool_execution_update.json", json!({"type":"tool_execution_update","sessionId":"s","toolCallId":"tc1","toolName":"bash","args":{},"partialResult":"compiling"})),
-        ("events/tool_execution_end.json", json!({"type":"tool_execution_end","sessionId":"s","toolCallId":"tc1","toolName":"read","isError":false,"result":{"output":"x"},"durationMs":12,"timestamp":1})),
-        ("events/auto_retry_start.json", json!({"type":"auto_retry_start","sessionId":"s","attempt":1,"maxRetries":3,"timestamp":1})),
-        ("events/auto_retry_end.json", json!({"type":"auto_retry_end","sessionId":"s","success":false,"attempt":3,"timestamp":1})),
-        ("events/error.json", json!({"type":"error","message":"boom","timestamp":1})),
+        (
+            "events/text_delta.json",
+            json!({"type":"text_delta","delta":"hi"}),
+        ),
+        (
+            "events/agent_start.json",
+            json!({"type":"agent_start","sessionId":"s","timestamp":1}),
+        ),
+        (
+            "events/agent_end.json",
+            json!({"type":"agent_end","sessionId":"s","willRetry":false,"messages":3,"timestamp":1}),
+        ),
+        (
+            "events/agent_stopped.json",
+            json!({"type":"agent_stopped","sessionId":"s","timestamp":1,"reason":"user_abort"}),
+        ),
+        (
+            "events/message_start.json",
+            json!({"type":"message_start","sessionId":"s","role":"assistant","content_length":10,"timestamp":1}),
+        ),
+        (
+            "events/message_end.json",
+            json!({"type":"message_end","sessionId":"s","role":"assistant","usage":{"input":10,"output":5,"total":15},"timestamp":1}),
+        ),
+        (
+            "events/tool_call_delta.json",
+            json!({"type":"tool_call_delta","sessionId":"s","delta":"{\"a\"","toolName":"read","timestamp":1}),
+        ),
+        (
+            "events/tool_call.json",
+            json!({"type":"tool_call","tool":"read"}),
+        ),
+        (
+            "events/tool_execution_start.json",
+            json!({"type":"tool_execution_start","sessionId":"s","toolCallId":"tc1","toolName":"read","args":{"path":"a"},"timestamp":1}),
+        ),
+        (
+            "events/tool_execution_update.json",
+            json!({"type":"tool_execution_update","sessionId":"s","toolCallId":"tc1","toolName":"bash","args":{},"partialResult":"compiling"}),
+        ),
+        (
+            "events/tool_execution_end.json",
+            json!({"type":"tool_execution_end","sessionId":"s","toolCallId":"tc1","toolName":"read","isError":false,"result":{"output":"x"},"durationMs":12,"timestamp":1}),
+        ),
+        (
+            "events/auto_retry_start.json",
+            json!({"type":"auto_retry_start","sessionId":"s","attempt":1,"maxRetries":3,"timestamp":1}),
+        ),
+        (
+            "events/auto_retry_end.json",
+            json!({"type":"auto_retry_end","sessionId":"s","success":false,"attempt":3,"timestamp":1}),
+        ),
+        (
+            "events/error.json",
+            json!({"type":"error","message":"boom","timestamp":1}),
+        ),
         ("events/worker_ready.json", json!({"type":"worker_ready"})),
-        ("events/extension_event.json", json!({"type":"extension_event","extension":"bash","customType":"proc_exited","visibility":"llm_and_ui","timestamp":1,"data":{"code":0}})),
-        ("events/extension_event.json", json!({"type":"extension_event","extension":"host","customType":"snapshot","visibility":"ui_only","session":"s","data":{}})),
-        ("events/custom.json", json!({"type":"custom","customType":"my_event","data":{"k":"v"}})),
-        ("events/child_crashed.json", json!({"type":"child_crashed","session_id":"sess_child","exit_reason":"SIGKILL"})),
-        ("events/rpc_response_event.json", json!({"type":"rpc_response","id":"r","method":"prompt","success":true,"sessionId":"s","timestamp":1})),
+        (
+            "events/extension_event.json",
+            json!({"type":"extension_event","extension":"bash","customType":"proc_exited","visibility":"llm_and_ui","timestamp":1,"data":{"code":0}}),
+        ),
+        (
+            "events/extension_event.json",
+            json!({"type":"extension_event","extension":"host","customType":"snapshot","visibility":"ui_only","session":"s","data":{}}),
+        ),
+        (
+            "events/custom.json",
+            json!({"type":"custom","customType":"my_event","data":{"k":"v"}}),
+        ),
+        (
+            "events/child_crashed.json",
+            json!({"type":"child_crashed","session_id":"sess_child","exit_reason":"SIGKILL"}),
+        ),
+        (
+            "events/rpc_response_event.json",
+            json!({"type":"rpc_response","id":"r","method":"prompt","success":true,"sessionId":"s","timestamp":1}),
+        ),
     ];
     for (rel, inst) in cases {
         let schema = compile(rel);
@@ -575,16 +744,40 @@ fn inner_typed_event_schemas_validate() {
     }
     // 集中负例：各 schema 的硬约束
     let neg: &[(&str, Value)] = &[
-        ("events/text_delta.json", json!({"type":"text_delta","delta":""})),
+        (
+            "events/text_delta.json",
+            json!({"type":"text_delta","delta":""}),
+        ),
         ("events/text_delta.json", json!({"type":"text_delta"})),
-        ("events/agent_stopped.json", json!({"type":"agent_stopped","sessionId":"s"})),
-        ("events/message_end.json", json!({"type":"message_end","sessionId":"s","role":"a","usage":{"input":1,"output":1}})),
-        ("events/tool_call_delta.json", json!({"type":"tool_call_delta","delta":"","toolName":"t"})),
-        ("events/tool_execution_update.json", json!({"type":"tool_execution_update","sessionId":"s","toolCallId":"t","toolName":"n","args":{}})),
-        ("events/auto_retry_start.json", json!({"type":"auto_retry_start","sessionId":"s","attempt":0,"maxRetries":3,"timestamp":1})),
-        ("events/worker_ready.json", json!({"type":"worker_ready","extra":1})),
+        (
+            "events/agent_stopped.json",
+            json!({"type":"agent_stopped","sessionId":"s"}),
+        ),
+        (
+            "events/message_end.json",
+            json!({"type":"message_end","sessionId":"s","role":"a","usage":{"input":1,"output":1}}),
+        ),
+        (
+            "events/tool_call_delta.json",
+            json!({"type":"tool_call_delta","delta":"","toolName":"t"}),
+        ),
+        (
+            "events/tool_execution_update.json",
+            json!({"type":"tool_execution_update","sessionId":"s","toolCallId":"t","toolName":"n","args":{}}),
+        ),
+        (
+            "events/auto_retry_start.json",
+            json!({"type":"auto_retry_start","sessionId":"s","attempt":0,"maxRetries":3,"timestamp":1}),
+        ),
+        (
+            "events/worker_ready.json",
+            json!({"type":"worker_ready","extra":1}),
+        ),
         ("events/custom.json", json!({"type":"custom","data":{}})),
-        ("events/child_crashed.json", json!({"type":"child_crashed","sessionId":"s","exit_reason":"x"})),
+        (
+            "events/child_crashed.json",
+            json!({"type":"child_crashed","sessionId":"s","exit_reason":"x"}),
+        ),
     ];
     for (rel, inst) in neg {
         let schema = compile(rel);
@@ -596,8 +789,12 @@ fn inner_typed_event_schemas_validate() {
 fn response_envelope_validates() {
     let c = compile("_response_envelope.json");
     assert!(c.is_valid(&json!({"type":"response","id":"1","success":true,"data":{}})));
-    assert!(c.is_valid(&json!({"type":"response","id":null,"success":false,"error":"invalid JSON: x"})));
-    assert!(c.is_valid(&json!({"type":"response","id":"1","success":true,"data":{},"session":"sess_x"})));
+    assert!(
+        c.is_valid(&json!({"type":"response","id":null,"success":false,"error":"invalid JSON: x"}))
+    );
+    assert!(c.is_valid(
+        &json!({"type":"response","id":"1","success":true,"data":{},"session":"sess_x"})
+    ));
     assert!(!c.is_valid(&json!({"type":"error","error":"x"})));
     assert!(!c.is_valid(&json!({"type":"response","id":"1"})));
 }
@@ -698,7 +895,9 @@ impl HostGuard {
             .set_read_timeout(Some(Duration::from_millis(200)))
             .expect("set timeout");
         use std::io::Write;
-        stream.write_all(format!("{line}\n").as_bytes()).expect("send");
+        stream
+            .write_all(format!("{line}\n").as_bytes())
+            .expect("send");
         read_lines_until(&mut stream, max_lines, Instant::now() + timeout)
     }
 }
@@ -776,13 +975,16 @@ fn live_host_protocol_frames_match_schemas() {
     let inst_schema = compile("events/instance_event.json");
 
     // ── 1. hello 握手（含 hostId 逻辑实例身份）──
-    let hello_schema = jsonschema::validator_for(&read_schema("hello.json")["properties"]["response"])
-        .expect("c");
+    let hello_schema =
+        jsonschema::validator_for(&read_schema("hello.json")["properties"]["response"]).expect("c");
     let hello_frames = host.rpc(r#"{"id":"h1","method":"hello"}"#, 2, Duration::from_secs(5));
     assert_eq!(hello_frames.len(), 1, "hello 应恰回一帧");
     let hresp = &hello_frames[0];
     validate_or_panic(&hello_schema, hresp, "hello.response");
-    let host_id1 = hresp["data"]["hostId"].as_str().expect("data.hostId").to_string();
+    let host_id1 = hresp["data"]["hostId"]
+        .as_str()
+        .expect("data.hostId")
+        .to_string();
     assert_eq!(host_id1.len(), 36, "hostId 是规范 UUIDv4: {host_id1}");
     // 第二次 hello（新连接）：同一 host 进程 hostId 稳定
     let hello2 = host.rpc(r#"{"id":"h2","method":"hello"}"#, 2, Duration::from_secs(5));
@@ -816,7 +1018,9 @@ fn live_host_protocol_frames_match_schemas() {
     // ── 3. subscribe（replay=3）→ ack(epoch) → snapshot → 实时事件 ──
     // 先跑一轮 faux prompt 产生可回放历史
     let _ = host.rpc(
-        &format!(r#"{{"id":"p0","method":"prompt","session":"{sid}","params":{{"text":"warmup"}}}}"#),
+        &format!(
+            r#"{{"id":"p0","method":"prompt","session":"{sid}","params":{{"text":"warmup"}}}}"#
+        ),
         2,
         Duration::from_secs(20),
     );
@@ -825,7 +1029,11 @@ fn live_host_protocol_frames_match_schemas() {
     let mut sub = SubConn::connect(&host.sock);
     sub.send(&json!({"id":"s1","method":"subscribe","session":sid,"replay":3}));
     let first = sub.read_expecting(2, Duration::from_secs(15));
-    assert!(first.len() >= 2, "应收到 ack+snapshot，实际 {} 帧", first.len());
+    assert!(
+        first.len() >= 2,
+        "应收到 ack+snapshot，实际 {} 帧",
+        first.len()
+    );
     validate_or_panic(&ack_schema, &first[0], "subscribed ack");
     assert_eq!(first[0]["epoch"], 1, "首次订阅 epoch=1");
     assert_eq!(first[0]["session"], json!(sid));
@@ -835,11 +1043,14 @@ fn live_host_protocol_frames_match_schemas() {
     // 触发事件流：另一连接 prompt → text_delta/agent_start/agent_end + rpc_response
     let prompt_handle = {
         let sock = host.sock.clone();
-        let line = format!(r#"{{"id":"p1","method":"prompt","session":"{sid}","params":{{"text":"stream events"}}}}"#);
+        let line = format!(
+            r#"{{"id":"p1","method":"prompt","session":"{sid}","params":{{"text":"stream events"}}}}"#
+        );
         std::thread::spawn(move || {
             let mut s = UnixStream::connect(&sock).expect("prompt conn");
             use std::io::Write;
-            s.write_all(format!("{line}\n").as_bytes()).expect("send prompt");
+            s.write_all(format!("{line}\n").as_bytes())
+                .expect("send prompt");
             read_lines_until(&mut s, 2, Instant::now() + Duration::from_secs(20))
         })
     };
@@ -863,11 +1074,19 @@ fn live_host_protocol_frames_match_schemas() {
         match et {
             "text_delta" => {
                 saw_text_delta = true;
-                validate_or_panic(&compile("events/text_delta.json"), &f["event"], "text_delta");
+                validate_or_panic(
+                    &compile("events/text_delta.json"),
+                    &f["event"],
+                    "text_delta",
+                );
             }
             "agent_start" => {
                 saw_agent_start = true;
-                validate_or_panic(&compile("events/agent_start.json"), &f["event"], "agent_start");
+                validate_or_panic(
+                    &compile("events/agent_start.json"),
+                    &f["event"],
+                    "agent_start",
+                );
             }
             "agent_end" => {
                 saw_agent_end = true;
@@ -884,7 +1103,10 @@ fn live_host_protocol_frames_match_schemas() {
             _ => {}
         }
     }
-    assert!(saw_text_delta, "faux prompt 应产生 text_delta（帧: {frames:?}）");
+    assert!(
+        saw_text_delta,
+        "faux prompt 应产生 text_delta（帧: {frames:?}）"
+    );
     assert!(saw_agent_start, "应产生 agent_start");
     assert!(saw_agent_end, "应产生 agent_end");
     assert!(saw_rpc_response, "prompt RPC 应广播 rpc_response 摘要事件");
@@ -906,17 +1128,17 @@ fn live_host_protocol_frames_match_schemas() {
     assert_eq!(kill[0]["success"], json!(true), "kill_worker: {kill:?}");
 
     let stale_frames = g2.drain(Instant::now() + Duration::from_secs(15));
-    assert!(
-        !stale_frames.is_empty(),
-        "kill 后旧订阅应收 stale_route"
-    );
+    assert!(!stale_frames.is_empty(), "kill 后旧订阅应收 stale_route");
     let last = stale_frames.last().expect("last frame");
     validate_or_panic(&stale_schema, last, "stale_route");
     assert_eq!(last["epoch"], 1, "旧订阅 epoch=1");
     assert_eq!(last["currentEpoch"], 2, "推进后 currentEpoch=2");
     // 恰一条 stale_route 且是最后一帧；之前的帧只能是合法 instance_event
     assert_eq!(
-        stale_frames.iter().filter(|f| f["type"] == json!("stale_route")).count(),
+        stale_frames
+            .iter()
+            .filter(|f| f["type"] == json!("stale_route"))
+            .count(),
         1,
         "恰一条 stale_route"
     );
@@ -926,7 +1148,9 @@ fn live_host_protocol_frames_match_schemas() {
 
     // 重派：同 session prompt（auto-create 拉新 worker）→ 新订阅 epoch=2
     let _ = host.rpc(
-        &format!(r#"{{"id":"p2","method":"prompt","session":"{sid}","params":{{"text":"respawn"}}}}"#),
+        &format!(
+            r#"{{"id":"p2","method":"prompt","session":"{sid}","params":{{"text":"respawn"}}}}"#
+        ),
         2,
         Duration::from_secs(20),
     );
@@ -980,14 +1204,29 @@ fn live_host_protocol_frames_match_schemas() {
     );
 
     // ── 6. host 级查询命令 ──
-    let ls = host.rpc(r#"{"id":"l1","method":"list_sessions"}"#, 2, Duration::from_secs(5));
-    validate_or_panic(&sub_validator("list_sessions.json", "response"), &ls[0], "list_sessions");
+    let ls = host.rpc(
+        r#"{"id":"l1","method":"list_sessions"}"#,
+        2,
+        Duration::from_secs(5),
+    );
+    validate_or_panic(
+        &sub_validator("list_sessions.json", "response"),
+        &ls[0],
+        "list_sessions",
+    );
     assert!(
-        !ls[0]["data"]["sessions"].as_array().expect("sessions").is_empty(),
+        !ls[0]["data"]["sessions"]
+            .as_array()
+            .expect("sessions")
+            .is_empty(),
         "至少有一个运行中 session"
     );
 
-    let go = host.rpc(r#"{"id":"g9","method":"get_overview"}"#, 2, Duration::from_secs(5));
+    let go = host.rpc(
+        r#"{"id":"g9","method":"get_overview"}"#,
+        2,
+        Duration::from_secs(5),
+    );
     validate_or_panic(
         &jsonschema::validator_for(&read_schema("get_overview.json")["properties"]["response"])
             .expect("c"),
@@ -995,18 +1234,37 @@ fn live_host_protocol_frames_match_schemas() {
         "get_overview",
     );
     // overview 载荷独立 schema 也要过
-    validate_or_panic(&compile("events/overview.json"), &go[0]["data"], "overview payload");
+    validate_or_panic(
+        &compile("events/overview.json"),
+        &go[0]["data"],
+        "overview payload",
+    );
 
-    let vp = host.rpc(r#"{"id":"v1","method":"verb_pending"}"#, 2, Duration::from_secs(5));
-    validate_or_panic(&sub_validator("verb_pending.json", "response"), &vp[0], "verb_pending");
+    let vp = host.rpc(
+        r#"{"id":"v1","method":"verb_pending"}"#,
+        2,
+        Duration::from_secs(5),
+    );
+    validate_or_panic(
+        &sub_validator("verb_pending.json", "response"),
+        &vp[0],
+        "verb_pending",
+    );
     let vr = host.rpc(
         r#"{"id":"v2","method":"verb_review","params":{"requestId":"nonexistent","approve":false}}"#,
         2,
         Duration::from_secs(5),
     );
-    validate_or_panic(&sub_validator("verb_review.json", "responseNotFound"), &vr[0], "verb_review not found");
+    validate_or_panic(
+        &sub_validator("verb_review.json", "responseNotFound"),
+        &vr[0],
+        "verb_review not found",
+    );
     assert!(
-        vr[0]["error"].as_str().map(|e| e.starts_with("verb approval not found: ")).unwrap_or(false),
+        vr[0]["error"]
+            .as_str()
+            .map(|e| e.starts_with("verb approval not found: "))
+            .unwrap_or(false),
         "verb_review 未命中错误信息"
     );
 
@@ -1021,7 +1279,11 @@ fn live_host_protocol_frames_match_schemas() {
         "subscribe_overview ack 应对 ack 子 schema"
     );
     assert_eq!(so_ack[0]["data"]["stream"], json!("overview"));
-    validate_or_panic(&compile("events/overview.json"), &so_ack[0]["data"]["initial"], "overview initial");
+    validate_or_panic(
+        &compile("events/overview.json"),
+        &so_ack[0]["data"]["initial"],
+        "overview initial",
+    );
     // kill 一个 worker 触发 broadcast_overview → 收 overview_snapshot 帧
     let _ = host.rpc(
         &json!({"id":"k2","method":"kill_worker","params":{"workerId":current_worker_of(&host, &sid)}}).to_string(),
@@ -1090,12 +1352,20 @@ fn approval_bus_rpc_frames_match_schemas() {
         2,
         Duration::from_secs(5),
     );
-    validate_or_panic(&ar_miss, &miss_id[0], "approval_respond.responseMissingParam(id)");
+    validate_or_panic(
+        &ar_miss,
+        &miss_id[0],
+        "approval_respond.responseMissingParam(id)",
+    );
     assert_eq!(miss_id[0]["error"], json!("missing params.id"));
 }
 
 fn current_worker_of(host: &HostGuard, sid: &str) -> String {
-    let ls = host.rpc(r#"{"id":"wq","method":"list_workers"}"#, 2, Duration::from_secs(5));
+    let ls = host.rpc(
+        r#"{"id":"wq","method":"list_workers"}"#,
+        2,
+        Duration::from_secs(5),
+    );
     for w in ls[0]["data"]["workers"].as_array().expect("workers") {
         if w["sessionId"] == json!(sid) {
             return w["workerId"].as_str().expect("workerId").to_string();

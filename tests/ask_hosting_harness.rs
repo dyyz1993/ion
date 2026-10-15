@@ -433,7 +433,11 @@ fn ask_allow_releases_tool_execution() {
     let session = format!("ask_allow_{}", rand_hex());
     let mut worker = TestWorker::spawn(&tmp, &session);
 
-    worker.send("p1", "prompt", serde_json::json!({"text": "run the marked command"}));
+    worker.send(
+        "p1",
+        "prompt",
+        serde_json::json!({"text": "run the marked command"}),
+    );
     worker.wait_agent_start_or_event("run 1 agent_start");
     // （agent_start 可能已被 wait_extension_event 消费前到达——用宽容的等待）
 
@@ -446,7 +450,7 @@ fn ask_allow_releases_tool_execution() {
         .to_string();
     assert!(
         !request_id.is_empty(),
-            "Ask event request_id must be non-empty, got: {ask}"
+        "Ask event request_id must be non-empty, got: {ask}"
     );
     assert!(
         ask.get("title").is_some() && ask.get("message").is_some(),
@@ -461,8 +465,16 @@ fn ask_allow_releases_tool_execution() {
     );
     let resp = worker.wait_response("r1", "ask_respond allow");
     assert!(
-        resp.get("success").and_then(|s| s.as_bool()).unwrap_or(false)
-            || resp.get("data").map(|d| d.get("delivered").and_then(|v| v.as_bool()).unwrap_or(false)).unwrap_or(false),
+        resp.get("success")
+            .and_then(|s| s.as_bool())
+            .unwrap_or(false)
+            || resp
+                .get("data")
+                .map(|d| d
+                    .get("delivered")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false))
+                .unwrap_or(false),
         "ask_respond should report delivered, got: {resp}"
     );
 
@@ -525,7 +537,11 @@ fn ask_deny_blocks_tool_execution() {
     let session = format!("ask_deny_{}", rand_hex());
     let mut worker = TestWorker::spawn(&tmp, &session);
 
-    worker.send("p1", "prompt", serde_json::json!({"text": "deny case: run the marked command"}));
+    worker.send(
+        "p1",
+        "prompt",
+        serde_json::json!({"text": "deny case: run the marked command"}),
+    );
 
     let ask = worker.wait_extension_event("Ask", "Ask (deny case)");
     let request_id = ask

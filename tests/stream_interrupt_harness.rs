@@ -109,10 +109,7 @@ async fn mid_stream_eof_retries_and_lands_real_answer() {
     let faux_handle = faux::register_faux(&mut registry);
     // 队列：流中断 → 真实补全。修复后第 1 次调用被判 EOF 签名错误并重试，
     // 第 2 次调用消费真实补全。
-    faux_handle.set_responses(vec![
-        stream_eof_step(),
-        real_step("recovered answer"),
-    ]);
+    faux_handle.set_responses(vec![stream_eof_step(), real_step("recovered answer")]);
 
     let mut agent = Agent::new(
         Arc::new(registry),

@@ -280,7 +280,10 @@ mod tests {
             "正常源文件必须被扫到"
         );
         assert!(
-            !result.files.keys().any(|p| p == ".ion" || p.starts_with(".ion/")),
+            !result
+                .files
+                .keys()
+                .any(|p| p == ".ion" || p.starts_with(".ion/")),
             ".ion/ 内部文件不应被扫描: {:?}",
             result.files.keys().collect::<Vec<_>>()
         );

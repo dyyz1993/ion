@@ -162,8 +162,22 @@ pub fn generate_host_id() -> String {
     let h: Vec<String> = bytes.iter().map(|b| format!("{b:02x}")).collect();
     format!(
         "{}{}{}{}-{}{}-{}{}-{}{}-{}{}{}{}{}{}",
-        h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8], h[9], h[10], h[11], h[12], h[13],
-        h[14], h[15]
+        h[0],
+        h[1],
+        h[2],
+        h[3],
+        h[4],
+        h[5],
+        h[6],
+        h[7],
+        h[8],
+        h[9],
+        h[10],
+        h[11],
+        h[12],
+        h[13],
+        h[14],
+        h[15]
     )
 }
 
@@ -627,8 +641,12 @@ mod tests {
 
     #[test]
     fn has_request_id_distinguishes_response_from_event() {
-        assert!(Request::has_request_id(&json!({"id": "1", "type": "response"})));
-        assert!(!Request::has_request_id(&json!({"type": "event", "event": {}})));
+        assert!(Request::has_request_id(
+            &json!({"id": "1", "type": "response"})
+        ));
+        assert!(!Request::has_request_id(
+            &json!({"type": "event", "event": {}})
+        ));
     }
 
     // ── 响应信封 ──
@@ -776,7 +794,11 @@ mod tests {
 
     #[test]
     fn stamp_instance_event_wraps_bare_messages() {
-        let out = stamp_instance_event("s", 7, json!({"type":"event","event":{"type":"text_delta"}}));
+        let out = stamp_instance_event(
+            "s",
+            7,
+            json!({"type":"event","event":{"type":"text_delta"}}),
+        );
         assert_eq!(out["type"], "instance_event");
         assert_eq!(out["epoch"], 7);
         assert_eq!(out["event"]["type"], "text_delta");
@@ -807,7 +829,15 @@ mod tests {
 
     #[test]
     fn extension_event_frame_shape() {
-        let v = extension_event_frame("memory", "memory_saved", None, true, "llm_and_ui", "c1", &json!({}));
+        let v = extension_event_frame(
+            "memory",
+            "memory_saved",
+            None,
+            true,
+            "llm_and_ui",
+            "c1",
+            &json!({}),
+        );
         assert_eq!(v["type"], "extension_event");
         assert_eq!(v["customType"], "memory_saved");
         assert_eq!(v["persisted"], true);
@@ -982,7 +1012,10 @@ mod tests {
         // 超长经构造器截断到 500
         let long = "y".repeat(600);
         let w2 = worker_response::error("1", "m", &long);
-        assert_eq!(w2["error"].as_str().unwrap().chars().count(), MAX_ERROR_CHARS);
+        assert_eq!(
+            w2["error"].as_str().unwrap().chars().count(),
+            MAX_ERROR_CHARS
+        );
         // home 路径经构造器脱敏（用真实 HOME 断言"不含"，环境无关）
         if let Ok(home) = std::env::var("HOME") {
             let home = home.trim_end_matches('/');
@@ -1011,7 +1044,10 @@ mod tests {
             for (i, b) in bytes.iter().enumerate() {
                 match i {
                     8 | 13 | 18 | 23 => assert_eq!(*b, b'-', "连字符位置 {i}: {id}"),
-                    _ => assert!(b.is_ascii_hexdigit() && !b.is_ascii_uppercase(), "小写 hex @ {i}: {id}"),
+                    _ => assert!(
+                        b.is_ascii_hexdigit() && !b.is_ascii_uppercase(),
+                        "小写 hex @ {i}: {id}"
+                    ),
                 }
             }
             // version 位 = 4，variant 位 ∈ {8,9,a,b}（规范 UUIDv4，对齐 pi ServerId）
@@ -1046,8 +1082,7 @@ mod tests {
         assert_eq!(v["success"], true);
         assert_eq!(v["data"]["protocolVersion"], PROTOCOL_VERSION);
         assert_eq!(
-            v["data"]["hostId"],
-            "3f2b8c6a-1d4e-4f50-9a1b-2c3d4e5f6078",
+            v["data"]["hostId"], "3f2b8c6a-1d4e-4f50-9a1b-2c3d4e5f6078",
             "hello 响应必须携带 hostId（逻辑实例身份）"
         );
         let v2 = hello_reply(None, "x");

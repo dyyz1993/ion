@@ -56,10 +56,10 @@ fn pending_ui() -> &'static Mutex<HashMap<String, oneshot::Sender<String>>> {
 // ---------------------------------------------------------------------------
 
 use ion_protocol::{
-    host_response, stale_route_event, stamp_instance_event, snapshot_event, subscribed_ack_session,
-    subscribed_ack_extension, subscribed_ack_ui, hello_reply, line_too_large_frame, ui_event_frame,
-    extension_event_frame, worker_response_frame, pump_event_frame, overview_snapshot_frame,
-    stream_error_frame, MAX_LINE_BYTES,
+    MAX_LINE_BYTES, extension_event_frame, hello_reply, host_response, line_too_large_frame,
+    overview_snapshot_frame, pump_event_frame, snapshot_event, stale_route_event,
+    stamp_instance_event, stream_error_frame, subscribed_ack_extension, subscribed_ack_session,
+    subscribed_ack_ui, ui_event_frame, worker_response_frame,
 };
 
 /// ui_respond 同源校验：ui_origin=false（本连接未先 subscribe ui:true）→ 拒绝理由
@@ -99,9 +99,8 @@ async fn respond_to_ui_request(
     if let Some(tx) = sender {
         let _ = tx.send(response.clone());
         // 推 AskResolved 到 UI 事件通道（锁已释放）
-        let resolved = ExtensionEvent::new_ui("AskResolved", &request_id, &response).with_data(
-            serde_json::json!({"response": response, "resolved_by": "ui_stream"}),
-        );
+        let resolved = ExtensionEvent::new_ui("AskResolved", &request_id, &response)
+            .with_data(serde_json::json!({"response": response, "resolved_by": "ui_stream"}));
         let mut bus = ev_bus.lock().await;
         bus.broadcast(&resolved);
         drop(bus);
@@ -109,17 +108,13 @@ async fn respond_to_ui_request(
             cmd.get("id").cloned().unwrap_or_default(),
             serde_json::json!({"request_id":request_id,"response":response}),
         );
-        let _ = write_half
-            .write_all(format!("{resp}\n").as_bytes())
-            .await;
+        let _ = write_half.write_all(format!("{resp}\n").as_bytes()).await;
     } else {
         let resp = host_response::error(
             cmd.get("id").cloned().unwrap_or_default(),
             "request not found or already expired",
         );
-        let _ = write_half
-            .write_all(format!("{resp}\n").as_bytes())
-            .await;
+        let _ = write_half.write_all(format!("{resp}\n").as_bytes()).await;
     }
     let _ = write_half.flush().await;
 }
@@ -143,9 +138,7 @@ async fn respond_to_ui_request(
 //          （customType 沿用 K5 审批泵既有命名，data 含完整 ApprovalEntry）
 // ---------------------------------------------------------------------------
 
-use ion::approval_bus::{
-    ApprovalBus, ApprovalChange, ApprovalDecision, ApprovalKind, RemoveCause,
-};
+use ion::approval_bus::{ApprovalBus, ApprovalChange, ApprovalDecision, ApprovalKind, RemoveCause};
 
 /// host 进程级 EventBus 把手（审批总线回调广播 + AskResolved 复刻用）。
 /// serve 启动时由 wire_approval_bus 存入；非 serve 场景为 None（广播静默跳过）。
@@ -155,7 +148,9 @@ static HOST_EVENT_BUS: OnceLock<Arc<tokio::sync::Mutex<ion::event_bus::Extension
 /// 广播一条 route=ui 的 host 级事件（广播_ui_event 同款 Handle::spawn 模式；
 /// 无 tokio runtime 或未接线时静默跳过，不 panic）。
 fn broadcast_host_ui_event(custom_type: &str, data: serde_json::Value, session: Option<&str>) {
-    let Some(bus) = HOST_EVENT_BUS.get() else { return };
+    let Some(bus) = HOST_EVENT_BUS.get() else {
+        return;
+    };
     let mut ev = ExtensionEvent::new("host", custom_type)
         .with_data(data)
         .with_route("ui");
@@ -190,10 +185,7 @@ fn mirror_ui_event_to_bus(extension: &str, custom_type: &str, data: &serde_json:
                 return;
             };
             let title = data.get("title").and_then(|v| v.as_str()).unwrap_or("");
-            let message = data
-                .get("message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let message = data.get("message").and_then(|v| v.as_str()).unwrap_or("");
             let summary = if !message.is_empty() {
                 format!("Ask: {title} — {message}")
             } else {
@@ -298,8 +290,10 @@ fn mirror_ui_event_to_bus(extension: &str, custom_type: &str, data: &serde_json:
                 .map(str::to_string)
                 .collect();
             let more = total.saturating_sub(summary_paths.len() as u64);
-            let mut summary = format!("{total} file(s) pending review: {}",
-                summary_paths.join(", "));
+            let mut summary = format!(
+                "{total} file(s) pending review: {}",
+                summary_paths.join(", ")
+            );
             if more > 0 {
                 summary.push_str(&format!(" (+{more} more)"));
             }
@@ -332,9 +326,8 @@ fn mirror_ui_event_to_bus(extension: &str, custom_type: &str, data: &serde_json:
                             .get("files")
                             .and_then(|v| v.as_array())
                             .is_some_and(|fs| {
-                                fs.iter().any(|f| {
-                                    f.get("path").and_then(|v| v.as_str()) == Some(path)
-                                })
+                                fs.iter()
+                                    .any(|f| f.get("path").and_then(|v| v.as_str()) == Some(path))
                             })
                 },
                 decision,
@@ -350,9 +343,7 @@ fn mirror_ui_event_to_bus(extension: &str, custom_type: &str, data: &serde_json:
 
 /// 统一审批总线接线（serve 启动时调用一次）：
 /// 1. 存 HOST_EVENT_BUS 把手；2. 注册变化回调（Push 广播）；3. spawn 镜像监听任务。
-fn wire_approval_bus(
-    ev_bus: &Arc<tokio::sync::Mutex<ion::event_bus::ExtensionEventBus>>,
-) {
+fn wire_approval_bus(ev_bus: &Arc<tokio::sync::Mutex<ion::event_bus::ExtensionEventBus>>) {
     let _ = HOST_EVENT_BUS.set(Arc::clone(ev_bus));
 
     static CALLBACK_WIRED: OnceLock<bool> = OnceLock::new();
@@ -516,8 +507,15 @@ fn build_snapshot_data(
 enum RouterCmd {
     Subscribe {
         replay: usize,
-        reply:
-            oneshot::Sender<Result<(tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>, serde_json::Value), String>>,
+        reply: oneshot::Sender<
+            Result<
+                (
+                    tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+                    serde_json::Value,
+                ),
+                String,
+            >,
+        >,
     },
 }
 
@@ -614,7 +612,13 @@ impl SessionRouter {
         &mut self,
         replay: usize,
         reply: oneshot::Sender<
-            Result<(tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>, serde_json::Value), String>,
+            Result<
+                (
+                    tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+                    serde_json::Value,
+                ),
+                String,
+            >,
         >,
     ) {
         let replay_events = if self.rx.is_none() {
@@ -669,19 +673,27 @@ impl SessionRouter {
             let inner = self.reg.lock();
             // 与 attach_session_sub 同一纪律：Dead（crash 保留）记录不是活 worker，
             // 不进快照（overview 统计本就排除 Dead，见 gc/overview 口径）
-            inner.workers.values().find(|w| {
-                w.session_id == self.sid && w.status != ion::worker_registry::WorkerStatus::Dead
-            }).map(|w| SnapshotWorker {
-                worker_id: w.worker_id.clone(),
-                status: w.status.to_string(),
-                model: w.model.clone(),
-                agent: w.agent.clone(),
-            })
+            inner
+                .workers
+                .values()
+                .find(|w| {
+                    w.session_id == self.sid && w.status != ion::worker_registry::WorkerStatus::Dead
+                })
+                .map(|w| SnapshotWorker {
+                    worker_id: w.worker_id.clone(),
+                    status: w.status.to_string(),
+                    model: w.model.clone(),
+                    agent: w.agent.clone(),
+                })
         };
         let (model, provider, name) = {
             let idx = ion::session_index::SessionIndex::load();
             match idx.sessions.get(&self.sid) {
-                Some(m) => (Some(m.model.clone()), Some(m.provider.clone()), m.name.clone()),
+                Some(m) => (
+                    Some(m.model.clone()),
+                    Some(m.provider.clone()),
+                    m.name.clone(),
+                ),
                 None => (None, None, None),
             }
         };
@@ -2003,7 +2015,10 @@ async fn cmd_config_show() {
     println!("Config file: {}", IonConfig::path().display());
     // 统一脱敏出口：终端/日志/CI 常见导出口，明文 key 不回显
     // （api_key 存在与否仍可见：配置了显示 "***"，未配置为 null）
-    println!("{}", serde_json::to_string_pretty(&cfg.redacted_value()).unwrap());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&cfg.redacted_value()).unwrap()
+    );
 
     // 运行时默认值（不在 config.json 里，硬编码在代码中）
     let retry = ion::retry::RetryConfig::default();
@@ -3782,7 +3797,10 @@ async fn cmd_approvals_list() {
         );
         std::process::exit(1);
     }
-    let requests = resp["data"]["requests"].as_array().cloned().unwrap_or_default();
+    let requests = resp["data"]["requests"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     if requests.is_empty() {
         println!("无待审批");
         return;
@@ -3911,7 +3929,11 @@ async fn verify_expected_host_id(stream: &mut tokio::net::UnixStream, expected: 
         if got == expected {
             return; // pin 通过，同一条连接继续
         }
-        let shown = if got.is_empty() { "<missing>".to_string() } else { got };
+        let shown = if got.is_empty() {
+            "<missing>".to_string()
+        } else {
+            got
+        };
         eprintln!(
             "❌ hostId pin 不匹配: 期望 {expected}，实际 {shown}\n   socket 背后可能不是预期的 host（陈旧 socket / host 重启窗口）。重启后请更新 ION_EXPECT_HOST_ID。"
         );
@@ -3941,12 +3963,7 @@ async fn cmd_subscribe(
         }
     };
 
-    let req = ion_protocol::Request::subscribe(
-        session.as_deref(),
-        extension,
-        ui,
-        replay,
-    );
+    let req = ion_protocol::Request::subscribe(session.as_deref(), extension, ui, replay);
 
     let req_line = format!("{req}\n");
     if stream.write_all(req_line.as_bytes()).await.is_err() {
@@ -5746,7 +5763,10 @@ async fn cmd_serve_status() {
         ion::paths::HostIdentityCheck::Verified(info) => {
             match &info.host_id {
                 Some(hid) => println!("✔ Host running (pid {}, hostId {hid})", info.pid),
-                None => println!("✔ Host running (pid {}, 旧格式 pid 文件，无 hostId)", info.pid),
+                None => println!(
+                    "✔ Host running (pid {}, 旧格式 pid 文件，无 hostId)",
+                    info.pid
+                ),
             }
             println!("   Socket: {}", ion::paths::host_socket_path().display());
         }
@@ -6008,17 +6028,13 @@ async fn ensure_live_worker_for_session(
             .and_then(|w| w.host.clone())
             .is_some()
     };
-    let respawn_expected =
-        is_remote || ion::config::IonConfig::load().runtime.auto_respawn_local;
+    let respawn_expected = is_remote || ion::config::IonConfig::load().runtime.auto_respawn_local;
     if respawn_expected {
-        let deadline =
-            tokio::time::Instant::now() + std::time::Duration::from_millis(1500);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(1500);
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             if let Some(wid) = live_worker_id_for_session(registry, session_id) {
-                tracing::info!(
-                    "[ensure_live] respawned worker ready for {session_id}: {wid}"
-                );
+                tracing::info!("[ensure_live] respawned worker ready for {session_id}: {wid}");
                 return Ok(wid);
             }
             if tokio::time::Instant::now() >= deadline {
@@ -6038,7 +6054,9 @@ async fn ensure_live_worker_for_session(
         create["project_path"] = serde_json::json!(p);
     }
     if let Err(e) = do_create_session(registry, &create).await {
-        return Err(format!("auto-create worker for session {session_id} failed: {e}"));
+        return Err(format!(
+            "auto-create worker for session {session_id} failed: {e}"
+        ));
     }
     live_worker_id_for_session(registry, session_id)
         .ok_or_else(|| format!("no live worker for session {session_id} after auto-create"))
@@ -6213,9 +6231,7 @@ fn bind_host_socket_as(
             // 窗口最小化：remove 与 bind 之间不做任何其他 I/O
             tokio::net::UnixListener::bind(sock_path)
                 .map(|l| (l, BindOutcome::ReboundAfterDeadLink))
-                .map_err(|e2| {
-                    format!("死链清理后重绑仍失败 ({}): {e2}", sock_path.display())
-                })
+                .map_err(|e2| format!("死链清理后重绑仍失败 ({}): {e2}", sock_path.display()))
         }
     }
 }
@@ -6234,9 +6250,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
     // （worker Ask / verb / file-snapshot）的 pump 登记路径与 EventBus 镜像路径
     // 双写 ApprovalBus::global()，靠 dedupe key 对齐幂等去重。
     // RecordingSink 仅保留为 lib 单测替身。
-    ion::approval_sink::set_sink(std::sync::Arc::new(
-        ion::approval_sink::BusBackedSink,
-    ));
+    ion::approval_sink::set_sink(std::sync::Arc::new(ion::approval_sink::BusBackedSink));
 
     // ── 注册单例扩展（host 级，只在 serve 模式）──
     {
@@ -6447,9 +6461,8 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                 Ok(ion::worker_rpc::LineRead::Eof) => return, // EOF：客户端关闭
                                 Ok(ion::worker_rpc::LineRead::TooLarge { actual }) => {
                                     let resp = line_too_large_frame(MAX_LINE_BYTES, actual);
-                                    let _ = write_half
-                                        .write_all(format!("{resp}\n").as_bytes())
-                                        .await;
+                                    let _ =
+                                        write_half.write_all(format!("{resp}\n").as_bytes()).await;
                                     let _ = write_half.flush().await;
                                     eprintln!(
                                         "⚠️ [security] host socket: oversized line ({actual} bytes > {MAX_LINE_BYTES}) — connection dropped"
@@ -6461,108 +6474,436 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                             if line.trim().is_empty() {
                                 continue;
                             }
-                                let cmd: serde_json::Value = match serde_json::from_str(&line) {
-                                    Ok(v) => v,
-                                    Err(e) => {
-                                        let resp = host_response::invalid_json(e);
-                                        let _ = write_half
-                                            .write_all(format!("{resp}\n").as_bytes())
-                                            .await;
-                                        return;
-                                    }
-                                };
-                                let method = cmd
-                                    .get("method")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let _session = cmd
+                            let cmd: serde_json::Value = match serde_json::from_str(&line) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    let resp = host_response::invalid_json(e);
+                                    let _ =
+                                        write_half.write_all(format!("{resp}\n").as_bytes()).await;
+                                    return;
+                                }
+                            };
+                            let method = cmd
+                                .get("method")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let _session = cmd
+                                .get("session")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+
+                            // ── 协议版本握手（可选）：hello → {"protocolVersion":1,"hostId":...} ──
+                            // 不消费连接：回包后 continue，客户端可继续 subscribe / rpc。
+                            // 旧客户端不发 hello 完全不受影响。hostId 是本 host 进程
+                            // 的逻辑实例身份（内存态，重启即变），供客户端 pin 校验。
+                            if method == "hello" {
+                                let resp = hello_reply(cmd.get("id"), ion_protocol::host_id());
+                                let _ = write_half.write_all(format!("{resp}\n").as_bytes()).await;
+                                let _ = write_half.flush().await;
+                                continue;
+                            }
+
+                            // ── 优雅停机：shutdown → 回 success 帧并触发主循环退出 ──
+                            // 此前 host 侧没有 shutdown 处理者，serve stop 永远停不掉
+                            // host（只有 stdin quit 能退出），还盲删活 host 的文件。
+                            if method == "shutdown" {
+                                let resp = host_response::success(
+                                    cmd.get("id").cloned().unwrap_or(serde_json::Value::Null),
+                                    serde_json::json!({
+                                        "stopping": true,
+                                        "hostId": ion_protocol::host_id(),
+                                    }),
+                                );
+                                let _ = write_half.write_all(format!("{resp}\n").as_bytes()).await;
+                                let _ = write_half.flush().await;
+                                conn_shutdown.notify_one();
+                                return;
+                            }
+
+                            // ── Stream mode: subscribe ──
+                            if method == "subscribe" {
+                                let extension =
+                                    cmd.get("extension").and_then(|v| v.as_str()).unwrap_or("");
+                                let session = cmd
                                     .get("session")
                                     .and_then(|v| v.as_str())
                                     .map(|s| s.to_string());
 
-                                // ── 协议版本握手（可选）：hello → {"protocolVersion":1,"hostId":...} ──
-                                // 不消费连接：回包后 continue，客户端可继续 subscribe / rpc。
-                                // 旧客户端不发 hello 完全不受影响。hostId 是本 host 进程
-                                // 的逻辑实例身份（内存态，重启即变），供客户端 pin 校验。
-                                if method == "hello" {
-                                    let resp = hello_reply(cmd.get("id"), ion_protocol::host_id());
-                                    let _ = write_half
-                                        .write_all(format!("{resp}\n").as_bytes())
-                                        .await;
-                                    let _ = write_half.flush().await;
-                                    continue;
-                                }
-
-                                // ── 优雅停机：shutdown → 回 success 帧并触发主循环退出 ──
-                                // 此前 host 侧没有 shutdown 处理者，serve stop 永远停不掉
-                                // host（只有 stdin quit 能退出），还盲删活 host 的文件。
-                                if method == "shutdown" {
-                                    let resp = host_response::success(
-                                        cmd.get("id").cloned().unwrap_or(serde_json::Value::Null),
-                                        serde_json::json!({
-                                            "stopping": true,
-                                            "hostId": ion_protocol::host_id(),
-                                        }),
-                                    );
-                                    let _ = write_half
-                                        .write_all(format!("{resp}\n").as_bytes())
-                                        .await;
-                                    let _ = write_half.flush().await;
-                                    conn_shutdown.notify_one();
+                                if extension.is_empty() && session.is_some() {
+                                    // ── Instance subscribe：订阅 worker 原始事件流 ──
+                                    // 无 --extension 有 --session → 收 text_delta / agent_start / agent_end 等
+                                    // 协议升级：走 SessionRouter（per-session 路由任务）——
+                                    //   ① ack 携带 epoch；事件信封盖 epoch 章
+                                    //   ② 快照先于增量：先推 customType:"snapshot" 再转发实时事件
+                                    //   ③ worker 重派/重绑 → epoch+1，旧 epoch 订阅收一条
+                                    //      stale_route 后停止转发（连接关闭），客户端凭新 epoch 重订
+                                    //   ④ worker 未拉起时挂起等待（60s）而非直接报错（保留 D 修复语义）
+                                    let sid = session.as_ref().unwrap().clone();
+                                    let replay_n =
+                                        cmd.get("replay").and_then(|v| v.as_u64()).unwrap_or(0)
+                                            as usize;
+                                    match subscribe_session_routed(&reg, &sid, replay_n).await {
+                                        Ok((mut client_rx, ack)) => {
+                                            let _ = write_half
+                                                .write_all(format!("{ack}\n").as_bytes())
+                                                .await;
+                                            let _ = write_half.flush().await;
+                                            // 转发：snapshot（已先行）→ replay（如有）→ 实时增量
+                                            // → stale_route（epoch 推进，一次性）→ 信道关闭
+                                            loop {
+                                                match client_rx.recv().await {
+                                                    Some(msg) => {
+                                                        if write_half
+                                                            .write_all(
+                                                                format!("{msg}\n").as_bytes(),
+                                                            )
+                                                            .await
+                                                            .is_err()
+                                                        {
+                                                            return;
+                                                        }
+                                                        let _ = write_half.flush().await;
+                                                    }
+                                                    None => break, // 路由退出（旧订阅已作废）
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            let resp = stream_error_frame(e);
+                                            let _ = write_half
+                                                .write_all(format!("{resp}\n").as_bytes())
+                                                .await;
+                                        }
+                                    }
                                     return;
                                 }
 
-                                // ── Stream mode: subscribe ──
-                                if method == "subscribe" {
-                                    let extension =
-                                        cmd.get("extension").and_then(|v| v.as_str()).unwrap_or("");
-                                    let session = cmd
-                                        .get("session")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string());
-
-                                    if extension.is_empty() && session.is_some() {
-                                        // ── Instance subscribe：订阅 worker 原始事件流 ──
-                                        // 无 --extension 有 --session → 收 text_delta / agent_start / agent_end 等
-                                        // 协议升级：走 SessionRouter（per-session 路由任务）——
-                                        //   ① ack 携带 epoch；事件信封盖 epoch 章
-                                        //   ② 快照先于增量：先推 customType:"snapshot" 再转发实时事件
-                                        //   ③ worker 重派/重绑 → epoch+1，旧 epoch 订阅收一条
-                                        //      stale_route 后停止转发（连接关闭），客户端凭新 epoch 重订
-                                        //   ④ worker 未拉起时挂起等待（60s）而非直接报错（保留 D 修复语义）
-                                        let sid = session.as_ref().unwrap().clone();
-                                        let replay_n =
-                                            cmd.get("replay").and_then(|v| v.as_u64()).unwrap_or(0)
-                                                as usize;
-                                        match subscribe_session_routed(&reg, &sid, replay_n).await {
-                                            Ok((mut client_rx, ack)) => {
-                                                let _ = write_half
-                                                    .write_all(format!("{ack}\n").as_bytes())
-                                                    .await;
-                                                let _ = write_half.flush().await;
-                                                // 转发：snapshot（已先行）→ replay（如有）→ 实时增量
-                                                // → stale_route（epoch 推进，一次性）→ 信道关闭
-                                                loop {
-                                                    match client_rx.recv().await {
-                                                        Some(msg) => {
-                                                            if write_half
-                                                                .write_all(
-                                                                    format!("{msg}\n").as_bytes(),
-                                                                )
-                                                                .await
-                                                                .is_err()
-                                                            {
-                                                                return;
-                                                            }
-                                                            let _ = write_half.flush().await;
+                                // ── UI subscribe：订阅 UI 事件（Ask/Confirm/Prompt/Notif/Alert）──
+                                let is_ui =
+                                    cmd.get("ui").and_then(|v| v.as_bool()).unwrap_or(false);
+                                if is_ui {
+                                    // 同源绑定：标记本连接已 subscribe(ui:true)，
+                                    // 之后本连接上的 ui_respond 才被允许（审批同源）
+                                    ui_origin = true;
+                                    let mut bus = ev_bus.lock().await;
+                                    let mut rx = bus.subscribe_ui();
+                                    drop(bus);
+                                    let ack = subscribed_ack_ui();
+                                    let _ =
+                                        write_half.write_all(format!("{ack}\n").as_bytes()).await;
+                                    let _ = write_half.flush().await;
+                                    // 并发读命令：UI 事件持续转发的同时，本连接可继续发
+                                    // ui_respond（同源应答）/ hello（握手）。
+                                    let (cmd_tx, mut cmd_rx) =
+                                        tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+                                    let reader_task = tokio::spawn(async move {
+                                        let mut r = reader;
+                                        // 有界读行（P0.1 行长上限）：超限视为致命读错
+                                        // → break（处理循环收尾时连接随之断开）。
+                                        // 错误帧发不了：write_half 在下方 select 循环手里。
+                                        loop {
+                                            match ion::worker_rpc::read_line_capped(
+                                                &mut r,
+                                                MAX_LINE_BYTES,
+                                            )
+                                            .await
+                                            {
+                                                Ok(ion::worker_rpc::LineRead::Line(l)) => {
+                                                    if let Ok(v) =
+                                                        serde_json::from_str::<serde_json::Value>(
+                                                            l.trim(),
+                                                        )
+                                                    {
+                                                        if cmd_tx.send(v).is_err() {
+                                                            break;
                                                         }
-                                                        None => break, // 路由退出（旧订阅已作废）
                                                     }
                                                 }
+                                                Ok(ion::worker_rpc::LineRead::Eof)
+                                                | Ok(ion::worker_rpc::LineRead::TooLarge {
+                                                    ..
+                                                })
+                                                | Err(_) => break,
+                                            }
+                                        }
+                                    });
+                                    loop {
+                                        tokio::select! {
+                                            ev = rx.recv() => {
+                                                match ev {
+                                                    Some(event) => {
+                                                        let msg = ui_event_frame(
+                                                            &event.custom_type,
+                                                            &event.extension,
+                                                            event.session.as_deref(),
+                                                            &event.data,
+                                                            &event.route,
+                                                        );
+                                                        if write_half
+                                                            .write_all(format!("{msg}\n").as_bytes())
+                                                            .await
+                                                            .is_err()
+                                                        {
+                                                            break;
+                                                        }
+                                                        let _ = write_half.flush().await;
+                                                    }
+                                                    None => break,
+                                                }
+                                            }
+                                            c = cmd_rx.recv() => {
+                                                match c {
+                                                    Some(cc) => {
+                                                        let m = cc
+                                                            .get("method")
+                                                            .and_then(|v| v.as_str())
+                                                            .unwrap_or("");
+                                                        match m {
+                                                            // 同一连接已 subscribe(ui:true)
+                                                            // → 显式过同源闸（纵深防御）
+                                                            "ui_respond" => {
+                                                                if ui_respond_origin_error(
+                                                                    ui_origin,
+                                                                )
+                                                                .is_none()
+                                                                {
+                                                                    respond_to_ui_request(
+                                                                        &cc,
+                                                                        &mut write_half,
+                                                                        &ev_bus,
+                                                                    )
+                                                                    .await;
+                                                                }
+                                                            }
+                                                            "hello" => {
+                                                                let resp =
+                                                                    hello_reply(cc.get("id"), ion_protocol::host_id());
+                                                                let _ = write_half
+                                                                    .write_all(
+                                                                        format!("{resp}\n")
+                                                                            .as_bytes(),
+                                                                    )
+                                                                    .await;
+                                                                let _ =
+                                                                    write_half.flush().await;
+                                                            }
+                                                            _ => {
+                                                                let resp = host_response::error(
+                                                                    cc.get("id").cloned().unwrap_or_default(),
+                                                                    "method not supported on ui stream",
+                                                                );
+                                                                let _ = write_half
+                                                                    .write_all(
+                                                                        format!("{resp}\n")
+                                                                            .as_bytes(),
+                                                                    )
+                                                                    .await;
+                                                                let _ =
+                                                                    write_half.flush().await;
+                                                            }
+                                                        }
+                                                    }
+                                                    // 命令读取结束 = 客户端关闭连接
+                                                    None => break,
+                                                }
+                                            }
+                                        }
+                                    }
+                                    reader_task.abort();
+                                    return;
+                                }
+
+                                // ── Extension subscribe：通过 EventBus ──
+                                let mut bus = ev_bus.lock().await;
+                                let rx = if !extension.is_empty() {
+                                    if let Some(ref sid) = session {
+                                        bus.subscribe_with_session(extension, sid)
+                                    } else {
+                                        bus.subscribe(extension)
+                                    }
+                                } else {
+                                    bus.subscribe_all()
+                                };
+                                drop(bus);
+                                // 返回 subscribed ack
+                                let ack = subscribed_ack_extension(extension, session.as_deref());
+                                let _ = write_half.write_all(format!("{ack}\n").as_bytes()).await;
+                                let _ = write_half.flush().await;
+                                // 持续推事件
+
+                                let mut rx = rx;
+                                loop {
+                                    match rx.recv().await {
+                                        Some(event) => {
+                                            let visibility = match event.visibility {
+                                                ion::event_bus::EventVisibility::LlmAndUi => {
+                                                    "llm_and_ui"
+                                                }
+                                                ion::event_bus::EventVisibility::UiOnly => {
+                                                    "ui_only"
+                                                }
+                                            };
+                                            let msg = extension_event_frame(
+                                                &event.extension,
+                                                &event.custom_type,
+                                                event.session.as_deref(),
+                                                event.persisted,
+                                                visibility,
+                                                &event.correlation_id,
+                                                &event.data,
+                                            );
+                                            if write_half
+                                                .write_all(format!("{msg}\n").as_bytes())
+                                                .await
+                                                .is_err()
+                                            {
+                                                break; // client disconnected
+                                            }
+                                            let _ = write_half.flush().await;
+                                        }
+                                        None => break, // channel closed
+                                    }
+                                }
+                                return;
+                            }
+
+                            // ── UI respond: 回复 Ask/Confirm/Prompt ──
+                            // 同源绑定（安全修复）：只有同一连接先 subscribe(ui:true)
+                            // 才允许 ui_respond；独立连接（如 ion rpc 直调）一律拒绝。
+                            if method == "ui_respond" {
+                                if let Some(err) = ui_respond_origin_error(ui_origin) {
+                                    let resp = host_response::error(
+                                        cmd.get("id").cloned().unwrap_or_default(),
+                                        err,
+                                    );
+                                    let _ =
+                                        write_half.write_all(format!("{resp}\n").as_bytes()).await;
+                                    let _ = write_half.flush().await;
+                                    return;
+                                }
+                                respond_to_ui_request(&cmd, &mut write_half, &ev_bus).await;
+                                return;
+                            }
+
+                            // ── Overview stream: subscribe_overview ──
+                            if method == "subscribe_overview" {
+                                let (initial, rx) = {
+                                    let mut reg = reg.lock();
+                                    let overview = reg.get_overview();
+                                    let rx = reg.subscribe_overview();
+                                    (overview, rx)
+                                };
+                                // Return initial snapshot
+                                let ack = host_response::success(
+                                    cmd.get("id").cloned().unwrap_or_default(),
+                                    serde_json::json!({
+                                        "stream": "overview",
+                                        "initial": initial,
+                                    }),
+                                );
+                                if write_half
+                                    .write_all(format!("{ack}\n").as_bytes())
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                                let _ = write_half.flush().await;
+                                // Continuously push subsequent changes
+                                let mut rx = rx;
+                                loop {
+                                    match rx.recv().await {
+                                        Some(snapshot) => {
+                                            let msg = overview_snapshot_frame(snapshot);
+                                            if write_half
+                                                .write_all(format!("{msg}\n").as_bytes())
+                                                .await
+                                                .is_err()
+                                            {
+                                                break;
+                                            }
+                                            let _ = write_half.flush().await;
+                                        }
+                                        None => break,
+                                    }
+                                }
+                                return;
+                            }
+
+                            // ── RPC mode（以下为现有逻辑：session 转发 + 等响应）──
+                            let session = cmd
+                                .get("session")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+                            if let Some(ref sid) = session {
+                                // ⚠️ parking_lot: send_command 持 &mut self + .await（stdin write），
+                                // 不能持锁调用。改用 WorkerRegistry::send_async（自管锁）。
+                                // 先短锁查 worker_id（subscribe 在此同步完成）。
+                                // ⚠️ 同 sid 可能 Dead 旧记录 + 重建新记录并存
+                                // （AUTO-RECOVERY 原地重派）——HashMap 遍历序
+                                // 随机，必须先找 LIVE 再认死记录，否则 50%
+                                // 概率撞 Dead → 白走 manager 兜底（P0 修复）。
+                                let wid_opt = {
+                                    let inner_reg = reg.lock();
+                                    inner_reg
+                                        .workers
+                                        .values()
+                                        .find(|w| w.session_id == *sid && worker_is_live(w))
+                                        .map(|w| w.worker_id.clone())
+                                        .or_else(|| {
+                                            inner_reg
+                                                .workers
+                                                .values()
+                                                .find(|w| w.session_id == *sid)
+                                                .map(|w| w.worker_id.clone())
+                                        })
+                                };
+                                // ⚠️ Stale/Dead worker 不能转发：发给死进程=客户端永久
+                                // timeout（2026-08-30 实测页面模型下拉/状态全挂）。
+                                // 落回 handle_manager_command（idle 合成/auto-create 自愈）。
+                                let wid_alive = {
+                                    let inner_reg = reg.lock();
+                                    wid_opt.as_deref().is_some_and(|wid| {
+                                        inner_reg
+                                            .workers
+                                            .get(wid)
+                                            .map(|w| {
+                                                !matches!(
+                                                    w.status,
+                                                    ion::worker_registry::WorkerStatus::Stale
+                                                        | ion::worker_registry::WorkerStatus::Dead
+                                                )
+                                            })
+                                            .unwrap_or(false)
+                                    })
+                                };
+                                if wid_alive {
+                                    if let Some(wid) = &wid_opt {
+                                        // subscribe（短锁，同步）
+                                        let _ = { reg.lock().subscribe(&wid) };
+                                        // send_async 自管锁 + await oneshot
+                                        let params = cmd.get("params").cloned().unwrap_or_default();
+                                        match ion::worker_registry::WorkerRegistry::send_async(
+                                            &reg, &wid, &method, params,
+                                        )
+                                        .await
+                                        {
+                                            Ok(resp) => {
+                                                let mut r = resp.clone();
+                                                if let Some(id) = cmd.get("id") {
+                                                    r["id"] = id.clone();
+                                                }
+                                                let _ = write_half
+                                                    .write_all(format!("{r}\n").as_bytes())
+                                                    .await;
+                                                let _ = write_half.flush().await;
                                             }
                                             Err(e) => {
-                                                let resp = stream_error_frame(e);
+                                                let resp = host_response::error(
+                                                    cmd.get("id").cloned().unwrap_or_default(),
+                                                    e,
+                                                );
                                                 let _ = write_half
                                                     .write_all(format!("{resp}\n").as_bytes())
                                                     .await;
@@ -6570,352 +6911,23 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                         }
                                         return;
                                     }
-
-                                    // ── UI subscribe：订阅 UI 事件（Ask/Confirm/Prompt/Notif/Alert）──
-                                    let is_ui =
-                                        cmd.get("ui").and_then(|v| v.as_bool()).unwrap_or(false);
-                                    if is_ui {
-                                        // 同源绑定：标记本连接已 subscribe(ui:true)，
-                                        // 之后本连接上的 ui_respond 才被允许（审批同源）
-                                        ui_origin = true;
-                                        let mut bus = ev_bus.lock().await;
-                                        let mut rx = bus.subscribe_ui();
-                                        drop(bus);
-                                        let ack = subscribed_ack_ui();
-                                        let _ = write_half
-                                            .write_all(format!("{ack}\n").as_bytes())
-                                            .await;
-                                        let _ = write_half.flush().await;
-                                        // 并发读命令：UI 事件持续转发的同时，本连接可继续发
-                                        // ui_respond（同源应答）/ hello（握手）。
-                                        let (cmd_tx, mut cmd_rx) =
-                                            tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
-                                        let reader_task = tokio::spawn(async move {
-                                            let mut r = reader;
-                                            // 有界读行（P0.1 行长上限）：超限视为致命读错
-                                            // → break（处理循环收尾时连接随之断开）。
-                                            // 错误帧发不了：write_half 在下方 select 循环手里。
-                                            loop {
-                                                match ion::worker_rpc::read_line_capped(
-                                                    &mut r,
-                                                    MAX_LINE_BYTES,
-                                                )
-                                                .await
-                                                {
-                                                    Ok(ion::worker_rpc::LineRead::Line(l)) => {
-                                                        if let Ok(v) = serde_json::from_str::<
-                                                            serde_json::Value,
-                                                        >(
-                                                            l.trim()
-                                                        ) {
-                                                            if cmd_tx.send(v).is_err() {
-                                                                break;
-                                                            }
-                                                        }
-                                                    }
-                                                    Ok(ion::worker_rpc::LineRead::Eof)
-                                                    | Ok(ion::worker_rpc::LineRead::TooLarge {
-                                                        ..
-                                                    })
-                                                    | Err(_) => break,
-                                                }
-                                            }
-                                        });
-                                        loop {
-                                            tokio::select! {
-                                                ev = rx.recv() => {
-                                                    match ev {
-                                                        Some(event) => {
-                                                            let msg = ui_event_frame(
-                                                                &event.custom_type,
-                                                                &event.extension,
-                                                                event.session.as_deref(),
-                                                                &event.data,
-                                                                &event.route,
-                                                            );
-                                                            if write_half
-                                                                .write_all(format!("{msg}\n").as_bytes())
-                                                                .await
-                                                                .is_err()
-                                                            {
-                                                                break;
-                                                            }
-                                                            let _ = write_half.flush().await;
-                                                        }
-                                                        None => break,
-                                                    }
-                                                }
-                                                c = cmd_rx.recv() => {
-                                                    match c {
-                                                        Some(cc) => {
-                                                            let m = cc
-                                                                .get("method")
-                                                                .and_then(|v| v.as_str())
-                                                                .unwrap_or("");
-                                                            match m {
-                                                                // 同一连接已 subscribe(ui:true)
-                                                                // → 显式过同源闸（纵深防御）
-                                                                "ui_respond" => {
-                                                                    if ui_respond_origin_error(
-                                                                        ui_origin,
-                                                                    )
-                                                                    .is_none()
-                                                                    {
-                                                                        respond_to_ui_request(
-                                                                            &cc,
-                                                                            &mut write_half,
-                                                                            &ev_bus,
-                                                                        )
-                                                                        .await;
-                                                                    }
-                                                                }
-                                                                "hello" => {
-                                                                    let resp =
-                                                                        hello_reply(cc.get("id"), ion_protocol::host_id());
-                                                                    let _ = write_half
-                                                                        .write_all(
-                                                                            format!("{resp}\n")
-                                                                                .as_bytes(),
-                                                                        )
-                                                                        .await;
-                                                                    let _ =
-                                                                        write_half.flush().await;
-                                                                }
-                                                                _ => {
-                                                                    let resp = host_response::error(
-                                                                        cc.get("id").cloned().unwrap_or_default(),
-                                                                        "method not supported on ui stream",
-                                                                    );
-                                                                    let _ = write_half
-                                                                        .write_all(
-                                                                            format!("{resp}\n")
-                                                                                .as_bytes(),
-                                                                        )
-                                                                        .await;
-                                                                    let _ =
-                                                                        write_half.flush().await;
-                                                                }
-                                                            }
-                                                        }
-                                                        // 命令读取结束 = 客户端关闭连接
-                                                        None => break,
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        reader_task.abort();
-                                        return;
-                                    }
-
-                                    // ── Extension subscribe：通过 EventBus ──
-                                    let mut bus = ev_bus.lock().await;
-                                    let rx = if !extension.is_empty() {
-                                        if let Some(ref sid) = session {
-                                            bus.subscribe_with_session(extension, sid)
-                                        } else {
-                                            bus.subscribe(extension)
-                                        }
-                                    } else {
-                                        bus.subscribe_all()
-                                    };
-                                    drop(bus);
-                                    // 返回 subscribed ack
-                                    let ack = subscribed_ack_extension(extension, session.as_deref());
-                                    let _ =
-                                        write_half.write_all(format!("{ack}\n").as_bytes()).await;
-                                    let _ = write_half.flush().await;
-                                    // 持续推事件
-
-                                    let mut rx = rx;
-                                    loop {
-                                        match rx.recv().await {
-                                            Some(event) => {
-                                                let visibility = match event.visibility {
-                                                    ion::event_bus::EventVisibility::LlmAndUi => "llm_and_ui",
-                                                    ion::event_bus::EventVisibility::UiOnly => "ui_only",
-                                                };
-                                                let msg = extension_event_frame(
-                                                    &event.extension,
-                                                    &event.custom_type,
-                                                    event.session.as_deref(),
-                                                    event.persisted,
-                                                    visibility,
-                                                    &event.correlation_id,
-                                                    &event.data,
-                                                );
-                                                if write_half
-                                                    .write_all(format!("{msg}\n").as_bytes())
-                                                    .await
-                                                    .is_err()
-                                                {
-                                                    break; // client disconnected
-                                                }
-                                                let _ = write_half.flush().await;
-                                            }
-                                            None => break, // channel closed
-                                        }
-                                    }
-                                    return;
                                 }
-
-                                // ── UI respond: 回复 Ask/Confirm/Prompt ──
-                                // 同源绑定（安全修复）：只有同一连接先 subscribe(ui:true)
-                                // 才允许 ui_respond；独立连接（如 ion rpc 直调）一律拒绝。
-                                if method == "ui_respond" {
-                                    if let Some(err) = ui_respond_origin_error(ui_origin) {
-                                        let resp = host_response::error(
-                                            cmd.get("id").cloned().unwrap_or_default(),
-                                            err,
-                                        );
-                                        let _ = write_half
-                                            .write_all(format!("{resp}\n").as_bytes())
-                                            .await;
-                                        let _ = write_half.flush().await;
-                                        return;
-                                    }
-                                    respond_to_ui_request(&cmd, &mut write_half, &ev_bus).await;
-                                    return;
-                                }
-
-                                // ── Overview stream: subscribe_overview ──
-                                if method == "subscribe_overview" {
-                                    let (initial, rx) = {
-                                        let mut reg = reg.lock();
-                                        let overview = reg.get_overview();
-                                        let rx = reg.subscribe_overview();
-                                        (overview, rx)
-                                    };
-                                    // Return initial snapshot
-                                    let ack = host_response::success(
-                                        cmd.get("id").cloned().unwrap_or_default(),
-                                        serde_json::json!({
-                                            "stream": "overview",
-                                            "initial": initial,
-                                        }),
-                                    );
-                                    if write_half
-                                        .write_all(format!("{ack}\n").as_bytes())
-                                        .await
-                                        .is_err()
-                                    {
-                                        return;
-                                    }
-                                    let _ = write_half.flush().await;
-                                    // Continuously push subsequent changes
-                                    let mut rx = rx;
-                                    loop {
-                                        match rx.recv().await {
-                                            Some(snapshot) => {
-                                                let msg = overview_snapshot_frame(snapshot);
-                                                if write_half
-                                                    .write_all(format!("{msg}\n").as_bytes())
-                                                    .await
-                                                    .is_err()
-                                                {
-                                                    break;
-                                                }
-                                                let _ = write_half.flush().await;
-                                            }
-                                            None => break,
-                                        }
-                                    }
-                                    return;
-                                }
-
-                                // ── RPC mode（以下为现有逻辑：session 转发 + 等响应）──
-                                let session = cmd
-                                    .get("session")
-                                    .and_then(|v| v.as_str())
-                                    .map(|s| s.to_string());
-                                if let Some(ref sid) = session {
-                                    // ⚠️ parking_lot: send_command 持 &mut self + .await（stdin write），
-                                    // 不能持锁调用。改用 WorkerRegistry::send_async（自管锁）。
-                                    // 先短锁查 worker_id（subscribe 在此同步完成）。
-                                    // ⚠️ 同 sid 可能 Dead 旧记录 + 重建新记录并存
-                                    // （AUTO-RECOVERY 原地重派）——HashMap 遍历序
-                                    // 随机，必须先找 LIVE 再认死记录，否则 50%
-                                    // 概率撞 Dead → 白走 manager 兜底（P0 修复）。
-                                    let wid_opt = {
-                                        let inner_reg = reg.lock();
-                                        inner_reg
-                                            .workers
-                                            .values()
-                                            .find(|w| {
-                                                w.session_id == *sid && worker_is_live(w)
-                                            })
-                                            .map(|w| w.worker_id.clone())
-                                            .or_else(|| {
-                                                inner_reg
-                                                    .workers
-                                                    .values()
-                                                    .find(|w| w.session_id == *sid)
-                                                    .map(|w| w.worker_id.clone())
-                                            })
-                                    };
-                                    // ⚠️ Stale/Dead worker 不能转发：发给死进程=客户端永久
-                                    // timeout（2026-08-30 实测页面模型下拉/状态全挂）。
-                                    // 落回 handle_manager_command（idle 合成/auto-create 自愈）。
-                                    let wid_alive = {
-                                        let inner_reg = reg.lock();
-                                        wid_opt.as_deref().is_some_and(|wid| {
-                                            inner_reg.workers.get(wid).map(|w| {
-                                                !matches!(w.status, ion::worker_registry::WorkerStatus::Stale | ion::worker_registry::WorkerStatus::Dead)
-                                            }).unwrap_or(false)
-                                        })
-                                    };
-                                    if wid_alive {
-                                        if let Some(wid) = &wid_opt {
-                                            // subscribe（短锁，同步）
-                                            let _ = { reg.lock().subscribe(&wid) };
-                                            // send_async 自管锁 + await oneshot
-                                            let params =
-                                                cmd.get("params").cloned().unwrap_or_default();
-                                            match ion::worker_registry::WorkerRegistry::send_async(
-                                                &reg, &wid, &method, params,
-                                            )
-                                            .await
-                                            {
-                                                Ok(resp) => {
-                                                    let mut r = resp.clone();
-                                                    if let Some(id) = cmd.get("id") {
-                                                        r["id"] = id.clone();
-                                                    }
-                                                    let _ = write_half
-                                                        .write_all(format!("{r}\n").as_bytes())
-                                                        .await;
-                                                    let _ = write_half.flush().await;
-                                                }
-                                                Err(e) => {
-                                                    let resp = host_response::error(
-                                                        cmd.get("id").cloned().unwrap_or_default(),
-                                                        e,
-                                                    );
-                                                    let _ = write_half
-                                                        .write_all(format!("{resp}\n").as_bytes())
-                                                        .await;
-                                                }
-                                            }
-                                            return;
-                                        }
-                                    }
-                                    // Stale/Dead 或无 worker → manager 统一处理
-                                    // （auto-create 拉新 worker / idle 合成自愈）
-                                    let resp = handle_manager_command(&reg, cmd).await;
-                                    let _ =
-                                        write_half.write_all(format!("{resp}\n").as_bytes()).await;
-                                    let _ = write_half.flush().await;
-                                } else {
-                                    // 3. Manager 级命令：直接执行，不等
-                                    let resp = handle_manager_command(&reg, cmd).await;
-                                    let _ =
-                                        write_half.write_all(format!("{resp}\n").as_bytes()).await;
-                                    let _ = write_half.flush().await;
-                                }
-                                // RPC 模式保持一问一答：响应写完即断开（旧行为不变）
-                                return;
+                                // Stale/Dead 或无 worker → manager 统一处理
+                                // （auto-create 拉新 worker / idle 合成自愈）
+                                let resp = handle_manager_command(&reg, cmd).await;
+                                let _ = write_half.write_all(format!("{resp}\n").as_bytes()).await;
+                                let _ = write_half.flush().await;
+                            } else {
+                                // 3. Manager 级命令：直接执行，不等
+                                let resp = handle_manager_command(&reg, cmd).await;
+                                let _ = write_half.write_all(format!("{resp}\n").as_bytes()).await;
+                                let _ = write_half.flush().await;
                             }
-                            // 不 flush/close — stream drop 时自动关
-                        });
+                            // RPC 模式保持一问一答：响应写完即断开（旧行为不变）
+                            return;
+                        }
+                        // 不 flush/close — stream drop 时自动关
+                    });
                 }
                 Err(e) => {
                     eprintln!("[socket] accept error: {e}");
@@ -6974,11 +6986,11 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                         let out = worker_response_frame(&wid, &session_id, &msg);
                         println!("{}", out);
                     } else {
-                    // ── ExtensionEvent → 登记总线 + 广播到 EventBus ──
-                    // worker stdout 的扩展事件是包裹形 {"type":"event",
-                    // "event":{"type":"extension_event",...}}——按内层 event.type
-                    // 判定（M1 死分支修复语义；原裸形/包裹形双分支已去重合并为
-                    // 此唯一处理点）。
+                        // ── ExtensionEvent → 登记总线 + 广播到 EventBus ──
+                        // worker stdout 的扩展事件是包裹形 {"type":"event",
+                        // "event":{"type":"extension_event",...}}——按内层 event.type
+                        // 判定（M1 死分支修复语义；原裸形/包裹形双分支已去重合并为
+                        // 此唯一处理点）。
 
                         let inner_ev = msg.get("event").cloned().unwrap_or(msg.clone());
                         let inner_type =
@@ -6997,8 +7009,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                 .get("customType")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("");
-                            let inner_data =
-                                inner_ev.get("data").cloned().unwrap_or_default();
+                            let inner_data = inner_ev.get("data").cloned().unwrap_or_default();
                             ion::approval_sink::try_register_from_worker_event(
                                 wid,
                                 session_id,
@@ -7025,12 +7036,10 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                     .get("extension")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("unknown");
-                                let mut event = ion::event_bus::ExtensionEvent::new(
-                                    extension,
-                                    inner_ct,
-                                )
-                                .with_data(inner_data)
-                                .with_route("ui");
+                                let mut event =
+                                    ion::event_bus::ExtensionEvent::new(extension, inner_ct)
+                                        .with_data(inner_data)
+                                        .with_route("ui");
                                 if !session_id.is_empty() {
                                     event = event.with_session(session_id);
                                 }
@@ -7133,11 +7142,8 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
             // 功能3：本地 auto-respawn 开关（默认 false，不改变既有行为）
             let allow_local_respawn = ion::config::IonConfig::load().runtime.auto_respawn_local;
             let mut changed = false;
-            let mut heartbeat_respawns: Vec<(
-                ion::worker_registry::RespawnPlan,
-                String,
-                String,
-            )> = Vec::new();
+            let mut heartbeat_respawns: Vec<(ion::worker_registry::RespawnPlan, String, String)> =
+                Vec::new();
             for record in reg.workers.values_mut() {
                 // 判死决策统一走 heartbeat_decision_with（纯函数，worker_registry.rs）：
                 // Idle 静默 > idle_stale_ms → Stale；Busy 静默 > busy_dead_ms → Dead；
@@ -7421,8 +7427,7 @@ async fn handle_manager_command(
                         .map(|o| ion::sandbox_pool::ApprovalPolicy::parse(o))
                         .unwrap_or(profile.approval_policy);
                     let mut v = serde_json::to_value(st).unwrap_or_default();
-                    v["approvalPolicy"] =
-                        serde_json::json!(effective.as_str());
+                    v["approvalPolicy"] = serde_json::json!(effective.as_str());
                     v["notes"] = serde_json::json!(profile.notes);
                     v
                 })
@@ -7460,8 +7465,14 @@ async fn handle_manager_command(
         // ⚠️ 本 match 臂内禁用 return（会跳过末尾响应回写），一律表达式收 Result。
         "sandbox_policy" => {
             let params = cmd.get("params").cloned().unwrap_or_default();
-            let host_name = params.get("host").and_then(|v| v.as_str()).map(String::from);
-            let worker = params.get("worker").and_then(|v| v.as_str()).map(String::from);
+            let host_name = params
+                .get("host")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let worker = params
+                .get("worker")
+                .and_then(|v| v.as_str())
+                .map(String::from);
             // policy 参数两形态：string 原样；object 序列化为 JSON 串（统一走
             // parse_strict 严格校验——写路径要给明确错误，不静默回落）
             let policy = params.get("policy").map(|v| match v {
@@ -7525,10 +7536,8 @@ async fn handle_manager_command(
                                 } else {
                                     match reg.set_sandbox_policy(&wid, &pol) {
                                         Ok(()) => {
-                                            let sid = reg
-                                                .workers
-                                                .get(&wid)
-                                                .map(|r| r.session_id.clone());
+                                            let sid =
+                                                reg.workers.get(&wid).map(|r| r.session_id.clone());
                                             reg.broadcast_ui_event(
                                                 "SandboxPolicyChanged",
                                                 serde_json::json!({
@@ -7781,7 +7790,9 @@ async fn attach_session_sub(
             let wid_opt = inner_reg
                 .workers
                 .values()
-                .find(|w| w.session_id == sid && w.status != ion::worker_registry::WorkerStatus::Dead)
+                .find(|w| {
+                    w.session_id == sid && w.status != ion::worker_registry::WorkerStatus::Dead
+                })
                 .map(|w| w.worker_id.clone());
             if let Some(wid) = wid_opt
                 && let Ok((rx, ev)) = inner_reg.subscribe_with_replay(&wid, replay)
@@ -9261,9 +9272,7 @@ async fn handle_manager_command_write(
                                 });
                                 // 透传 worker ack 的 data（prompt: null /
                                 // steer 撞运行中: {"status":"queued",...}）
-                                if let Some(inner) =
-                                    resp.get("data").filter(|d| !d.is_null())
-                                {
+                                if let Some(inner) = resp.get("data").filter(|d| !d.is_null()) {
                                     data["workerData"] = inner.clone();
                                 }
                                 data
@@ -9273,25 +9282,21 @@ async fn handle_manager_command_write(
                     }
                 } else if method == "abort" {
                     match live_worker_id_for_session(&registry, &sid) {
-                        Some(wid) => {
-                            ion::worker_registry::WorkerRegistry::send_async(
-                                &registry, &wid, method, params,
-                            )
-                            .await
-                            .map(|resp| {
-                                let mut data = serde_json::json!({
-                                    "status": "forwarded",
-                                    "session": sid,
-                                    "workerId": wid,
-                                });
-                                if let Some(inner) =
-                                    resp.get("data").filter(|d| !d.is_null())
-                                {
-                                    data["workerData"] = inner.clone();
-                                }
-                                data
-                            })
-                        }
+                        Some(wid) => ion::worker_registry::WorkerRegistry::send_async(
+                            &registry, &wid, method, params,
+                        )
+                        .await
+                        .map(|resp| {
+                            let mut data = serde_json::json!({
+                                "status": "forwarded",
+                                "session": sid,
+                                "workerId": wid,
+                            });
+                            if let Some(inner) = resp.get("data").filter(|d| !d.is_null()) {
+                                data["workerData"] = inner.clone();
+                            }
+                            data
+                        }),
                         None => Err(format!(
                             "no live worker for session {sid} (nothing to abort; \
                              worker may be restarting — retry once it is up)"
@@ -9326,7 +9331,10 @@ async fn handle_manager_command_write(
                         }
                     }
                     match ion::worker_registry::WorkerRegistry::send_to_session(
-                        &registry, &sid, method, params.clone(),
+                        &registry,
+                        &sid,
+                        method,
+                        params.clone(),
                     )
                     .await
                     {
@@ -10439,25 +10447,24 @@ mod tests {
     fn path_confined_rejects_file_outside_dir() {
         let dir = tmp_session_fixture();
         // 模拟 /etc/xxx.jsonl 任意路径读取（用 tmp 目录外的一个真实存在文件）
-        let outside = std::env::temp_dir().join(format!(
-            "ion-path-sec-outside-{}.jsonl",
-            std::process::id()
-        ));
+        let outside =
+            std::env::temp_dir().join(format!("ion-path-sec-outside-{}.jsonl", std::process::id()));
         std::fs::write(&outside, "secret\n").unwrap();
         let got = path_confined_to(&outside, &dir.join("sessions"));
         let _ = std::fs::remove_file(&outside);
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(got.is_none(), "sessions_dir 外的文件必须拒绝（任意路径读取）");
+        assert!(
+            got.is_none(),
+            "sessions_dir 外的文件必须拒绝（任意路径读取）"
+        );
     }
 
     #[test]
     fn path_confined_rejects_symlink_escape() {
         let dir = tmp_session_fixture();
         // 目录内 symlink 指向目录外文件 → canonicalize 解析后越界 → 拒绝
-        let outside = std::env::temp_dir().join(format!(
-            "ion-path-sec-escape-{}.jsonl",
-            std::process::id()
-        ));
+        let outside =
+            std::env::temp_dir().join(format!("ion-path-sec-escape-{}.jsonl", std::process::id()));
         std::fs::write(&outside, "secret\n").unwrap();
         #[cfg(unix)]
         {
@@ -11023,7 +11030,10 @@ mod tests {
             "hdr-HOSTRED4",
             "env-HOSTRED5",
         ] {
-            assert!(!raw.contains(secret), "host get_settings 明文泄漏: {secret}\n{raw}");
+            assert!(
+                !raw.contains(secret),
+                "host get_settings 明文泄漏: {secret}\n{raw}"
+            );
         }
 
         // 各密钥位 = "***"，非密钥字段不误伤
@@ -11036,7 +11046,10 @@ mod tests {
             out["providers"]["zai"]["base_url"], "https://api.zai.example/v4",
             "base_url 不误伤"
         );
-        assert_eq!(out["mcp_servers"]["github"]["command"], "npx", "command 不误伤");
+        assert_eq!(
+            out["mcp_servers"]["github"]["command"], "npx",
+            "command 不误伤"
+        );
     }
 }
 
@@ -11323,10 +11336,7 @@ mod scene1_fs_gate_tests {
             .unwrap();
 
         // ① 受保护路径：写被拒（~/.ion 在 allowed_roots 里也必须挡住——P0 修复点）
-        let w = rt.block_on(fs.write_file(
-            &config_json.to_string_lossy(),
-            "{\"hijacked\":true}",
-        ));
+        let w = rt.block_on(fs.write_file(&config_json.to_string_lossy(), "{\"hijacked\":true}"));
         assert!(
             w.is_err(),
             "scene1 ctx.fs write to ~/.ion/config.json must be denied, got: {:?}",
@@ -11453,7 +11463,12 @@ mod subscribe_protocol_tests {
         assert_eq!(data["session"]["sessionId"], "sess_y");
         assert!(data["session"]["model"].is_null());
         assert_eq!(data["pendingApprovals"]["count"], 0);
-        assert!(data["pendingApprovals"]["requests"].as_array().unwrap().is_empty());
+        assert!(
+            data["pendingApprovals"]["requests"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -11528,8 +11543,14 @@ mod subscribe_protocol_tests {
         let err = ui_respond_origin_error(false);
         assert!(err.is_some());
         let msg = err.unwrap();
-        assert!(msg.contains("ui_respond rejected"), "错误信息要可诊断: {msg}");
-        assert!(msg.contains("same connection"), "错误信息要点明同源要求: {msg}");
+        assert!(
+            msg.contains("ui_respond rejected"),
+            "错误信息要可诊断: {msg}"
+        );
+        assert!(
+            msg.contains("same connection"),
+            "错误信息要点明同源要求: {msg}"
+        );
     }
 
     #[test]
@@ -11581,7 +11602,11 @@ mod bind_arbitration_tests {
         // sock 文件原封不动（同一 inode：未被删除重建）
         let after = std::fs::metadata(&sock).unwrap();
         use std::os::unix::fs::MetadataExt as _;
-        assert_eq!(before.ino(), after.ino(), "活 host 的 sock 文件被动过 = DoS 回归");
+        assert_eq!(
+            before.ino(),
+            after.ino(),
+            "活 host 的 sock 文件被动过 = DoS 回归"
+        );
     }
 
     /// 场景 3：死链（无人监听的残留文件）→ 探测失败 → 属主校验通过 → 清理重绑
@@ -11644,240 +11669,248 @@ mod bind_arbitration_tests {
 mod approval_bus_tests {
     use super::*;
 
-// ══ 统一审批总线（APPROVAL_BUS.md）：镜像 / 路由矩阵 / snapshot 兼容 ══
-// 全局总线 + 全局 pending_ui 是进程级共享——测试间用串行锁隔离，进出清场。
+    // ══ 统一审批总线（APPROVAL_BUS.md）：镜像 / 路由矩阵 / snapshot 兼容 ══
+    // 全局总线 + 全局 pending_ui 是进程级共享——测试间用串行锁隔离，进出清场。
 
-/// 审批总线测试串行锁（防并行测试互踩全局表）
-static APPROVAL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// 审批总线测试串行锁（防并行测试互踩全局表）
+    static APPROVAL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn bus_test_setup() -> std::sync::MutexGuard<'static, ()> {
-    let guard = APPROVAL_TEST_LOCK.lock().unwrap();
-    ApprovalBus::global().clear();
-    guard
-}
+    fn bus_test_setup() -> std::sync::MutexGuard<'static, ()> {
+        let guard = APPROVAL_TEST_LOCK.lock().unwrap();
+        ApprovalBus::global().clear();
+        guard
+    }
 
-fn bus_test_teardown() {
-    ApprovalBus::global().clear();
-    ion::runtime::pending_ui().lock().unwrap().clear();
-}
+    fn bus_test_teardown() {
+        ApprovalBus::global().clear();
+        ion::runtime::pending_ui().lock().unwrap().clear();
+    }
 
-#[test]
-fn snapshot_data_contains_unified_approvals_field() {
-    let _g = bus_test_setup();
-    let session = SnapshotSession {
-        session_id: "sess_a",
-        model: None,
-        provider: None,
-        name: None,
-    };
-    let approvals = vec![serde_json::json!({
-        "id": "apr_deadbeef",
-        "kind": "ui_ask",
-        "sessionId": "sess_a",
-        "summary": "Ask: 允许执行?",
-    })];
-    let data = build_snapshot_data(None, &session, &[], &approvals);
-    // 新字段：approvals 全量统一表
-    assert_eq!(data["approvals"]["total"], 1);
-    assert_eq!(data["approvals"]["requests"][0]["id"], "apr_deadbeef");
-    assert_eq!(data["approvals"]["requests"][0]["kind"], "ui_ask");
-    // 旧字段保留（向后兼容）：pendingApprovals 原样
-    assert_eq!(data["pendingApprovals"]["count"], 0);
-    assert!(data["pendingApprovals"]["requests"].as_array().unwrap().is_empty());
-    bus_test_teardown();
-}
+    #[test]
+    fn snapshot_data_contains_unified_approvals_field() {
+        let _g = bus_test_setup();
+        let session = SnapshotSession {
+            session_id: "sess_a",
+            model: None,
+            provider: None,
+            name: None,
+        };
+        let approvals = vec![serde_json::json!({
+            "id": "apr_deadbeef",
+            "kind": "ui_ask",
+            "sessionId": "sess_a",
+            "summary": "Ask: 允许执行?",
+        })];
+        let data = build_snapshot_data(None, &session, &[], &approvals);
+        // 新字段：approvals 全量统一表
+        assert_eq!(data["approvals"]["total"], 1);
+        assert_eq!(data["approvals"]["requests"][0]["id"], "apr_deadbeef");
+        assert_eq!(data["approvals"]["requests"][0]["kind"], "ui_ask");
+        // 旧字段保留（向后兼容）：pendingApprovals 原样
+        assert_eq!(data["pendingApprovals"]["count"], 0);
+        assert!(
+            data["pendingApprovals"]["requests"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        bus_test_teardown();
+    }
 
-#[test]
-fn mirror_ask_event_registers_ui_ask_entry() {
-    let _g = bus_test_setup();
-    mirror_ui_event_to_bus(
-        "ui",
-        "Ask",
-        &serde_json::json!({
-            "request_id": "req_aa11",
-            "title": "允许执行 bash",
-            "message": "which curl",
-        }),
-    );
-    let list = ApprovalBus::global().pending();
-    assert_eq!(list.len(), 1);
-    assert_eq!(list[0].kind, ApprovalKind::UiAsk);
-    assert_eq!(list[0].native_request_id(), Some("req_aa11"));
-    assert!(list[0].summary.contains("允许执行 bash"));
-    assert!(list[0].expires_at_ms.is_some(), "ui_ask 镜像带 TTL（对齐 120s Ask 窗口）");
-    // 幂等：同 request_id 重发不产生新条目
-    mirror_ui_event_to_bus(
-        "ui",
-        "Ask",
-        &serde_json::json!({"request_id": "req_aa11", "title": "t", "message": "m"}),
-    );
-    assert_eq!(ApprovalBus::global().pending().len(), 1);
-    bus_test_teardown();
-}
+    #[test]
+    fn mirror_ask_event_registers_ui_ask_entry() {
+        let _g = bus_test_setup();
+        mirror_ui_event_to_bus(
+            "ui",
+            "Ask",
+            &serde_json::json!({
+                "request_id": "req_aa11",
+                "title": "允许执行 bash",
+                "message": "which curl",
+            }),
+        );
+        let list = ApprovalBus::global().pending();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].kind, ApprovalKind::UiAsk);
+        assert_eq!(list[0].native_request_id(), Some("req_aa11"));
+        assert!(list[0].summary.contains("允许执行 bash"));
+        assert!(
+            list[0].expires_at_ms.is_some(),
+            "ui_ask 镜像带 TTL（对齐 120s Ask 窗口）"
+        );
+        // 幂等：同 request_id 重发不产生新条目
+        mirror_ui_event_to_bus(
+            "ui",
+            "Ask",
+            &serde_json::json!({"request_id": "req_aa11", "title": "t", "message": "m"}),
+        );
+        assert_eq!(ApprovalBus::global().pending().len(), 1);
+        bus_test_teardown();
+    }
 
-#[test]
-fn mirror_ask_resolved_and_timeout_close_ui_ask_entry() {
-    let _g = bus_test_setup();
-    mirror_ui_event_to_bus(
-        "ui",
-        "Ask",
-        &serde_json::json!({"request_id": "req_bb22", "title": "t", "message": "m"}),
-    );
-    assert_eq!(ApprovalBus::global().pending().len(), 1);
-    // ui_respond 旧通路完成 → AskResolved 事件 → 镜像收口
-    mirror_ui_event_to_bus(
-        "ui",
-        "AskResolved",
-        &serde_json::json!({"request_id": "req_bb22", "response": "allow"}),
-    );
-    assert!(ApprovalBus::global().pending().is_empty());
+    #[test]
+    fn mirror_ask_resolved_and_timeout_close_ui_ask_entry() {
+        let _g = bus_test_setup();
+        mirror_ui_event_to_bus(
+            "ui",
+            "Ask",
+            &serde_json::json!({"request_id": "req_bb22", "title": "t", "message": "m"}),
+        );
+        assert_eq!(ApprovalBus::global().pending().len(), 1);
+        // ui_respond 旧通路完成 → AskResolved 事件 → 镜像收口
+        mirror_ui_event_to_bus(
+            "ui",
+            "AskResolved",
+            &serde_json::json!({"request_id": "req_bb22", "response": "allow"}),
+        );
+        assert!(ApprovalBus::global().pending().is_empty());
 
-    mirror_ui_event_to_bus(
-        "ui",
-        "Ask",
-        &serde_json::json!({"request_id": "req_cc33", "title": "t", "message": "m"}),
-    );
-    // 超时 → AskTimedOut → 收口（reject + note=timeout）
-    mirror_ui_event_to_bus(
-        "ui",
-        "AskTimedOut",
-        &serde_json::json!({"request_id": "req_cc33"}),
-    );
-    assert!(ApprovalBus::global().pending().is_empty());
-    bus_test_teardown();
-}
+        mirror_ui_event_to_bus(
+            "ui",
+            "Ask",
+            &serde_json::json!({"request_id": "req_cc33", "title": "t", "message": "m"}),
+        );
+        // 超时 → AskTimedOut → 收口（reject + note=timeout）
+        mirror_ui_event_to_bus(
+            "ui",
+            "AskTimedOut",
+            &serde_json::json!({"request_id": "req_cc33"}),
+        );
+        assert!(ApprovalBus::global().pending().is_empty());
+        bus_test_teardown();
+    }
 
-#[test]
-fn mirror_verb_approval_registers_remote_verb_entry() {
-    let _g = bus_test_setup();
-    mirror_ui_event_to_bus(
-        "session",
-        "verb_approval",
-        &serde_json::json!({
-            "requestId": "vapp_1a2b",
-            "verb": "fs.read",
-            "args": {"path": "/etc/hosts"},
-            "session": "sess_remote",
-        }),
-    );
-    let list = ApprovalBus::global().pending();
-    assert_eq!(list.len(), 1);
-    assert_eq!(list[0].kind, ApprovalKind::RemoteVerb);
-    assert_eq!(list[0].session_id, "sess_remote");
-    assert_eq!(list[0].native_request_id(), Some("vapp_1a2b"));
-    assert!(list[0].summary.contains("fs.read"));
-    assert!(list[0].summary.contains("/etc/hosts"));
-    bus_test_teardown();
-}
+    #[test]
+    fn mirror_verb_approval_registers_remote_verb_entry() {
+        let _g = bus_test_setup();
+        mirror_ui_event_to_bus(
+            "session",
+            "verb_approval",
+            &serde_json::json!({
+                "requestId": "vapp_1a2b",
+                "verb": "fs.read",
+                "args": {"path": "/etc/hosts"},
+                "session": "sess_remote",
+            }),
+        );
+        let list = ApprovalBus::global().pending();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].kind, ApprovalKind::RemoteVerb);
+        assert_eq!(list[0].session_id, "sess_remote");
+        assert_eq!(list[0].native_request_id(), Some("vapp_1a2b"));
+        assert!(list[0].summary.contains("fs.read"));
+        assert!(list[0].summary.contains("/etc/hosts"));
+        bus_test_teardown();
+    }
 
-#[test]
-fn mirror_file_approval_lifecycle() {
-    let _g = bus_test_setup();
-    mirror_ui_event_to_bus(
-        "file-approval",
-        "ApprovalRequest",
-        &serde_json::json!({
-            "requestId": "appr_123",
-            "total": 2,
-            "files": [
-                {"path": "src/a.rs", "status": "pending", "diffStat": "+1"},
-                {"path": "src/b.rs", "status": "pending", "diffStat": "+2"},
-            ],
-        }),
-    );
-    let list = ApprovalBus::global().pending();
-    assert_eq!(list.len(), 1);
-    assert_eq!(list[0].kind, ApprovalKind::FileSnapshot);
-    assert_eq!(list[0].payload["total"], 2);
-    assert!(list[0].expires_at_ms.is_none(), "file_snapshot 持续型无 TTL");
-    // 同文件集重发（gate_check 每轮 Stop 都会发）→ 幂等
-    mirror_ui_event_to_bus(
-        "file-approval",
-        "ApprovalRequest",
-        &serde_json::json!({
-            "requestId": "appr_456",
-            "total": 2,
-            "files": [
-                {"path": "src/a.rs", "status": "pending", "diffStat": "+1"},
-                {"path": "src/b.rs", "status": "pending", "diffStat": "+2"},
-            ],
-        }),
-    );
-    assert_eq!(ApprovalBus::global().pending().len(), 1, "同集幂等");
-    // 批准 a.rs（原生 per-path ApprovalResolved）→ 条目收口
-    mirror_ui_event_to_bus(
-        "file-approval",
-        "ApprovalResolved",
-        &serde_json::json!({"path": "src/a.rs", "decision": "approved"}),
-    );
-    assert!(ApprovalBus::global().pending().is_empty());
-    // Reset → 清空 file_snapshot
-    mirror_ui_event_to_bus(
-        "file-approval",
-        "ApprovalRequest",
-        &serde_json::json!({
-            "requestId": "appr_789",
-            "total": 1,
-            "files": [{"path": "src/c.rs", "status": "pending", "diffStat": "+3"}],
-        }),
-    );
-    mirror_ui_event_to_bus("file-approval", "ApprovalReset", &serde_json::json!({}));
-    assert!(ApprovalBus::global().pending().is_empty());
-    bus_test_teardown();
-}
+    #[test]
+    fn mirror_file_approval_lifecycle() {
+        let _g = bus_test_setup();
+        mirror_ui_event_to_bus(
+            "file-approval",
+            "ApprovalRequest",
+            &serde_json::json!({
+                "requestId": "appr_123",
+                "total": 2,
+                "files": [
+                    {"path": "src/a.rs", "status": "pending", "diffStat": "+1"},
+                    {"path": "src/b.rs", "status": "pending", "diffStat": "+2"},
+                ],
+            }),
+        );
+        let list = ApprovalBus::global().pending();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].kind, ApprovalKind::FileSnapshot);
+        assert_eq!(list[0].payload["total"], 2);
+        assert!(
+            list[0].expires_at_ms.is_none(),
+            "file_snapshot 持续型无 TTL"
+        );
+        // 同文件集重发（gate_check 每轮 Stop 都会发）→ 幂等
+        mirror_ui_event_to_bus(
+            "file-approval",
+            "ApprovalRequest",
+            &serde_json::json!({
+                "requestId": "appr_456",
+                "total": 2,
+                "files": [
+                    {"path": "src/a.rs", "status": "pending", "diffStat": "+1"},
+                    {"path": "src/b.rs", "status": "pending", "diffStat": "+2"},
+                ],
+            }),
+        );
+        assert_eq!(ApprovalBus::global().pending().len(), 1, "同集幂等");
+        // 批准 a.rs（原生 per-path ApprovalResolved）→ 条目收口
+        mirror_ui_event_to_bus(
+            "file-approval",
+            "ApprovalResolved",
+            &serde_json::json!({"path": "src/a.rs", "decision": "approved"}),
+        );
+        assert!(ApprovalBus::global().pending().is_empty());
+        // Reset → 清空 file_snapshot
+        mirror_ui_event_to_bus(
+            "file-approval",
+            "ApprovalRequest",
+            &serde_json::json!({
+                "requestId": "appr_789",
+                "total": 1,
+                "files": [{"path": "src/c.rs", "status": "pending", "diffStat": "+3"}],
+            }),
+        );
+        mirror_ui_event_to_bus("file-approval", "ApprovalReset", &serde_json::json!({}));
+        assert!(ApprovalBus::global().pending().is_empty());
+        bus_test_teardown();
+    }
 
-#[test]
-fn mirror_ignores_bus_self_broadcast_no_loop() {
-    let _g = bus_test_setup();
-    // 总线自播事件（ext=host）不得被镜像（否则注册/移除回环）
-    mirror_ui_event_to_bus(
-        "host",
-        "ApprovalRequest",
-        &serde_json::json!({"approval": {"id": "apr_x", "kind": "ui_ask"}}),
-    );
-    mirror_ui_event_to_bus(
-        "host",
-        "ApprovalResolved",
-        &serde_json::json!({"approval": {"id": "apr_x"}, "decision": "approve"}),
-    );
-    assert!(ApprovalBus::global().pending().is_empty());
-    // 无关 extension 的 Ask 也不镜像（精确匹配 ext=ui）
-    mirror_ui_event_to_bus(
-        "other",
-        "Ask",
-        &serde_json::json!({"request_id": "req_zz", "title": "t", "message": "m"}),
-    );
-    assert!(ApprovalBus::global().pending().is_empty());
-    bus_test_teardown();
-}
+    #[test]
+    fn mirror_ignores_bus_self_broadcast_no_loop() {
+        let _g = bus_test_setup();
+        // 总线自播事件（ext=host）不得被镜像（否则注册/移除回环）
+        mirror_ui_event_to_bus(
+            "host",
+            "ApprovalRequest",
+            &serde_json::json!({"approval": {"id": "apr_x", "kind": "ui_ask"}}),
+        );
+        mirror_ui_event_to_bus(
+            "host",
+            "ApprovalResolved",
+            &serde_json::json!({"approval": {"id": "apr_x"}, "decision": "approve"}),
+        );
+        assert!(ApprovalBus::global().pending().is_empty());
+        // 无关 extension 的 Ask 也不镜像（精确匹配 ext=ui）
+        mirror_ui_event_to_bus(
+            "other",
+            "Ask",
+            &serde_json::json!({"request_id": "req_zz", "title": "t", "message": "m"}),
+        );
+        assert!(ApprovalBus::global().pending().is_empty());
+        bus_test_teardown();
+    }
 
-#[test]
-fn old_verb_review_path_syncs_bus_mirror() {
-    // 模拟旧 verb_review RPC 通路成功后镜像同步（handle_manager_command 内的收口逻辑）
-    let _g = bus_test_setup();
-    mirror_ui_event_to_bus(
-        "session",
-        "verb_approval",
-        &serde_json::json!({
-            "requestId": "vapp_old",
-            "verb": "fs.read",
-            "args": {"path": "/x"},
-            "session": "s",
-        }),
-    );
-    assert_eq!(ApprovalBus::global().pending().len(), 1);
-    // 与 "verb_review" match 臂相同的收口调用
-    ApprovalBus::global().mark_resolved_matching(
-        |e| {
-            e.kind == ApprovalKind::RemoteVerb
-                && e.native_request_id() == Some("vapp_old")
-        },
-        ApprovalDecision::Reject,
-        Some("verb_review"),
-    );
-    assert!(ApprovalBus::global().pending().is_empty(), "旧通路同步收口");
-    bus_test_teardown();
-}
+    #[test]
+    fn old_verb_review_path_syncs_bus_mirror() {
+        // 模拟旧 verb_review RPC 通路成功后镜像同步（handle_manager_command 内的收口逻辑）
+        let _g = bus_test_setup();
+        mirror_ui_event_to_bus(
+            "session",
+            "verb_approval",
+            &serde_json::json!({
+                "requestId": "vapp_old",
+                "verb": "fs.read",
+                "args": {"path": "/x"},
+                "session": "s",
+            }),
+        );
+        assert_eq!(ApprovalBus::global().pending().len(), 1);
+        // 与 "verb_review" match 臂相同的收口调用
+        ApprovalBus::global().mark_resolved_matching(
+            |e| e.kind == ApprovalKind::RemoteVerb && e.native_request_id() == Some("vapp_old"),
+            ApprovalDecision::Reject,
+            Some("verb_review"),
+        );
+        assert!(ApprovalBus::global().pending().is_empty(), "旧通路同步收口");
+        bus_test_teardown();
+    }
 }
 
 #[cfg(test)]
@@ -11924,8 +11957,8 @@ mod approval_cli_tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .subsec_nanos();
-        let root = std::env::temp_dir()
-            .join(format!("ion_appr_cli_{}_{nanos}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("ion_appr_cli_{}_{nanos}", std::process::id()));
         let home = root.join("home");
         std::fs::create_dir_all(home.join(".ion")).unwrap();
         std::fs::create_dir_all(root.join("sessions")).unwrap();
@@ -11956,7 +11989,10 @@ mod approval_cli_tests {
     fn host_env(guard: &HostGuard) -> Vec<(String, std::ffi::OsString)> {
         vec![
             ("HOME".into(), guard.root.join("home").into_os_string()),
-            ("ION_HOST_SOCKET".into(), guard.sock.clone().into_os_string()),
+            (
+                "ION_HOST_SOCKET".into(),
+                guard.sock.clone().into_os_string(),
+            ),
         ]
     }
 
@@ -11981,7 +12017,10 @@ mod approval_cli_tests {
         let req = serde_json::json!({"id": id, "method": method, "params": params});
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
-            assert!(std::time::Instant::now() < deadline, "host_rpc timeout: {method}");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "host_rpc timeout: {method}"
+            );
             let stream = match std::os::unix::net::UnixStream::connect(&guard.sock) {
                 Ok(s) => s,
                 Err(_) => {
@@ -12024,15 +12063,17 @@ mod approval_cli_tests {
     #[test]
     fn approvals_cli_end_to_end_on_isolated_host() {
         if find_ion_bin().is_none() {
-            eprintln!("skip: target/debug/ion 不存在（先 cargo build --bin ion，或跑 tests/approval_bridge_ci.sh）");
+            eprintln!(
+                "skip: target/debug/ion 不存在（先 cargo build --bin ion，或跑 tests/approval_bridge_ci.sh）"
+            );
             return;
         }
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .subsec_nanos();
-        let root = std::env::temp_dir()
-            .join(format!("ion_appr_cli_proj_{}_{nanos}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("ion_appr_cli_proj_{}_{nanos}", std::process::id()));
         let proj = root.join("proj");
         std::fs::create_dir_all(&proj).unwrap();
         let marker = nanos; // faux 内容带随机后缀（file-snapshot 按 diff 判定，同内容=无审批）
@@ -12079,12 +12120,22 @@ mod approval_cli_tests {
             .to_string();
         let mut prompt_child = {
             let mut cmd = Command::new(find_ion_bin().unwrap());
-            cmd.args(["rpc", "--session", &sid, "--method", "prompt",
-                      "--params", "{\"text\":\"write file\"}"]);
+            cmd.args([
+                "rpc",
+                "--session",
+                &sid,
+                "--method",
+                "prompt",
+                "--params",
+                "{\"text\":\"write file\"}",
+            ]);
             for (k, v) in host_env(&guard) {
                 cmd.env(k, v);
             }
-            cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap()
+            cmd.stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap()
         };
 
         // T2: 等 faux write 进统一表（≤20s）
@@ -12114,7 +12165,10 @@ mod approval_cli_tests {
         assert_eq!(code, 0, "T4 approve exit: out={out} err={err}");
         assert!(out.contains(&apr_id), "T4 含 id: {out}");
         assert!(out.contains("file_snapshot"), "T4 含 kind: {out}");
-        assert!(out.contains("nativeRequestId=appr_"), "T4 含 nativeRequestId: {out}");
+        assert!(
+            out.contains("nativeRequestId=appr_"),
+            "T4 含 nativeRequestId: {out}"
+        );
         let (code, out, _err) = run_approvals(&guard, &["list"]);
         assert_eq!(code, 0, "T4.1 exit: {out}");
         assert!(out.contains("无待审批"), "T4.1 审批后表清空: {out}");
@@ -12144,15 +12198,22 @@ mod router_exit_redispatch_tests {
     /// 失败的可诊断错误 Ok(Err(..))），绝不再是 drop 型 Err(RecvError)。
     #[tokio::test(start_paused = true)]
     async fn router_exit_redispatches_queued_subscribes_not_drops() {
-        let reg: Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>> =
-            Arc::new(parking_lot::Mutex::new(
-                ion::worker_registry::WorkerRegistry::new(),
-            ));
+        let reg: Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>> = Arc::new(
+            parking_lot::Mutex::new(ion::worker_registry::WorkerRegistry::new()),
+        );
         let (tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel();
         let (ra, mut rra) = tokio::sync::oneshot::channel();
         let (rb, mut rrb) = tokio::sync::oneshot::channel();
-        tx.send(RouterCmd::Subscribe { replay: 0, reply: ra }).unwrap();
-        tx.send(RouterCmd::Subscribe { replay: 3, reply: rb }).unwrap();
+        tx.send(RouterCmd::Subscribe {
+            replay: 0,
+            reply: ra,
+        })
+        .unwrap();
+        tx.send(RouterCmd::Subscribe {
+            replay: 3,
+            reply: rb,
+        })
+        .unwrap();
         drop(tx);
 
         let n = redispatch_queued_subscribes(&mut cmd_rx, "sess_redispatch_test", &reg);
@@ -12243,7 +12304,11 @@ mod router_attach_race_tests {
         unsafe {
             std::env::set_var("HOME", &tmp);
         }
-        HomeIsolation { _guard: guard, tmp, prev }
+        HomeIsolation {
+            _guard: guard,
+            tmp,
+            prev,
+        }
     }
 
     struct HomeIsolation {
@@ -12276,18 +12341,18 @@ mod router_attach_race_tests {
     async fn attach_then_worker_death_is_self_consistent() {
         let _home = isolate_home("self_consistent");
         let sid = "sess_x1_alive_death";
-        let reg: Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>> =
-            Arc::new(parking_lot::Mutex::new(
-                ion::worker_registry::WorkerRegistry::new(),
-            ));
+        let reg: Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>> = Arc::new(
+            parking_lot::Mutex::new(ion::worker_registry::WorkerRegistry::new()),
+        );
         // 活 worker W1，历史里预置 1 条事件（replay 用）
         let mut w1 = test_record("w-x1-1", sid, WorkerStatus::Idle);
         w1.event_history
             .push_back(serde_json::json!({"type":"agent_start"}));
         reg.lock().workers.insert("w-x1-1".into(), w1);
 
-        let (mut out_rx, ack) =
-            subscribe_session_routed(&reg, sid, 2).await.expect("attach 活 worker 应成功");
+        let (mut out_rx, ack) = subscribe_session_routed(&reg, sid, 2)
+            .await
+            .expect("attach 活 worker 应成功");
         assert_eq!(ack["type"], "subscribed");
         assert_eq!(ack["epoch"], 1);
 
@@ -12322,10 +12387,13 @@ mod router_attach_race_tests {
         );
 
         // 重派（新 worker 出现）→ 新订阅 epoch=2（host 级表保证单调）
-        reg.lock()
-            .workers
-            .insert("w-x1-2".into(), test_record("w-x1-2", sid, WorkerStatus::Idle));
-        let (mut out2, ack2) = subscribe_session_routed(&reg, sid, 0).await.expect("重派后可订阅");
+        reg.lock().workers.insert(
+            "w-x1-2".into(),
+            test_record("w-x1-2", sid, WorkerStatus::Idle),
+        );
+        let (mut out2, ack2) = subscribe_session_routed(&reg, sid, 0)
+            .await
+            .expect("重派后可订阅");
         assert_eq!(ack2["epoch"], 2, "epoch 必须跨 router 生命周期单调");
         let snap2 = out2.recv().await.expect("第二段订阅也有快照");
         assert_eq!(snap2["epoch"], 2);
@@ -12342,10 +12410,9 @@ mod router_attach_race_tests {
     async fn attach_skips_retained_dead_record() {
         let _home = isolate_home("skip_dead");
         let sid = "sess_x1_only_dead";
-        let reg: Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>> =
-            Arc::new(parking_lot::Mutex::new(
-                ion::worker_registry::WorkerRegistry::new(),
-            ));
+        let reg: Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>> = Arc::new(
+            parking_lot::Mutex::new(ion::worker_registry::WorkerRegistry::new()),
+        );
         reg.lock().workers.insert(
             "w-x1-dead".into(),
             test_record("w-x1-dead", sid, WorkerStatus::Dead),
@@ -12378,10 +12445,9 @@ mod router_attach_race_tests {
     async fn attach_prefers_live_over_dead_in_mixed_registry() {
         let _home = isolate_home("prefer_live");
         let sid = "sess_x1_mixed";
-        let reg: Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>> =
-            Arc::new(parking_lot::Mutex::new(
-                ion::worker_registry::WorkerRegistry::new(),
-            ));
+        let reg: Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>> = Arc::new(
+            parking_lot::Mutex::new(ion::worker_registry::WorkerRegistry::new()),
+        );
         // 先插 Dead 再插活（顺序不代表 HashMap 遍历序，修复后与序无关）
         reg.lock().workers.insert(
             "w-x1-old-dead".into(),
@@ -12398,8 +12464,7 @@ mod router_attach_race_tests {
         assert_eq!(ack["epoch"], 1);
         let snap = out_rx.recv().await.expect("快照帧必达");
         assert_eq!(
-            snap["event"]["data"]["worker"]["workerId"],
-            "w-x1-new-live",
+            snap["event"]["data"]["worker"]["workerId"], "w-x1-new-live",
             "快照必须呈现活 worker（Dead 不是活 worker）"
         );
         // 事件只投给活记录也能到达客户端（证明挂的是活流）
@@ -12420,16 +12485,17 @@ mod router_attach_race_tests {
     async fn ev_break_redispatches_queued_subscribe_with_single_bounded_reply() {
         let _home = isolate_home("break_redispatch");
         let sid = "sess_x1_break_redispatch";
-        let reg: Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>> =
-            Arc::new(parking_lot::Mutex::new(
-                ion::worker_registry::WorkerRegistry::new(),
-            ));
+        let reg: Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>> = Arc::new(
+            parking_lot::Mutex::new(ion::worker_registry::WorkerRegistry::new()),
+        );
         reg.lock().workers.insert(
             "w-x1-brk".into(),
             test_record("w-x1-brk", sid, WorkerStatus::Idle),
         );
 
-        let (mut out_rx, ack) = subscribe_session_routed(&reg, sid, 0).await.expect("首订成功");
+        let (mut out_rx, ack) = subscribe_session_routed(&reg, sid, 0)
+            .await
+            .expect("首订成功");
         assert_eq!(ack["epoch"], 1);
         let _snap = out_rx.recv().await.expect("快照必达");
 
@@ -12471,10 +12537,9 @@ mod router_attach_race_tests {
     async fn stale_router_tx_send_after_exit_errors_not_dangles() {
         let _home = isolate_home("stale_tx");
         let sid = "sess_x1_stale_tx";
-        let reg: Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>> =
-            Arc::new(parking_lot::Mutex::new(
-                ion::worker_registry::WorkerRegistry::new(),
-            ));
+        let reg: Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>> = Arc::new(
+            parking_lot::Mutex::new(ion::worker_registry::WorkerRegistry::new()),
+        );
         reg.lock().workers.insert(
             "w-x1-stale".into(),
             test_record("w-x1-stale", sid, WorkerStatus::Idle),
@@ -12483,8 +12548,11 @@ mod router_attach_race_tests {
         // 直连 spawn（绕过路由表）：持有 tx 让它穿过 router 的整个生命周期
         let (_id, tx) = SessionRouter::spawn(sid.to_string(), Arc::clone(&reg));
         let (rtx, mut rrx) = tokio::sync::oneshot::channel();
-        tx.send(RouterCmd::Subscribe { replay: 0, reply: rtx })
-            .expect("活 router 可收命令");
+        tx.send(RouterCmd::Subscribe {
+            replay: 0,
+            reply: rtx,
+        })
+        .expect("活 router 可收命令");
         let (mut out_rx, _ack) = rrx.await.expect("回复必达").expect("attach 成功");
         let _snap = out_rx.recv().await.expect("快照必达");
 
@@ -12496,12 +12564,20 @@ mod router_attach_race_tests {
 
         // 信道已关但 router 仍在重绑窗口内：stale tx 再 send 成功入队
         let (rtx2, rrx2) = tokio::sync::oneshot::channel();
-        if tx.send(RouterCmd::Subscribe { replay: 0, reply: rtx2 }).is_ok() {
+        if tx
+            .send(RouterCmd::Subscribe {
+                replay: 0,
+                reply: rtx2,
+            })
+            .is_ok()
+        {
             // 入队了 → break 时必被 drain 重派 → 必有单次有界回复（绝不悬挂）
             let r = tokio::time::timeout(std::time::Duration::from_secs(600), rrx2)
                 .await
                 .expect("排队订阅必须被回复（drain→重派链终止）");
-            let msg = r.expect("oneshot 必达").expect_err("无 worker 场景应为可诊断错误");
+            let msg = r
+                .expect("oneshot 必达")
+                .expect_err("无 worker 场景应为可诊断错误");
             assert!(
                 msg.contains("no worker for session"),
                 "重派后应收到可诊断错误: {msg}"

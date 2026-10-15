@@ -58,7 +58,11 @@ fn compile_schema(path: &Path) -> Validator {
 fn static_index_and_schema_files_match() {
     let dir = schema_dir();
     let index_path = dir.join("_index.json");
-    assert!(index_path.exists(), "_index.json missing under {}", dir.display());
+    assert!(
+        index_path.exists(),
+        "_index.json missing under {}",
+        dir.display()
+    );
     let index = read_json(&index_path);
 
     let commands = index["commands"]
@@ -68,10 +72,16 @@ fn static_index_and_schema_files_match() {
     // index 里每个命令都必须有对应 schema 文件
     let mut indexed: Vec<String> = Vec::new();
     for cmd in commands {
-        let name = cmd["command"].as_str().expect("command name must be a string");
+        let name = cmd["command"]
+            .as_str()
+            .expect("command name must be a string");
         let schema_ref = cmd["schema"].as_str().expect("schema ref must be a string");
         let path = dir.join(schema_ref.trim_start_matches("./"));
-        assert!(path.exists(), "index lists '{name}' but {} is missing", path.display());
+        assert!(
+            path.exists(),
+            "index lists '{name}' but {} is missing",
+            path.display()
+        );
         indexed.push(name.to_string());
     }
 
@@ -123,7 +133,10 @@ fn static_all_schemas_compile_as_draft_2020_12() {
         compile_schema(&path); // panics on invalid schema
         count += 1;
     }
-    assert!(count >= 30, "expected >=30 session-domain schemas, found {count}");
+    assert!(
+        count >= 30,
+        "expected >=30 session-domain schemas, found {count}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -146,9 +159,7 @@ fn find_worker_bin() -> PathBuf {
     if manifest.exists() {
         return manifest;
     }
-    panic!(
-        "ion binary not found; run `cargo build --bin ion` first (or set ION_WORKER_BIN)"
-    );
+    panic!("ion binary not found; run `cargo build --bin ion` first (or set ION_WORKER_BIN)");
 }
 
 struct WorkerProc {
@@ -334,14 +345,24 @@ fn find_file_recursive(root: &Path, name: &str) -> Option<PathBuf> {
 // ---------------------------------------------------------------------------
 
 /// 断言成功信封形状 + data 过 schema；返回 data 供链式取值。
-fn expect_valid(proc: &mut WorkerProc, validator: &Validator, schema_name: &str, method: &str, params: Value) -> Value {
+fn expect_valid(
+    proc: &mut WorkerProc,
+    validator: &Validator,
+    schema_name: &str,
+    method: &str,
+    params: Value,
+) -> Value {
     let resp = proc.send_command(method, params);
     assert_eq!(
         resp["success"].as_bool(),
         Some(true),
         "{method} must succeed, got: {resp}"
     );
-    assert_eq!(resp["type"].as_str(), Some("response"), "{method} envelope type");
+    assert_eq!(
+        resp["type"].as_str(),
+        Some("response"),
+        "{method} envelope type"
+    );
     assert!(resp["id"].is_string(), "{method} envelope id");
     let data = resp["data"].clone();
     let errors: Vec<String> = validator
@@ -359,11 +380,25 @@ fn expect_valid(proc: &mut WorkerProc, validator: &Validator, schema_name: &str,
 /// 断言错误信封形状（schema 不覆盖错误路径，这里做信封契约断言）。
 fn expect_error(proc: &mut WorkerProc, method: &str, params: Value) {
     let resp = proc.send_command(method, params);
-    assert_eq!(resp["success"].as_bool(), Some(false), "{method} must fail: {resp}");
-    assert_eq!(resp["type"].as_str(), Some("response"), "{method} envelope type");
+    assert_eq!(
+        resp["success"].as_bool(),
+        Some(false),
+        "{method} must fail: {resp}"
+    );
+    assert_eq!(
+        resp["type"].as_str(),
+        Some("response"),
+        "{method} envelope type"
+    );
     let err = resp["error"].as_str().unwrap_or_default();
-    assert!(!err.is_empty(), "{method} error must be a non-empty string: {resp}");
-    assert!(resp.get("data").is_none(), "{method} error must not carry data: {resp}");
+    assert!(
+        !err.is_empty(),
+        "{method} error must be a non-empty string: {resp}"
+    );
+    assert!(
+        resp.get("data").is_none(),
+        "{method} error must not carry data: {resp}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -387,110 +422,320 @@ fn dynamic_worker_session_commands_validate_against_schemas() {
 
     // ── 状态/统计族 ──
     let v = compile_schema(&dir.join("get_state.json"));
-    expect_valid(&mut proc, &v, "get_state", "get_state", serde_json::json!({}));
+    expect_valid(
+        &mut proc,
+        &v,
+        "get_state",
+        "get_state",
+        serde_json::json!({}),
+    );
 
     let v = compile_schema(&dir.join("get_session_info.json"));
-    expect_valid(&mut proc, &v, "get_session_info", "get_session_info", serde_json::json!({}));
+    expect_valid(
+        &mut proc,
+        &v,
+        "get_session_info",
+        "get_session_info",
+        serde_json::json!({}),
+    );
 
     let v = compile_schema(&dir.join("get_session_stats.json"));
-    expect_valid(&mut proc, &v, "get_session_stats", "get_session_stats", serde_json::json!({}));
+    expect_valid(
+        &mut proc,
+        &v,
+        "get_session_stats",
+        "get_session_stats",
+        serde_json::json!({}),
+    );
 
     let v = compile_schema(&dir.join("get_children.json"));
-    expect_valid(&mut proc, &v, "get_children", "get_children", serde_json::json!({}));
+    expect_valid(
+        &mut proc,
+        &v,
+        "get_children",
+        "get_children",
+        serde_json::json!({}),
+    );
 
     let v = compile_schema(&dir.join("get_inflight_messages.json"));
-    expect_valid(&mut proc, &v, "get_inflight_messages", "get_inflight_messages", serde_json::json!({"limit": 5}));
+    expect_valid(
+        &mut proc,
+        &v,
+        "get_inflight_messages",
+        "get_inflight_messages",
+        serde_json::json!({"limit": 5}),
+    );
 
     // ── 检索族 ──
     let v = compile_schema(&dir.join("get_messages.json"));
-    let msgs = expect_valid(&mut proc, &v, "get_messages", "get_messages", serde_json::json!({}));
-    assert!(msgs["totalCount"].as_u64().unwrap_or(0) >= 6, "fixture messages must be visible: {msgs}");
+    let msgs = expect_valid(
+        &mut proc,
+        &v,
+        "get_messages",
+        "get_messages",
+        serde_json::json!({}),
+    );
+    assert!(
+        msgs["totalCount"].as_u64().unwrap_or(0) >= 6,
+        "fixture messages must be visible: {msgs}"
+    );
 
     // get_messages 带参数（view/limit/include_custom/complete_turn）
-    expect_valid(&mut proc, &v, "get_messages", "get_messages", serde_json::json!({"view":"full","limit":2,"include_custom":"display_only","complete_turn":true}));
-    expect_valid(&mut proc, &v, "get_messages", "get_messages", serde_json::json!({"from":"head","limit":3}));
+    expect_valid(
+        &mut proc,
+        &v,
+        "get_messages",
+        "get_messages",
+        serde_json::json!({"view":"full","limit":2,"include_custom":"display_only","complete_turn":true}),
+    );
+    expect_valid(
+        &mut proc,
+        &v,
+        "get_messages",
+        "get_messages",
+        serde_json::json!({"from":"head","limit":3}),
+    );
 
     let v = compile_schema(&dir.join("list_turns.json"));
-    let turns = expect_valid(&mut proc, &v, "list_turns", "list_turns", serde_json::json!({}));
+    let turns = expect_valid(
+        &mut proc,
+        &v,
+        "list_turns",
+        "list_turns",
+        serde_json::json!({}),
+    );
     assert!(
-        turns["turns"].as_array().map(|a| !a.is_empty()).unwrap_or(false),
+        turns["turns"]
+            .as_array()
+            .map(|a| !a.is_empty())
+            .unwrap_or(false),
         "fixture must group into >=1 turn: {turns}"
     );
-    let first_turn_id = turns["turns"][0]["turnId"].as_str().expect("turnId string").to_string();
+    let first_turn_id = turns["turns"][0]["turnId"]
+        .as_str()
+        .expect("turnId string")
+        .to_string();
 
     let v = compile_schema(&dir.join("list_inputs.json"));
-    let inputs = expect_valid(&mut proc, &v, "list_inputs", "list_inputs", serde_json::json!({}));
-    assert!(inputs["inputs"].as_array().map(|a| !a.is_empty()).unwrap_or(false), "inputs must be non-empty: {inputs}");
+    let inputs = expect_valid(
+        &mut proc,
+        &v,
+        "list_inputs",
+        "list_inputs",
+        serde_json::json!({}),
+    );
+    assert!(
+        inputs["inputs"]
+            .as_array()
+            .map(|a| !a.is_empty())
+            .unwrap_or(false),
+        "inputs must be non-empty: {inputs}"
+    );
 
     let v = compile_schema(&dir.join("get_turn_detail.json"));
-    expect_valid(&mut proc, &v, "get_turn_detail(found)", "get_turn_detail", serde_json::json!({"turnId": first_turn_id}));
+    expect_valid(
+        &mut proc,
+        &v,
+        "get_turn_detail(found)",
+        "get_turn_detail",
+        serde_json::json!({"turnId": first_turn_id}),
+    );
     // not-found 变体：成功信封里带 {error,turnId}
-    expect_valid(&mut proc, &v, "get_turn_detail(not found)", "get_turn_detail", serde_json::json!({"turnId": "no_such_turn"}));
+    expect_valid(
+        &mut proc,
+        &v,
+        "get_turn_detail(not found)",
+        "get_turn_detail",
+        serde_json::json!({"turnId": "no_such_turn"}),
+    );
 
     let v = compile_schema(&dir.join("get_full_messages.json"));
-    expect_valid(&mut proc, &v, "get_full_messages", "get_full_messages", serde_json::json!({}));
+    expect_valid(
+        &mut proc,
+        &v,
+        "get_full_messages",
+        "get_full_messages",
+        serde_json::json!({}),
+    );
 
     let v = compile_schema(&dir.join("get_last_assistant_text.json"));
-    expect_valid(&mut proc, &v, "get_last_assistant_text", "get_last_assistant_text", serde_json::json!({}));
+    expect_valid(
+        &mut proc,
+        &v,
+        "get_last_assistant_text",
+        "get_last_assistant_text",
+        serde_json::json!({}),
+    );
 
     let v = compile_schema(&dir.join("get_fork_messages.json"));
-    expect_valid(&mut proc, &v, "get_fork_messages", "get_fork_messages", serde_json::json!({}));
+    expect_valid(
+        &mut proc,
+        &v,
+        "get_fork_messages",
+        "get_fork_messages",
+        serde_json::json!({}),
+    );
 
     // ── 树族 ──
     let v = compile_schema(&dir.join("get_tree.json"));
-    expect_valid(&mut proc, &v, "get_tree(structure)", "get_tree", serde_json::json!({}));
-    expect_valid(&mut proc, &v, "get_tree(full)", "get_tree", serde_json::json!({"mode":"full"}));
+    expect_valid(
+        &mut proc,
+        &v,
+        "get_tree(structure)",
+        "get_tree",
+        serde_json::json!({}),
+    );
+    expect_valid(
+        &mut proc,
+        &v,
+        "get_tree(full)",
+        "get_tree",
+        serde_json::json!({"mode":"full"}),
+    );
 
     let v = compile_schema(&dir.join("get_tree_with_leaf.json"));
-    expect_valid(&mut proc, &v, "get_tree_with_leaf", "get_tree_with_leaf", serde_json::json!({}));
+    expect_valid(
+        &mut proc,
+        &v,
+        "get_tree_with_leaf",
+        "get_tree_with_leaf",
+        serde_json::json!({}),
+    );
 
     let v = compile_schema(&dir.join("navigate_tree.json"));
-    expect_valid(&mut proc, &v, "navigate_tree", "navigate_tree", serde_json::json!({}));
+    expect_valid(
+        &mut proc,
+        &v,
+        "navigate_tree",
+        "navigate_tree",
+        serde_json::json!({}),
+    );
 
     // ── 分支闭环 ──
     let v = compile_schema(&dir.join("fork.json"));
-    let forked = expect_valid(&mut proc, &v, "fork", "fork", serde_json::json!({"turnId": 2, "name": "try-schema"}));
+    let forked = expect_valid(
+        &mut proc,
+        &v,
+        "fork",
+        "fork",
+        serde_json::json!({"turnId": 2, "name": "try-schema"}),
+    );
     assert_eq!(forked["branch"].as_str(), Some("try-schema"));
 
     let v = compile_schema(&dir.join("get_branches.json"));
-    let branches = expect_valid(&mut proc, &v, "get_branches", "get_branches", serde_json::json!({}));
-    assert!(branches["branches"].as_array().map(|a| !a.is_empty()).unwrap_or(false));
+    let branches = expect_valid(
+        &mut proc,
+        &v,
+        "get_branches",
+        "get_branches",
+        serde_json::json!({}),
+    );
+    assert!(
+        branches["branches"]
+            .as_array()
+            .map(|a| !a.is_empty())
+            .unwrap_or(false)
+    );
 
     let v = compile_schema(&dir.join("checkout_branch.json"));
-    expect_valid(&mut proc, &v, "checkout_branch", "checkout_branch", serde_json::json!({"name": "try-schema"}));
-    expect_valid(&mut proc, &v, "checkout_branch(main)", "checkout_branch", serde_json::json!({"name": "main"}));
+    expect_valid(
+        &mut proc,
+        &v,
+        "checkout_branch",
+        "checkout_branch",
+        serde_json::json!({"name": "try-schema"}),
+    );
+    expect_valid(
+        &mut proc,
+        &v,
+        "checkout_branch(main)",
+        "checkout_branch",
+        serde_json::json!({"name": "main"}),
+    );
 
     // 分支视图过滤（branch:* view）
     let v = compile_schema(&dir.join("get_messages.json"));
-    expect_valid(&mut proc, &v, "get_messages(branch view)", "get_messages", serde_json::json!({"view":"branch:try-schema"}));
+    expect_valid(
+        &mut proc,
+        &v,
+        "get_messages(branch view)",
+        "get_messages",
+        serde_json::json!({"view":"branch:try-schema"}),
+    );
 
     // ── 队列/上下文/工具 ──
     let v = compile_schema(&dir.join("get_queue.json"));
-    expect_valid(&mut proc, &v, "get_queue", "get_queue", serde_json::json!({}));
+    expect_valid(
+        &mut proc,
+        &v,
+        "get_queue",
+        "get_queue",
+        serde_json::json!({}),
+    );
 
     let v = compile_schema(&dir.join("get_context_usage.json"));
-    expect_valid(&mut proc, &v, "get_context_usage", "get_context_usage", serde_json::json!({}));
+    expect_valid(
+        &mut proc,
+        &v,
+        "get_context_usage",
+        "get_context_usage",
+        serde_json::json!({}),
+    );
 
     let v = compile_schema(&dir.join("get_active_tools.json"));
-    expect_valid(&mut proc, &v, "get_active_tools", "get_active_tools", serde_json::json!({}));
+    expect_valid(
+        &mut proc,
+        &v,
+        "get_active_tools",
+        "get_active_tools",
+        serde_json::json!({}),
+    );
 
     // ── 软删除族（空 targetIds 走 soft-failure 变体，零副作用）──
     let v = compile_schema(&dir.join("delete_entries.json"));
-    expect_valid(&mut proc, &v, "delete_entries(empty)", "delete_entries", serde_json::json!({"targetIds": []}));
+    expect_valid(
+        &mut proc,
+        &v,
+        "delete_entries(empty)",
+        "delete_entries",
+        serde_json::json!({"targetIds": []}),
+    );
 
     let v = compile_schema(&dir.join("summarize_entries.json"));
-    expect_valid(&mut proc, &v, "summarize_entries(empty)", "summarize_entries", serde_json::json!({"targetIds": []}));
+    expect_valid(
+        &mut proc,
+        &v,
+        "summarize_entries(empty)",
+        "summarize_entries",
+        serde_json::json!({"targetIds": []}),
+    );
 
     let v = compile_schema(&dir.join("restore_entries.json"));
-    expect_valid(&mut proc, &v, "restore_entries(empty)", "restore_entries", serde_json::json!({"targetIds": []}));
+    expect_valid(
+        &mut proc,
+        &v,
+        "restore_entries(empty)",
+        "restore_entries",
+        serde_json::json!({"targetIds": []}),
+    );
 
     // ── 存根 ──
     let v = compile_schema(&dir.join("new_session.json"));
-    expect_valid(&mut proc, &v, "new_session", "new_session", serde_json::json!({}));
+    expect_valid(
+        &mut proc,
+        &v,
+        "new_session",
+        "new_session",
+        serde_json::json!({}),
+    );
 
     // ── 错误信封契约（schema 之外的信封断言）──
     expect_error(&mut proc, "fork", serde_json::json!({})); // 缺 turnId
-    expect_error(&mut proc, "checkout_branch", serde_json::json!({"name": "no-such-branch"}));
+    expect_error(
+        &mut proc,
+        "checkout_branch",
+        serde_json::json!({"name": "no-such-branch"}),
+    );
 }
 
 /// host 直读面（get_session_messages / list_session_turns 的 host 级 data 形状）
@@ -513,7 +758,10 @@ fn static_retrieval_schemas_accept_fixture_shape() {
         "compactionPoints": [],
     });
     let v = compile_schema(&dir.join("get_session_messages.json"));
-    assert!(v.is_valid(&messages_data), "host messages shape must match get_session_messages schema");
+    assert!(
+        v.is_valid(&messages_data),
+        "host messages shape must match get_session_messages schema"
+    );
 
     let turns_data = serde_json::json!({
         "turns": [{
@@ -527,5 +775,8 @@ fn static_retrieval_schemas_accept_fixture_shape() {
         "nextCursor": null,
     });
     let v = compile_schema(&dir.join("list_session_turns.json"));
-    assert!(v.is_valid(&turns_data), "host turns shape must match list_session_turns schema");
+    assert!(
+        v.is_valid(&turns_data),
+        "host turns shape must match list_session_turns schema"
+    );
 }

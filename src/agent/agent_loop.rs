@@ -773,13 +773,14 @@ impl Agent {
     /// 生效的重试配置：优先显式 retry_config，否则由 max_retries/retry_base_delay_ms
     /// 合成（空补全重试与 Err 重试分支共用，避免两处漂移）。
     fn effective_retry_config(&self) -> crate::retry::RetryConfig {
-        self.config.retry_config.clone().unwrap_or_else(|| {
-            crate::retry::RetryConfig {
+        self.config
+            .retry_config
+            .clone()
+            .unwrap_or_else(|| crate::retry::RetryConfig {
                 max_retries: self.config.max_retries,
                 initial_delay: Duration::from_millis(self.config.retry_base_delay_ms),
                 ..Default::default()
-            }
-        })
+            })
     }
 
     /// 注入永久性错误降级候选模型（worker 按 `runtime.auto_fallback_tier` +
@@ -819,7 +820,10 @@ impl Agent {
         tracing::warn!(
             "[tier-fallback] permanent LLM error, switching {from} → {to}: {reason:.120}"
         );
-        self.extensions.on_model_fallback(&from, &to, &reason).await.ok();
+        self.extensions
+            .on_model_fallback(&from, &to, &reason)
+            .await
+            .ok();
         true
     }
 
@@ -2335,10 +2339,12 @@ impl Agent {
                     // 只认 EOF 签名字面量，其他 in-stream 错误（配额/鉴权语义）保持
                     // 原路径不重试（其降级语义归 Err 路径 tier fallback 管）。
                     if matches!(final_reason, StopReason::Error)
-                        && collected.iter().any(|e| matches!(e,
+                        && collected.iter().any(|e| {
+                            matches!(e,
                             StreamEvent::Error { message, .. }
                             if message.error_message.as_deref()
-                                == Some("stream ended unexpectedly")))
+                                == Some("stream ended unexpectedly"))
+                        })
                     {
                         let retry_cfg = self.effective_retry_config();
                         if attempt >= retry_cfg.max_retries {
@@ -2667,7 +2673,9 @@ impl Agent {
                     })
                     .collect::<Vec<_>>()
                     .join("");
-                if !txt.trim().is_empty() { return Some(txt); }
+                if !txt.trim().is_empty() {
+                    return Some(txt);
+                }
             }
             None
         });
@@ -3039,11 +3047,8 @@ mod tests {
 
         // 新 run 的第一次 check_pause 必须立刻通过（pause 残留则会永久挂起）。
         // 用 timeout 把"永久挂起"转成 2s 内的失败信号。
-        let checked = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            agent.check_pause(),
-        )
-        .await;
+        let checked =
+            tokio::time::timeout(std::time::Duration::from_secs(2), agent.check_pause()).await;
         assert!(
             checked.is_ok(),
             "check_pause 在 abort+复位后挂起：stop() 残留了 pause=true（僵尸 run 根因回归）"

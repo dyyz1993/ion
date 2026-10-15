@@ -570,12 +570,8 @@ async fn t3_reflow_scan_local_respawn_downgrades_to_summary_relay_chain() {
     // 本机 respawn（host=None + allow_local 语义由调用方把关 → plan_auto_respawn local=true）
     let mut record = k4_dead_record(sid, &cwd);
     record.host = None;
-    let plan = ion::worker_registry::plan_auto_respawn(
-        &ion::paths::sessions_dir(),
-        &record,
-        true,
-    )
-    .expect("scan hit must still offer the summary-relay fallback");
+    let plan = ion::worker_registry::plan_auto_respawn(&ion::paths::sessions_dir(), &record, true)
+        .expect("scan hit must still offer the summary-relay fallback");
     assert!(
         plan.session.is_none(),
         "local respawn on scan hit must downgrade to a new sid"
