@@ -32,12 +32,13 @@ except Exception:
 ' "$1" "$2" 2>/dev/null
 }
 rpc() {
-    HOME="$HOME_DIR" ION_HOST_SOCKET="$ROOT/host.sock" timeout 10 "$ION_BIN" rpc "$@" 2>/dev/null
+    HOME="$HOME_DIR" ION_HOST_SOCKET="$ROOT/host.sock" ION_SESSION_DIR="$ROOT/sessions" \
+      ION_SESSION_INDEX="$ROOT/sessions.index.json" timeout 10 "$ION_BIN" rpc "$@" 2>/dev/null
 }
 start_host() {
     rm -f "$ROOT/host.sock"
     (
-        export HOME="$HOME_DIR" ION_HOST_SOCKET="$ROOT/host.sock"
+        export HOME="$HOME_DIR" ION_HOST_SOCKET="$ROOT/host.sock" ION_SESSION_DIR="$ROOT/sessions" ION_SESSION_INDEX="$ROOT/sessions.index.json" ION_FAUX_SCRIPT="$ROOT/faux.jsonl"
         cd "$PROJECT" && exec "$ION_BIN" serve --provider faux --model faux-test
     ) >"$ROOT/host.log" 2>&1 &
     HOST_PID=$!
@@ -47,6 +48,12 @@ start_host() {
     done
     return 1
 }
+
+cat >"$ROOT/faux.jsonl" <<'EOF'
+{"text":"hello three-pane"}
+{"tool_call":{"name":"bash","input":{"command":"printf TUI_TOOL_PERSISTED"}}}
+{"text":"tool finished"}
+EOF
 
 echo '[build]'
 if cargo build --bin ion >/dev/null 2>&1 && cargo build -p ion-tui >/dev/null 2>&1; then
@@ -104,21 +111,25 @@ echo "$TREE_OUT" | grep -q -- '--- sessions ---' && pass 'sessions tree header' 
 echo "$TREE_OUT" | grep -q -- '--- conversation ---' && pass 'conversation header' || fail 'conversation header missing'
 echo "$TREE_OUT" | grep -q '(no messages)' && pass 'conversation placeholder' || fail 'conversation placeholder missing'
 SESSIONS_JSON=$(rpc --method list_all_sessions --params '{}')
-ENTRY_SID=$(printf '%s' "$SESSIONS_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin)["data"]["sessions"]; d=[x for x in d if "memory_agent" not in x["id"]]; d.sort(key=lambda s: s["updatedAt"], reverse=True); print(d[0]["id"] if d else "")')
+ENTRY_SID=$(printf '%s' "$SESSIONS_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin)["data"]["sessions"]; d=[x for x in d if "memory_agent" not in x["id"] and x.get("id")!="sess-tui-ci-001"]; d.sort(key=lambda s: s["updatedAt"], reverse=True); print(d[0]["id"] if d else "")')
 [ -n "$ENTRY_SID" ] && pass "entry session found: $ENTRY_SID" || { fail 'no entry session'; exit 1; }
 rpc --session "$ENTRY_SID" --method prompt --params '{"text":"hello three-pane"}' >/dev/null 2>&1
-sleep 3
+rpc --session "$ENTRY_SID" --method prompt --params '{"text":"use the scripted tool"}' >/dev/null 2>&1
+for _ in $(seq 1 20); do
+    MSGS=$(rpc --session "$ENTRY_SID" --method get_session_messages --params '{"limit":30,"view":"full","include_custom":"all"}')
+    echo "$MSGS" | grep -q 'TUI_TOOL_PERSISTED' && break
+    sleep 0.5
+done
 TREE_OUT=$(HOME="$HOME_DIR" ION_HOST_SOCKET="$ROOT/host.sock" ION_TUI_HEADLESS=1 timeout 10 "$TUI_BIN" --attach image.png --attach logs.tar.gz 2>/dev/null)
 echo "$TREE_OUT" | grep -q '📎 image.png · logs.tar.gz' &&
     pass 'CLI initial attachments rendered' || fail "attachments missing: $TREE_OUT"
-TREE_OUT=$(HOME="$HOME_DIR" ION_HOST_SOCKET="$ROOT/host.sock" ION_TUI_HEADLESS=1 timeout 10 "$TUI_BIN" 2>/dev/null)
-if echo "$TREE_OUT" | grep -q '❯ user'; then
-    pass 'conversation shows user line'
-elif echo "$TREE_OUT" | grep -q '(no messages)'; then
-    pass 'conversation empty tolerated (worker writes async)'
-else
-    fail 'conversation neither user nor placeholder'
-fi
+TREE_OUT=$(HOME="$HOME_DIR" ION_HOST_SOCKET="$ROOT/host.sock" ION_TUI_HEADLESS=1 timeout 10 "$TUI_BIN" --session "$ENTRY_SID" 2>"$ROOT/tui-history.err")
+echo "$TREE_OUT" | grep -q '── 当前轮次 ──' &&
+    pass 'conversation history rendered in current turn' ||
+    fail "conversation turn history missing: $TREE_OUT"
+echo "$TREE_OUT" | grep -q '▸ \[tool\] bash — printf TUI_TOOL_PERSISTED' &&
+    pass 'completed tool persisted into conversation history' ||
+    fail "persisted tool card missing: $TREE_OUT"
 echo "$TREE_OUT" | grep -q '^input: .*▊' &&
     pass 'composer visible with cursor' || fail "composer missing: $TREE_OUT"
 echo "$TREE_OUT" | grep -qE 'ctx .+% .+ms · 子[0-9]+ · 同[0-9]+' &&
@@ -223,28 +234,53 @@ echo "$OUT" | grep -qE 'run\.(state\.changed|paused|resumed)' &&
     { fail "no lifecycle events in panel: $OUT"; }
 
 
-cat >"$ROOT/mock_approval_host.py" <<'PY'
-import json, os, signal, socket, sys
-path = sys.argv[1]
+cat >"$ROOT/realtime_approval_host.py" <<'PY'
+import json, os, socket, sys, threading, time
+path, event_path = sys.argv[1], sys.argv[2]
 pending = [{
   "id":"apr_1","kind":"ui_ask","sessionId":"sess-tui-ci-001",
   "summary":"允许执行部署命令？","payload":{"command":"./deploy.sh --env ci"}
 }]
-approved = False
-def accept(sig, frm):
-    global approved
-    approved = True
-signal.signal(signal.SIGUSR1, accept)
+approval_seen = threading.Event()
+approval_resolved = threading.Event()
 try: os.unlink(path)
 except FileNotFoundError: pass
+try: os.unlink(event_path)
+except FileNotFoundError: pass
+event_server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+event_server.bind(event_path); event_server.listen(10)
+
+def serve_events():
+    while True:
+        c,_ = event_server.accept()
+        def handle(c):
+            with c, c.makefile('rw') as f:
+                req=json.loads(f.readline())
+                if req.get('method') == 'fire':
+                    if approval_resolved.is_set(): approval_resolved.set()
+                    elif approval_seen.is_set(): approval_resolved.set()
+                    else: approval_seen.set()
+                    return
+                subscribed = req.get('method') == 'subscribe' and req.get('ui')
+                c.sendall((json.dumps({"type":"subscribed","stream":"ui" if subscribed else "session"})+"\n").encode())
+                if subscribed:
+                    approval_seen.wait(8)
+                    if approval_seen.is_set():
+                        c.sendall((json.dumps({"type":"ui_event","ui_type":"ApprovalRequest"})+"\n").encode())
+                    approval_resolved.wait(8)
+                    if approval_resolved.is_set():
+                        c.sendall((json.dumps({"type":"ui_event","ui_type":"ApprovalResolved"})+"\n").encode())
+        threading.Thread(target=handle, args=(c,), daemon=True).start()
+threading.Thread(target=serve_events, daemon=True).start()
+
 s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM); s.bind(path); s.listen(10)
 while True:
     c,_=s.accept(); f=c.makefile('rw')
     for line in f:
         req=json.loads(line); method=req.get('method')
-        if method=='approval_respond': approved=True
+        if method=='approval_respond': approval_resolved.set()
         data={}
-        if method=='approvals_pending': data={"pending":[] if approved else pending,"requests":[] if approved else pending,"total":0 if approved else 1}
+        if method=='approvals_pending': data={"pending":[] if approval_resolved.is_set() else pending,"requests":[] if approval_resolved.is_set() else pending,"total":0 if approval_resolved.is_set() else 1}
         elif method=='list_all_sessions': data={"sessions":[{"id":"sess-tui-ci-001","name":"审批演示","project":"ci","updatedAt":1}],"totalCount":1}
         elif method=='list_sessions': data={"sessions":[]}
         elif method=='run.list': data=[]
@@ -255,9 +291,10 @@ while True:
     c.close()
 PY
 
-echo '[T7] approval card + respond/abort CLI-facing mock'
+echo '[T7] approval card + realtime event refresh + respond/abort'
 MOCK_SOCK="$ROOT/approval-mock.sock"
-python3 "$ROOT/mock_approval_host.py" "$MOCK_SOCK" &
+EVENT_SOCK="$ROOT/approval-events.sock"
+python3 "$ROOT/realtime_approval_host.py" "$MOCK_SOCK" "$EVENT_SOCK" &
 MOCK_PID=$!
 sleep 1
 OUT=$(HOME="$HOME_DIR" ION_HOST_SOCKET="$MOCK_SOCK" ION_TUI_HEADLESS=1 timeout 10 "$TUI_BIN" 2>/dev/null)
@@ -266,18 +303,40 @@ echo "$OUT" | grep -q '⏸ 审批请求 — \[ui_ask\]' &&
 echo "$OUT" | grep -q '✓ 允许 (y)' && echo "$OUT" | grep -q '✗ 拒绝 (n)' &&
     pass 'approve/reject actions rendered' || fail "approval actions missing: $OUT"
 echo "$OUT" | grep -q '等待审批决策' && pass 'composer locked during approval' || fail 'composer not locked'
-# Signal mock to accept next approval_respond and return empty pending.
-kill -USR1 "$MOCK_PID" 2>/dev/null || true
+# Fire the real host-shaped ui_event against a live TUI event socket. A second
+# headless invocation cannot prove streaming, so drive the full interactive loop
+# in tmux and capture its rendered pane.
+tmux kill-session -t ion-tui-realtime 2>/dev/null || true
+tmux new-session -d -s ion-tui-realtime -x 120 -y 34 \
+    "env HOME='$HOME_DIR' ION_HOST_SOCKET='$MOCK_SOCK' ION_TUI_EVENT_SOCKET='$EVENT_SOCK' TERM=xterm-256color '$TUI_BIN' 2>'$ROOT/tui-realtime.err'"
+python3 - "$EVENT_SOCK" <<'PY'
+import socket, sys
+s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM); s.connect(sys.argv[1])
+s.sendall(b'{"method":"fire"}\n'); s.close()
+PY
 sleep 1
-# Direct RPC against mock is unavailable via ion rpc because interceptor? use mock protocol through Python.
+tmux capture-pane -t ion-tui-realtime -p > "$ROOT/realtime-request.txt"
+grep -q '⏸ 审批请求' "$ROOT/realtime-request.txt" &&
+    pass 'ApprovalRequest event refreshed card in live TUI' ||
+    fail "realtime request missing: $(cat "$ROOT/realtime-request.txt")"
+# Respond over the product RPC socket; the mock flips its pending readback state.
 python3 - "$MOCK_SOCK" <<'PY'
 import json,socket,sys
 s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM); s.connect(sys.argv[1])
 req={"id":"approve","method":"approval_respond","params":{"id":"apr_1","decision":"approve"}}
-s.sendall((json.dumps(req)+"\n").encode()); print(s.recv(65536).decode()); s.close()
+s.sendall((json.dumps(req)+"\n").encode()); s.recv(65536); s.close()
 PY
-OUT=$(HOME="$HOME_DIR" ION_HOST_SOCKET="$MOCK_SOCK" ION_TUI_HEADLESS=1 timeout 10 "$TUI_BIN" 2>/dev/null)
-echo "$OUT" | grep -vq '⏸ 审批请求' && pass 'approval card clears after approve' || fail "approval still visible: $OUT"
+python3 - "$EVENT_SOCK" <<'PY'
+import socket, sys
+s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM); s.connect(sys.argv[1])
+s.sendall(b'{"method":"fire"}\n'); s.close()
+PY
+sleep 1
+tmux capture-pane -t ion-tui-realtime -p > "$ROOT/realtime-resolved.txt"
+grep -vq '⏸ 审批请求' "$ROOT/realtime-resolved.txt" &&
+    pass 'ApprovalResolved event cleared card in live TUI' ||
+    fail "realtime card did not clear: $(cat "$ROOT/realtime-resolved.txt")"
+tmux kill-session -t ion-tui-realtime 2>/dev/null || true
 kill "$MOCK_PID" 2>/dev/null || true
 
 printf 'PASS: %s, FAIL: %s\n' "$PASS" "$FAIL"

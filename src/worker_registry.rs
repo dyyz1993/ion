@@ -1983,7 +1983,7 @@ impl WorkerRegistry {
                     SessionMeta {
                         name: Some(session_id.clone()),
                         first_name: Some(session_id.clone()),
-                        project: Some(worktree_path.clone()),
+                        project: Some(project_path.clone()),
                         project_name: Some(project_name.clone()),
                         worktree: config.worktree.is_some(),
                         branch: worktree_branch_snapshot.clone(),
@@ -2835,7 +2835,7 @@ impl WorkerRegistry {
                     SessionMeta {
                         name: Some(session_id.clone()),
                         first_name: Some(session_id.clone()),
-                        project: Some(worktree_path.clone()),
+                        project: Some(project_path.clone()),
                         project_name: Some(project_name.clone()),
                         worktree: config.worktree.is_some(),
                         branch: ws_info.as_ref().map(|w| w.branch.clone()),

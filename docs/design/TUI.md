@@ -205,3 +205,12 @@ ion tui
 - 快照派生的 running 占位卡只在无真实流卡片时创建，避免周期刷新把已完成的真实工具输出替换回 `running…`。
 - 截图转换使用 Menlo + Hiragino Sans GB 双字体：ASCII/线条用 Menlo，CJK 用 Hiragino，避免中文与符号在 PNG 中出现豆腐块；终端 capture 本身保持 UTF-8。
 - 验证：`cargo test -p ion-tui` 59/0、`cargo clippy -p ion-tui --all-targets -- -D warnings` 0 warning、`tests/tui_smoke_ci.sh` 34/0、`docs_links_ci.sh` 373/0；截图 `~/Downloads/ion-tui-v0.11-realtime-approval-completed-tools.png`。
+
+## 16. v0.12 完成工具卡片历史持久化（已实现）
+
+- Worker 在 `on_tool_execution_end` 将完成卡片追加为 `custom/tool_card` JSONL entry；字段包含 `sessionId/toolCallId/toolName/args/isError/durationMs/resultTail/completed`。它是 UI 重建用的旁路轨迹，不进入 LLM 上下文，也不是新的 sidecar 文件。
+- `StreamingExtension` 持有当前 worker 的 session 文件路径，避免依赖进程全局路径；本地与 fork/child 会话都写入对应 `<sid>.jsonl`。
+- `FileIndex` live 索引与 `message_retrieval` 默认 custom 过滤显式保留 `tool_card`；TUI 将其渲染为历史轮次中的折叠工具卡，错误卡默认展开。
+- `SessionHeader` 反序列化宽容保留扩展字段（如 `spawnMeta`），避免独立会话文件因 header 扩展字段被 typed reader 误判不存在；headless `--session` 读消息时对 host 关闭 idle write half 的连接执行重连重读。
+- 真实审批 E2E 使用 host-shaped 双 socket：UI 事件流推送 `ApprovalRequest`/`ApprovalResolved`，TUI 事件驱动回读 `approvals_pending`；approve 后不乐观删除，以空列表回读为准。
+- 验证：`cargo test -p ion-tui`、`cargo test -p ion message_retrieval`、`cargo test -p ion file_index`、`tests/tui_smoke_ci.sh`（含 35 项断言：完成工具卡历史、审批实时出现/消失、SIGKILL 恢复回归）、`cargo fmt --all --check`、`cargo clippy -p ion-tui --all-targets -- -D warnings`、`docs_links_ci.sh`。

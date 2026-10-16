@@ -33,7 +33,13 @@ async fn main() {
         .filter(|v| !v.starts_with("--"))
         .cloned()
         .collect();
-    if let Err(e) = run(socket, headless, initial_attachments).await {
+    let initial_session = args
+        .iter()
+        .position(|a| a == "--session")
+        .and_then(|i| args.get(i + 1))
+        .filter(|v| !v.starts_with("--"))
+        .cloned();
+    if let Err(e) = run(socket, headless, initial_attachments, initial_session).await {
         eprintln!("ion-tui error: {e}");
         std::process::exit(1);
     }
@@ -51,6 +57,7 @@ async fn run(
     socket: PathBuf,
     headless: bool,
     initial_attachments: Vec<String>,
+    initial_session: Option<String>,
 ) -> Result<(), String> {
     let mut conn = connection::Connection::connect(&socket).await?;
     let mut app = App::new();
@@ -58,25 +65,42 @@ async fn run(
         app.add_attachment(a);
     }
     app.refresh(&mut conn).await?;
-    app.select_next(); // default: first run selected so events poll has a target
     // v0.5: build session tree before first draw; retry up to 3x because the
     // host closes idle write halves between startup RPCs.
     let mut last_err = String::new();
-    for _ in 0..5 {
-        match app.refresh_sessions(&socket).await {
-            Ok(()) => {
-                last_err.clear();
-                break;
-            }
-            Err(e) => {
-                last_err = e.clone();
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    if initial_session.is_some() {
+        app.session_cursor = Some(0);
+        app.session_rows = vec![crate::sessions::TreeRow {
+            session_id: initial_session.clone().unwrap_or_default(),
+            label: initial_session.clone().unwrap_or_default(),
+            indent: 0,
+            kind: crate::sessions::SessionKind::Root,
+            busy: false,
+            durable_active: false,
+            agent: None,
+            ctx_used: 0,
+            ctx_max: 128_000,
+            runtime_ms: 0,
+        }];
+    } else {
+        for _ in 0..5 {
+            match app.refresh_sessions(&socket).await {
+                Ok(()) => {
+                    last_err.clear();
+                    break;
+                }
+                Err(e) => {
+                    last_err = e.clone();
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
             }
         }
+        if !last_err.is_empty() {
+            return Err(last_err);
+        }
     }
-    if !last_err.is_empty() {
-        return Err(last_err);
-    }
+    app.select_next(); // default: first run selected so events/tasks have a target
+    let conversation_sid = app.selected_session_id().map(String::from);
     if let Err(e) = app.load_detail(&mut conn).await {
         if e.contains("writer closed") {
             conn = connection::Connection::connect(&socket).await?;
@@ -86,6 +110,25 @@ async fn run(
         }
     }
     app.sync_composer_from_selected();
+    // sync_composer marks the selected session as the conversation owner; only
+    // load messages when it actually changed.
+    if app.conversation_session.as_deref() == Some(conversation_sid.as_deref().unwrap_or("")) {
+        app.conversation_session = None;
+    }
+    if let Some(sid) = conversation_sid {
+        // The host closes idle write halves between RPCs; reconnect before the
+        // explicit-session conversation read instead of silently keeping the
+        // previous empty snapshot in headless mode.
+        let result = app.load_conversation(&mut conn, &sid).await;
+        let result = match result {
+            Err(e) if e.contains("writer closed") => {
+                conn = connection::Connection::connect(&socket).await?;
+                app.load_conversation(&mut conn, &sid).await
+            }
+            result => result,
+        };
+        result?;
+    }
     if let Err(e) = app.poll_events(&mut conn).await {
         if e.contains("writer closed") {
             conn = connection::Connection::connect(&socket).await?;

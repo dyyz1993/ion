@@ -23,6 +23,16 @@ ION 的错题本：复盘**已合并/已修复**的工作——返工的、不�
 
 ## TUI
 
+**按 JSON header 判断文件归属时，typed 反序列化必须宽容扩展字段，并给测试注入一个扩展字段——"能读旧 header"不等于"能读当前写出的 header"。**
+- Before, 独立会话 header 已包含 `spawnMeta`，但 `SessionHeader` 只认固定字段，`read_session_header` 反序列化失败后 host 直读把真实存在的 `<sid>.jsonl` 误判为不存在；TUI smoke 曾把根因误收敛到 SessionIndex 路径。
+- 证据：本 commit（`tests/tui_smoke_ci.sh` completed tool persisted into conversation history；`SessionHeader` flatten 扩展字段后 host `get_session_messages` 返回 `tool_card`）。
+- Seen 1× (2026-10-17)
+
+**headless 输出断言要锁语义而不是锁临时渲染形状——转成轮次折叠后，继续 grep 旧裸用户行会把已成功功能误报为失败。**
+- Before, TUI v0.12 已渲染当前轮次和持久化工具卡，但 smoke 仍期待未折叠的 `❯ user`，出现 35/1 假失败。
+- 证据：本 commit（`tests/tui_smoke_ci.sh` 改为断言 `── 当前轮次 ──` 与 `▸ [tool]`）。
+- Seen 1× (2026-10-17)
+
 **Unix socket 写半边会被 host 主动关掉，但连接还活着——写前必须容忍 BrokenPipe 并重连一次，CI 用管道喂键时尤其常见。**
 - Before, TUI 交互循环只维护一条连接，host 在空闲窗口关闭写半边后 `run.pause` 直接 Broken pipe，测试脚本以为按键没生效。
 - 证据：本 commit（`tests/tui_smoke_ci.sh` T3 7/0，覆盖断连重连后 host state=recovering）。

@@ -251,6 +251,8 @@ impl FileIndex {
             .filter(|e| {
                 let t = e.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 t == "message"
+                    || (t == "custom"
+                        && e.get("customType").and_then(|v| v.as_str()) == Some("tool_card"))
             })
             .filter_map(|e| {
                 let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -374,6 +376,9 @@ impl FileIndex {
         }
         if let Some(s) = &head.summary {
             meta["summary"] = serde_json::json!(s);
+        }
+        if let Some(c) = &head.custom_type {
+            meta["customType"] = serde_json::json!(c);
         }
         // 会话树字段透传：leafId / targetId / label（apply_view_filter 的 Live
         // 视点与 named_branches 都在 metas 上工作，缺字段 = leaf 过滤失效）

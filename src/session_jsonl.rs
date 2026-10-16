@@ -93,6 +93,10 @@ pub struct SessionHeader {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// ION 扩展字段（例如 spawnMeta）。读取路径按 JSON 判断 id 时必须容忍
+    /// 额外字段，否则新 header 会让 typed 反序列化失败、会话被误判不存在。
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Message entry (the core conversation data).
@@ -494,6 +498,7 @@ impl SessionFile {
                 agent: None,
                 model: None,
                 provider: None,
+                extra: serde_json::Map::new(),
             });
         let mut entries: Vec<serde_json::Value> = Vec::new();
 
@@ -1449,8 +1454,9 @@ pub fn message_to_entry(
 /// # Example
 ///
 /// ```no_run
-/// use std::path::Path;
-/// let count = count_entries_by_type(Path::new("/tmp/session.jsonl"), "message").unwrap();
+/// use ion::session_jsonl::count_entries_by_type;
+///
+/// let count = count_entries_by_type("/tmp/session.jsonl".as_ref(), "message").unwrap();
 /// ```
 pub fn count_entries_by_type(file_path: &Path, entry_type: &str) -> Result<usize, String> {
     let content = std::fs::read_to_string(file_path)
@@ -1498,6 +1504,7 @@ mod tests {
             agent: None,
             model: None,
             provider: None,
+            extra: serde_json::Map::new(),
         };
         SessionFile::save(cwd, &header, &[]);
     }

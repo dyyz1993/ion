@@ -152,6 +152,16 @@ impl RawEventStream {
 
 impl SessionEventStream {
     pub async fn subscribe(path: &Path, session_id: &str) -> Result<Self, String> {
+        if let Ok(event_socket) = std::env::var("ION_TUI_EVENT_SOCKET")
+            && !event_socket.is_empty()
+        {
+            return Self::subscribe_overrides(
+                path,
+                std::path::Path::new(&event_socket),
+                session_id,
+            )
+            .await;
+        }
         let session = RawEventStream::subscribe(path, Some(session_id), false).await?;
         let (event_tx, receiver) = mpsc::unbounded_channel();
         spawn_frame_pump(session, event_tx.clone(), false);
@@ -159,6 +169,22 @@ impl SessionEventStream {
         if let Some(ui) = ui {
             spawn_frame_pump(ui, event_tx, true);
         }
+        Ok(Self { receiver })
+    }
+
+    async fn subscribe_overrides(
+        rpc_path: &Path,
+        event_path: &Path,
+        session_id: &str,
+    ) -> Result<Self, String> {
+        let session = RawEventStream::subscribe(event_path, Some(session_id), false).await?;
+        let (event_tx, receiver) = mpsc::unbounded_channel();
+        spawn_frame_pump(session, event_tx.clone(), false);
+        let ui = RawEventStream::subscribe(event_path, None, true).await.ok();
+        if let Some(ui) = ui {
+            spawn_frame_pump(ui, event_tx, true);
+        }
+        let _ = rpc_path;
         Ok(Self { receiver })
     }
 

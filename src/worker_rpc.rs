@@ -1077,6 +1077,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         if ion_cfg.is_extension_enabled("streaming") {
             ext_reg.register(Box::new(StreamingExtension {
                 session_id: sid.clone(),
+                session_file: Some(session_file_path.clone()),
             }));
         } else {
             tracing::info!("[extension] streaming disabled by config");
@@ -6675,6 +6676,7 @@ impl crate::agent::tool::Tool for McpProxyTool {
 /// specific session (the bug tracked in issue #29).
 struct StreamingExtension {
     session_id: String,
+    session_file: Option<std::path::PathBuf>,
 }
 
 #[async_trait::async_trait]
@@ -6953,6 +6955,27 @@ impl crate::agent::extension::Extension for StreamingExtension {
         &self,
         ctx: &crate::agent::extension::ToolExecutionContext,
     ) -> crate::agent::error::AgentResult<()> {
+        // ToolResult message persistence happens after this hook. Persist a
+        // custom tool card marker here so a killed worker still leaves the exact
+        // streamed execution point and result for TUI/history reconstruction.
+        let path = SESSION_FILE_PATH.lock().unwrap().clone();
+        let path = path.or_else(|| self.session_file.clone());
+        if let Some(path) = path {
+            session_jsonl::append_custom_entry_to_file(
+                &path,
+                "tool_card",
+                serde_json::json!({
+                    "sessionId": self.session_id,
+                    "toolCallId": ctx.tool_call_id,
+                    "toolName": ctx.tool_name,
+                    "args": ctx.args,
+                    "isError": ctx.is_error,
+                    "durationMs": ctx.duration_ms,
+                    "resultTail": ctx.result.lines().rev().take(10).collect::<Vec<_>>(),
+                    "completed": true,
+                }),
+            );
+        }
         output(&serde_json::json!({
             "type": "event",
             "event": {

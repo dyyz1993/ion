@@ -16,7 +16,9 @@ pub struct RunListEntry {
 /// Parse the `run.list` host response envelope into display rows.
 pub fn parse_run_list(response: &serde_json::Value) -> Vec<RunListEntry> {
     let data = response.get("data").unwrap_or(&serde_json::Value::Null);
-    serde_json::from_value(data.clone()).unwrap_or_default()
+    serde_json::from_value(data.clone())
+        .or_else(|_| serde_json::from_value(response.clone()))
+        .unwrap_or_default()
 }
 
 /// Extract state from a `run.get` envelope (used by tests + headless smoke).

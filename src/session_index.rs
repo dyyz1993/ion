@@ -197,6 +197,9 @@ fn record_issue(issue: &IndexPersistIssue) {
 
 impl SessionIndex {
     pub fn path() -> PathBuf {
+        if let Ok(path) = std::env::var("ION_SESSION_INDEX") {
+            return PathBuf::from(path);
+        }
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| ".".into());
