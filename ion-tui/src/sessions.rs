@@ -20,6 +20,14 @@ pub struct SessionInfo {
     #[serde(default, alias = "messageCount")]
     #[allow(dead_code)]
     pub message_count: u32,
+    #[serde(default, alias = "tokenInput")]
+    pub token_input: u64,
+    #[serde(default, alias = "tokenOutput")]
+    pub token_output: u64,
+    #[serde(default, alias = "totalDurationMs")]
+    pub total_duration_ms: u64,
+    #[serde(default)]
+    pub agent: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,6 +47,10 @@ pub struct TreeRow {
     pub kind: SessionKind,
     pub busy: bool,
     pub durable_active: bool,
+    pub agent: Option<String>,
+    pub ctx_used: u64,
+    pub ctx_max: u64,
+    pub runtime_ms: u64,
 }
 
 fn project_of(s: &SessionInfo) -> String {
@@ -135,6 +147,10 @@ pub fn build_tree(
             kind: SessionKind::Root,
             busy: false,
             durable_active: false,
+            agent: None,
+            ctx_used: 0,
+            ctx_max: 128_000,
+            runtime_ms: 0,
         });
         let mut roots: Vec<&&SessionInfo> = members
             .iter()
@@ -168,6 +184,10 @@ pub fn build_tree(
             kind: SessionKind::Root,
             busy: false,
             durable_active: false,
+            agent: None,
+            ctx_used: 0,
+            ctx_max: 128_000,
+            runtime_ms: 0,
         });
         for s in &orphans {
             rows.push(render_session(s, 1, busy_ids, durable_active_ids));
@@ -186,6 +206,10 @@ pub fn build_tree(
             kind: SessionKind::Root,
             busy: false,
             durable_active: false,
+            agent: None,
+            ctx_used: 0,
+            ctx_max: 128_000,
+            runtime_ms: 0,
         });
         for s in systems {
             rows.push(render_session(s, 1, busy_ids, durable_active_ids));
@@ -217,6 +241,10 @@ fn render_session(
         kind: kind_of(s),
         busy: busy_ids.contains(&s.id),
         durable_active: durable_active_ids.contains(&s.id),
+        agent: s.agent.clone(),
+        ctx_used: s.token_input.saturating_add(s.token_output),
+        ctx_max: 128_000,
+        runtime_ms: s.total_duration_ms,
     }
 }
 
@@ -258,6 +286,10 @@ mod tests {
             parent_type: ptype.map(String::from),
             updated_at: 1,
             message_count: 0,
+            token_input: 0,
+            token_output: 0,
+            total_duration_ms: 0,
+            agent: None,
         }
     }
 
@@ -356,14 +388,23 @@ mod tests {
 
     #[test]
     fn badges_from_busy_and_durable_sets() {
-        let sessions = vec![sess("s1", "/p", None, None)];
         let mut busy = std::collections::HashSet::new();
         busy.insert("s1".to_string());
         let mut durable = std::collections::HashSet::new();
         durable.insert("s1".to_string());
+        let sessions = vec![SessionInfo {
+            token_input: 70_000,
+            token_output: 8_000,
+            total_duration_ms: 872_000,
+            agent: Some("build".into()),
+            ..sess("s1", "/p", None, None)
+        }];
         let rows = build_tree(&sessions, &busy, &durable);
         let row = rows.iter().find(|r| r.session_id == "s1").unwrap();
         assert!(row.busy && row.durable_active);
+        assert_eq!(row.agent.as_deref(), Some("build"));
+        assert_eq!(row.ctx_used, 78_000);
+        assert_eq!(row.runtime_ms, 872_000);
     }
 
     #[test]

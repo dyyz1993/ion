@@ -151,13 +151,44 @@ async fn tui_loop(
                                 ui::Focus::Runs => app.select_prev(),
                                 _ => {}
                             },
-                            KeyCode::Enter => {
-                                if panels.focus == ui::Focus::Sessions
-                                    && let Some(sid) = app.selected_session_id().map(String::from)
-                                    && let Err(e) = app.load_conversation(conn, &sid).await
-                                    && !e.contains("writer closed")
-                                {
-                                    app.status = e;
+                            KeyCode::Enter => match panels.focus {
+                                ui::Focus::Sessions => {
+                                    if let Some(sid) =
+                                        app.selected_session_id().map(String::from)
+                                        && let Err(e) = app.load_conversation(conn, &sid).await
+                                        && !e.contains("writer closed")
+                                    {
+                                        app.status = e;
+                                    }
+                                }
+                                ui::Focus::Conversation => {
+                                    // v0.6 composer send placeholder: validate draft,
+                                    // keep it in status until prompt RPC is wired.
+                                    if app.composer.draft.trim().is_empty() {
+                                        app.status = "composer: empty".into();
+                                    } else {
+                                        app.status =
+                                            format!("ready to send: {}", app.composer.draft);
+                                    }
+                                }
+                                _ => {}
+                            },
+                            KeyCode::Backspace => {
+                                if panels.focus == ui::Focus::Conversation {
+                                    app.composer.backspace();
+                                }
+                            }
+                            KeyCode::Char('e') if panels.focus == ui::Focus::Conversation => {
+                                // Toggle the newest history turn (0-based index len-2).
+                                let turn_count =
+                                    crate::conversation::group_turns(&app.conversation_lines).len();
+                                if turn_count >= 2 {
+                                    let idx = turn_count - 2;
+                                    if app.expanded_turns.contains(&idx) {
+                                        app.expanded_turns.remove(&idx);
+                                    } else {
+                                        app.expanded_turns.insert(idx);
+                                    }
                                 }
                             }
                             KeyCode::Char('e') => {
@@ -165,6 +196,13 @@ async fn tui_loop(
                                 if let Some(first) = app.tasks.first() {
                                     let id = first.task_id.clone();
                                     app.toggle_task(&id);
+                                }
+                            }
+                            KeyCode::Char(c)
+                                if !matches!(c, 'p' | 'r' | 'a' | 'q' | 'j' | 'k' | 'e') =>
+                            {
+                                if panels.focus == ui::Focus::Conversation {
+                                    app.composer.insert(c);
                                 }
                             }
                             KeyCode::Char('p') | KeyCode::Char('r') | KeyCode::Char('a') => {
