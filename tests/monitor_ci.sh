@@ -168,8 +168,15 @@ fi
 # worker completes quickly and exits, so list_workers may show 0 by the time
 # we check. The authoritative signal is the monitor_spawned event in the log.
 echo "--- A2: 脚本触发 worker ---"
-sleep 5
-A2_SPAWNED=$(grep -c "monitor_spawned" /tmp/mon_ci_serve.log 2>/dev/null)
+# A2: workers spawned by monitor — 轮询而非固定 sleep 5：CI 慢机上
+# serve 的 monitor 扫描线程首 tick 可能 >5s（run 38929739430 A2 假红，
+# 脚本 exit=1 at 227s 但 A2 是唯一断言红）
+A2_SPAWNED=0
+for _ in $(seq 1 20); do
+    A2_SPAWNED=$(grep -c "monitor_spawned" /tmp/mon_ci_serve.log 2>/dev/null)
+    [ "${A2_SPAWNED:-0}" -ge 1 ] 2>/dev/null && break
+    sleep 1
+done
 if [ "$A2_SPAWNED" -ge 1 ] 2>/dev/null; then
     record_pass "A2: monitor spawned worker (spawned=$A2_SPAWNED)"
 else
