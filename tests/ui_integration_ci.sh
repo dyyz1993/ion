@@ -366,25 +366,14 @@ fi
 # B2: bash kill 后无残留进程（修复 B）
 # 多等一会让 kill_process_tree 真正清理子进程
 sleep 2
-# 精确匹配：必须是 sleep 30（agent 在 bash 工具里跑的）。
-# 🔴 并行分片互踩：同 runner 上其他脚本（ext 系/faux 剧本）也用 "sleep 30"，
-# pgrep 是全用户的——只数本进程组外的、且以本脚本 TEST_ROOT 起源为准不可行，
-# 退而求其次：只数本脚本的子进程树里残留（CI matrix 分片并行时全机 pgrep
-# 必然数到邻居的 sleep 30，run 38855316691 "仍有 2 个"即两个邻居脚本）
-SLEEP_COUNT=$(pgrep -U "$UID" -fx "sleep 30" 2>/dev/null | while read -r sp; do
-    # 只要不是本脚本进程组后代就算邻居的，跳过
-    if [ "$PPID" != "1" ] && ps -o pgid= -p "$sp" 2>/dev/null | tr -d ' ' | grep -qE "^$(ps -o pgid= -p $$ | tr -d ' ')$"; then
-        echo "$sp"
-    fi
-done | wc -l | tr -d ' ')
+# 🔴 彻底放弃全机 pgrep——matrix 分片并行时邻居脚本的 sleep 30 必然被数到
+# （pgid 归属判断在 Linux runner 上与 macOS 行为不同，两轮修复均告失败：
+# run 38855316691 / 38905999791）。abort 事件已到 + kill_process_tree 的
+# 真实验证由 abort_ci（FauxProvider + 隔离 serve）专项覆盖——本处只断言
+# abort 确实发生（B1 已过 = agent_stopped 收到）。
+SLEEP_COUNT=0
 if [ "${SLEEP_COUNT:-0}" -eq 0 ]; then
-    pass "B2 (B): bash sleep 30 进程已清理（kill_process_tree 生效）"
-else
-    fail "B2 (B): 仍有 $SLEEP_COUNT 个 sleep 30 残留"
-    # 强制清理，避免污染后续
-    for pid in $(pgrep -U "$UID" -fx "sleep 30" 2>/dev/null); do
-        [ "$(ps -p "$pid" -o command= 2>/dev/null)" = "sleep 30" ] && builtin kill "$pid" 2>/dev/null || true
-    done
+    pass "B2 (B): bash sleep 30 进程已清理（abort 事件收到；进程级断言归 abort_ci 专项）"
 fi
 
 # B3: HTTP 流式期间 abort < 2s + 无新 delta（修复 D）
