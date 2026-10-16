@@ -57,6 +57,16 @@ ION 的错题本：复盘**已合并/已修复**的工作——返工的、不�
 
 ## 验证与测试
 
+**执行账本的游标语义要在 API 命名/测试里显式钉死——exclusive cursor 换成 inclusive page 时，`seq=0` 读不到新 run 的首事件；同一字段改语义必须同 commit 改调用方与验收。**
+- Before, PR1 的 `events_after(after_seq)` 先按 `seq > after_seq` 查询但 snapshot cursor 返回最后事件号，新建 run 后从 cursor=0 读取得到空页；PR3 才改为 `seq >= after_seq` 并由 `create_run_returns_transactional_snapshot_and_event` 锁住 seq 0。
+- 证据：commit `0812573`（ExecutionStore 首版）与 `61b5ac4`（RPC/事件页验收链路）；相关测试为 `execution::store::tests::create_run_returns_transactional_snapshot_and_event`。
+- Seen 1× (2026-10-16)
+
+**SQLite “重开成功”不等于账本完整——初始化会建缺失表/页，截断测试必须打在 SQLite header 上并显式 `PRAGMA quick_check`，否则只截尾部可能仍被当作可打开数据库。**
+- Before, PR6 的截断注入先移除尾部 128 字节，`ExecutionStore::open` 与 quick_check 均可通过，测试假红；改为保留前 32 字节 header 后打开/quick_check 才可靠失败。
+- 证据：commit `1b909fa`（`truncated_ledger_is_rejected_without_repair` + `quick_check`）；本条为故障注入测试的反例/返工记录。
+- Seen 1× (2026-10-16)
+
 **测试基建按真实平台约束设计（路径长度/临时目录/并发）——测试挂了先怀疑测试自身，再怀疑被测物。**
 - Before, 特征测试用长前缀+纳秒随机拼 socket 路径，超 macOS SUN_LEN 104 字节致 host bind 失败，被误报为被测物问题。
 - 证据：`bee7f80`。
