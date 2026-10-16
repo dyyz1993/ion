@@ -123,5 +123,33 @@ grep -qE 'run-tui-ci-001 .* (paused|recovering)' "$ROOT/t3.out" &&
     pass 'TUI reflected at least one write state' ||
     { fail "no write state reflected in TUI output: $(tail -5 "$ROOT/t3.out")"; }
 
+echo '[T4] TUI pause -> SIGKILL host -> restart -> scheduler auto resume -> TUI reads new state'
+rpc --method run.pause --params '{"runId":"run-tui-ci-001","reason":"tui kill recovery"}' >/dev/null
+STATE=$(rpc --method run.get --params '{"runId":"run-tui-ci-001"}')
+[ "$(jget "$STATE" 'd["data"]["state"]')" = 'paused' ] &&
+    pass 'run paused via RPC before kill' || fail "pre-kill state: $STATE"
+kill -9 "$HOST_PID"; wait "$HOST_PID" 2>/dev/null; HOST_PID=""
+sleep 0.5
+start_host recovery || { fail 'host restarts after TUI pause + SIGKILL'; tail -30 "$ROOT/recovery.log"; exit 1; }
+pass 'host restarts after SIGKILL'
+# Scheduler runs 200ms after startup; give it a window to auto-resume.
+for _ in $(seq 1 20); do
+    STATE=$(rpc --method run.get --params '{"runId":"run-tui-ci-001"}')
+    S=$(jget "$STATE" 'd["data"]["state"]')
+    [ "$S" = 'queued' ] || [ "$S" = 'recovering' ] && break
+    sleep 0.5
+done
+[ "$S" = 'queued' ] || [ "$S" = 'recovering' ] &&
+    pass 'scheduler auto-resumed paused run after restart' || fail "state after restart: $STATE"
+# Now TUI must show the new state, not the stale pre-kill snapshot.
+OUT=$(HOME="$HOME_DIR" ION_HOST_SOCKET="$ROOT/host.sock" ION_TUI_HEADLESS=1 timeout 10 "$TUI_BIN" 2>"$ROOT/tui-recovery.err")
+if echo "$OUT" | grep -qE 'run-tui-ci-001.*(queued|recovering|running)'; then
+    pass 'TUI reads post-recovery state (not stale paused)'
+else
+    fail "TUI stale after recovery: $OUT / $(cat "$ROOT/tui-recovery.err")"
+fi
+echo "$OUT" | grep -q 'sess-tui-ci-001' && pass 'session id preserved across recovery' || fail 'session id lost'
+echo "$OUT" | grep -vq 'paused' && pass 'stale paused label gone from TUI output' || fail 'stale paused still shown'
+
 printf 'PASS: %s, FAIL: %s\n' "$PASS" "$FAIL"
 test "$FAIL" -eq 0
