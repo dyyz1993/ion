@@ -181,3 +181,10 @@ ion tui
 - **继续堆 ion-web**：需要补 HTTP gateway + React 状态管理 + 样式，工作量大且偏离 CLI-first 定位。
 - **TUI 做成独立项目仓库**：失去 workspace 测试联动，发版要同步两个仓。
 - **用 egui/immediate mode**：跨平台渲染依赖重，终端场景 ratatui 更轻。
+
+## 13. v0.9 附件路径选择与运行中工具卡（已实现）
+
+- `Ctrl+A` 打开 Attach path 模态输入；Enter 确认加入附件（去重），Esc 取消；`x` 删除最后一个附件。
+- 运行中任务派生设计 F 骨架卡：spinner + tool/kind + logical key + elapsed + 输出尾部（当前为 running… 与光标），后续接入真实流即替换尾部。
+- Busy 语义保留 `Esc/s` 停止；审批卡仍优先锁定 composer。
+- 验证：`cargo test -p ion-tui` 53/0、`tests/tui_smoke_ci.sh` 34/0、`docs_links_ci.sh` 373/0；截图 `~/Downloads/ion-tui-v0.9-attachment-live.png`。

@@ -27,6 +27,8 @@ pub struct App {
     pub approvals: Vec<ApprovalCard>,
     pub approval_cursor: Option<usize>,
     pub selected_busy: bool,
+    pub attachment_picker: crate::conversation::AttachmentPicker,
+    pub live_tool: Option<crate::conversation::LiveToolCard>,
     #[allow(dead_code)]
     pub cursor: i64,
     #[allow(dead_code)]
@@ -53,6 +55,8 @@ impl App {
             approvals: Vec::new(),
             approval_cursor: None,
             selected_busy: false,
+            attachment_picker: Default::default(),
+            live_tool: None,
             cursor: 0,
             event_run_id: None,
         }
@@ -421,6 +425,20 @@ impl App {
         self.composer.ctx_max = row.ctx_max;
         self.composer.runtime_ms = row.runtime_ms;
         self.selected_busy = row.busy;
+        if let Some(task) = self
+            .tasks
+            .iter()
+            .find(|t| matches!(t.state.as_str(), "running" | "claimed" | "executing"))
+        {
+            self.live_tool = Some(crate::conversation::LiveToolCard {
+                name: task.kind.clone(),
+                command: task.logical_key.clone(),
+                output_tail: vec!["running…".into()],
+                elapsed_ms: row.runtime_ms,
+            });
+        } else {
+            self.live_tool = None;
+        }
         self.composer.child_count = usize::from(row.busy);
         self.composer.peer_count = usize::from(row.durable_active);
         self.conversation_session = Some(row.session_id.clone());
@@ -457,6 +475,20 @@ impl App {
         };
         self.turn_cursor = Some(prev);
         self.expanded_turns.insert(prev);
+    }
+
+    pub fn open_attachment_picker(&mut self) {
+        self.attachment_picker.open();
+    }
+
+    pub fn confirm_attachment_picker(&mut self) {
+        if let Some(path) = self.attachment_picker.confirm() {
+            self.add_attachment(path);
+        }
+    }
+
+    pub fn close_attachment_picker(&mut self) {
+        self.attachment_picker.close();
     }
 
     pub fn remove_last_attachment(&mut self) -> Option<String> {
@@ -620,6 +652,12 @@ impl App {
             crate::conversation::render_turns(&turns, &self.expanded_turns)
         };
         lines.extend(conversation);
+        if let Some(card) = &self.live_tool {
+            lines.extend(card.render());
+        }
+        if self.attachment_picker.open {
+            lines.push(format!("attach path: {}▊", self.attachment_picker.path));
+        }
         let attachments = if self.composer.attachments.is_empty() {
             "(none)".to_string()
         } else {
