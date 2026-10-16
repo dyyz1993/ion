@@ -115,4 +115,5 @@ pub struct ReconciliationSummary {
     pub host_epoch: i64,
     pub runs_scanned: usize,
     pub changed_attempts: usize,
+    pub auto_resumed: usize,
 }
