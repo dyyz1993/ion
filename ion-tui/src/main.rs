@@ -123,7 +123,7 @@ async fn tui_loop(
     loop {
         let _ = app.poll_events(conn).await;
         let _ = app.load_detail(conn).await;
-        let _ = app.refresh_sessions(&socket).await;
+        let _ = app.refresh_sessions(socket).await;
         terminal
             .draw(|f| ui::draw(f, app, &panels))
             .map_err(|e| format!("draw: {e}"))?;

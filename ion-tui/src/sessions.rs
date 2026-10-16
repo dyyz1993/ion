@@ -7,6 +7,8 @@ pub struct SessionInfo {
     pub id: String,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default, alias = "firstMessage")]
+    pub first_message: Option<String>,
     #[serde(default)]
     pub project: Option<String>,
     #[serde(default, alias = "parentSession")]
@@ -47,7 +49,25 @@ fn project_of(s: &SessionInfo) -> String {
 }
 
 fn label_of(s: &SessionInfo) -> String {
-    s.name.clone().unwrap_or_else(|| s.id.clone())
+    // 显示优先级：用户/Agent 生成标题(name) → 首条消息摘要 → id
+    if let Some(n) = s.name.as_deref().filter(|n| !n.is_empty()) {
+        return n.to_string();
+    }
+    if let Some(f) = s.first_message.as_deref().filter(|f| !f.is_empty()) {
+        let t = truncate_label(f);
+        return t;
+    }
+    s.id.clone()
+}
+
+fn truncate_label(s: &str) -> String {
+    let cleaned = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if cleaned.chars().count() <= 40 {
+        cleaned
+    } else {
+        let cut: String = cleaned.chars().take(40).collect();
+        format!("{cut}…")
+    }
 }
 
 fn kind_of(s: &SessionInfo) -> SessionKind {
@@ -232,12 +252,51 @@ mod tests {
         SessionInfo {
             id: id.into(),
             name: Some(id.into()),
+            first_message: None,
             project: Some(project.into()),
             parent_session: parent.map(String::from),
             parent_type: ptype.map(String::from),
             updated_at: 1,
             message_count: 0,
         }
+    }
+
+    #[test]
+    fn label_prefers_name_then_first_message_then_id() {
+        let with_name = SessionInfo {
+            name: Some("修复登录超时".into()),
+            first_message: Some("请帮我看看登录超时的问题很奇怪".into()),
+            ..sess("s1", "/p", None, None)
+        };
+        assert_eq!(label_of(&with_name), "修复登录超时");
+        let untitled = SessionInfo {
+            name: None,
+            first_message: Some(
+                "这是一个超过四十个字符宽度的首条消息样例，用于验证截断逻辑是否会在四十个字符处停下并添加省略号，确实非常长非常长非常长。".into(),
+            ),
+            ..sess("s2", "/p", None, None)
+        };
+        let l = label_of(&untitled);
+        assert!(
+            l.ends_with('…') && l.chars().count() == 41,
+            "got: {l} len={}",
+            l.chars().count()
+        );
+        let bare = SessionInfo {
+            name: None,
+            first_message: None,
+            ..sess("s3", "/p", None, None)
+        };
+        assert_eq!(label_of(&bare), "s3");
+    }
+
+    #[test]
+    fn parse_maps_first_message_alias() {
+        let resp = serde_json::json!({"data": {"sessions": [
+            {"id": "s1", "firstMessage": "帮我写个解析器", "name": null}
+        ]}});
+        let sessions = parse_sessions(&resp);
+        assert_eq!(sessions[0].first_message.as_deref(), Some("帮我写个解析器"));
     }
 
     #[test]
