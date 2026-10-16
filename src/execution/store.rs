@@ -7,8 +7,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use super::types::{
     ApprovalCheckpoint, AttemptLease, ChildRunPlan, EventPage, ExecutionCursor,
-    ReconciliationSummary, ResumeReceipt, RunSnapshot, TERMINAL_RUN_STATES, TaskSummary,
-    ToolCheckpoint, ToolOutcome,
+    ReconciliationSummary, ResumeReceipt, RunListEntry, RunSnapshot, TERMINAL_RUN_STATES,
+    TaskSummary, ToolCheckpoint, ToolOutcome,
 };
 
 const SCHEMA_VERSION: i64 = 1;
@@ -360,6 +360,25 @@ impl ExecutionStore {
             tasks: task_rows,
             actions: Default::default(),
         })
+    }
+
+    pub fn list_runs(&self, session_id: Option<&str>) -> StoreResult<Vec<RunListEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT run_id,session_id,state,version,updated_ms FROM runs \
+             WHERE (?1 IS NULL OR session_id=?1) ORDER BY updated_ms DESC LIMIT 200",
+        )?;
+        let rows = stmt
+            .query_map(params![session_id], |row| {
+                Ok(RunListEntry {
+                    run_id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    state: row.get(2)?,
+                    version: row.get(3)?,
+                    updated_ms: row.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     fn load_run(&self, run_id: &str) -> StoreResult<RunRow> {
@@ -1119,6 +1138,34 @@ mod tests {
             vec![serde_json::json!({ "runId": snap.run_id })]
         );
         assert_eq!(page.cursor.seq, 1);
+    }
+
+    #[test]
+    fn list_runs_filters_by_session_and_orders_recent_first() {
+        let (mut store, _dir) = temp_store();
+        let a = store
+            .create_run(
+                "session-a",
+                "main",
+                serde_json::json!({}),
+                serde_json::json!({}),
+            )
+            .unwrap();
+        let b = store
+            .create_run(
+                "session-b",
+                "main",
+                serde_json::json!({}),
+                serde_json::json!({}),
+            )
+            .unwrap();
+        let all = store.list_runs(None).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].run_id, b.run_id);
+        assert_eq!(all[1].run_id, a.run_id);
+        let only_a = store.list_runs(Some("session-a")).unwrap();
+        assert_eq!(only_a.len(), 1);
+        assert_eq!(only_a[0].run_id, a.run_id);
     }
 
     #[test]

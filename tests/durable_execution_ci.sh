@@ -97,6 +97,10 @@ DURABLE_APPROVALS=$(rpc --method durable_approvals_pending --params '{}')
     pass "durable approvals bridge returns explicit checkpoint status" ||
     fail "durable approvals bridge: $DURABLE_APPROVALS"
 
+RUN_LIST=$(rpc --method run.list --params '{}')
+[ "$(jget "$RUN_LIST" 'd["success"]')" = "True" ] && [ "$(jget "$RUN_LIST" 'd["data"]')" = "[]" ] &&
+    pass "run.list returns empty durable ledger" || fail "run.list: $RUN_LIST"
+
 STREAM_MISSING=$(python3 - "$SOCK" <<'PYEOF'
 import json, socket, sys
 s=socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect(sys.argv[1])
