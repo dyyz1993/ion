@@ -114,8 +114,14 @@ else
     fail "/healthz 返回异常: $HZ"
 fi
 
-# 静态首页能拿到，且包含标题
-INDEX=$(curl -sf "http://localhost:$GATEWAY_PORT/")
+# 静态首页能拿到，且包含标题（轮询：healthz OK 后静态服务仍可能慢一拍，
+# 固定单次 curl 在 CI 上偶发空响应 → "GET / 内容异常" 假红）
+INDEX=""
+for _ in $(seq 1 10); do
+    INDEX=$(curl -sf "http://localhost:$GATEWAY_PORT/" 2>/dev/null)
+    [ -n "$INDEX" ] && break
+    sleep 0.5
+done
 if echo "$INDEX" | grep -q "歌词改编工坊"; then
     pass "GET / 返回 index.html (含标题)"
 else
