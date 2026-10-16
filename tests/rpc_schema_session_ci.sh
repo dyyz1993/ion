@@ -57,7 +57,13 @@ validate_data() {
 import json, sys, jsonschema
 resp = json.load(sys.stdin)
 schema = json.load(open(sys.argv[1]))
-errs = list(jsonschema.validator_for(schema).iter_errors(resp.get("data")))
+# validator_for 是 jsonschema>=4.0 API；Ubuntu 系统 python3-jsonschema 3.x
+# 没有（CI AttributeError，run 38837892967）——回落 Draft7Validator
+try:
+    validator = jsonschema.validator_for(schema)
+except AttributeError:
+    validator = jsonschema.Draft7Validator
+errs = list(validator(schema).iter_errors(resp.get("data")))
 for e in errs:
     print(f"    schema error at {list(e.absolute_path)}: {e.message}", file=sys.stderr)
 sys.exit(1 if errs else 0)
