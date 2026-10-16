@@ -57,6 +57,16 @@ start_serve() {
     echo "$pid"
 }
 
+# 隔离会话树 + HOME（全局 export：serve 已由 start_serve 起在隔离目录，
+# 这里保证后续所有 rpc/resume/find 子进程与 serve 看到同一棵树）。
+# resume 曾因没隔离而落到真实 HOME 的 last_session 混入无关会话
+# （S1.5 挂起根因，2026-10-16）
+RB_HOME=$(mktemp -d /tmp/ion-rb-home-XXXXXX)
+mkdir -p "$RB_HOME/.ion/agent/sessions"
+export RB_HOME
+export HOME="$RB_HOME"
+export ION_SESSION_DIR="$RB_HOME/.ion/agent/sessions"
+
 # 等 session 的 agent 真正空闲——list_workers 的 Idle 与 call_tool 的 busy 门
 # 是两个状态位（Idle 后 busy 门仍拦 ~10s），故用同门只读探针
 # get_last_assistant_text：响应不含 "status":"busy" 即空闲（2026-10-16）
@@ -132,7 +142,10 @@ fi
 sleep 1
 
 # ── 验证 leaf_pointer 写入 ──
-SF1=$(find ~/.ion/agent/sessions/ -path "*$(basename $TEST_DIR)*/session.jsonl" 2>/dev/null | head -1)
+# 双文件布局：消息在 <sid>.jsonl，leaf_pointer/tree 结构在主 session.jsonl
+# （SESSION_ISOLATION 设计）——leaf 必须查主文件
+S1_DIR=$(dirname "$(find ~/.ion/agent/sessions/ -name "${SID1}.jsonl" 2>/dev/null | head -1)")
+SF1="$S1_DIR/session.jsonl"
 LEAF_COUNT=$(grep -c '"type":"leaf_pointer"' "$SF1" 2>/dev/null || echo 0)
 echo "  leaf_pointer: $LEAF_COUNT"
 [ "$LEAF_COUNT" -ge 1 ] && pass "S1.6 leaf_pointer 已写入 JSONL" || fail "S1.6 无 leaf_pointer"
@@ -234,7 +247,7 @@ SID3=$(echo "$CREATE3" | python3 -c "import json,sys;print(json.load(sys.stdin)[
 if [ -n "$SID3" ]; then
     pass "S3.0 session: $SID3"
     for i in 1 2 3; do
-        "$ION_BIN" rpc --session "$SID3" --method prompt --params "{\"text\":\"round $i\"}" >/dev/null 2>&1; sleep 0.5
+        "$ION_BIN" rpc --session "$SID3" --method prompt --params "{\"text\":\"round $i\"}" >/dev/null 2>&1; wait_idle "$SID3"
     done
     pass "S3.1 初始 3 轮完成"
 
@@ -249,10 +262,13 @@ if [ -n "$SID3" ]; then
     done
     pass "S3.2 交替完成 $CYCLES 次"
 
-    SF3=$(find ~/.ion/agent/sessions/ -path "*$(basename $TEST_DIR3)*/session.jsonl" 2>/dev/null | head -1)
-    if [ -n "$SF3" ] && [ -f "$SF3" ]; then
-        LEAFS=$(grep -c '"type":"leaf_pointer"' "$SF3" 2>/dev/null || echo 0)
-        MSGS=$(grep -c '"type":"message"' "$SF3" 2>/dev/null || echo 0)
+    # 双文件布局：leaf 查主 session.jsonl，消息查 <sid>.jsonl（S1.6 同款）
+    SF3_DIR=$(dirname "$(find ~/.ion/agent/sessions/ -name "${SID3}.jsonl" 2>/dev/null | head -1)")
+    SF3_MAIN="$SF3_DIR/session.jsonl"
+    SF3_SID=$(find ~/.ion/agent/sessions/ -name "${SID3}.jsonl" 2>/dev/null | head -1)
+    if [ -n "$SF3_SID" ] && [ -f "$SF3_SID" ]; then
+        LEAFS=$(grep -c '"type":"leaf_pointer"' "$SF3_MAIN" 2>/dev/null || echo 0)
+        MSGS=$(grep -c '"type":"message"' "$SF3_SID" 2>/dev/null || echo 0)
         echo "  JSONL: $LEAFS leaf_pointer / $MSGS message"
         [ "$LEAFS" -ge 3 ] 2>/dev/null && pass "S3.3 only-append 完整（$LEAFS leaf ≥3）" || fail "S3.3 leaf 不足（$LEAFS）"
         [ "$MSGS" -ge 3 ] 2>/dev/null && pass "S3.4 消息完整（$MSGS ≥3）" || fail "S3.4 消息数异常"
