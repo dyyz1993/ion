@@ -54,7 +54,7 @@ echo "  Approval Bridge CI — $(date)  (root=$TEST_ROOT)"
 echo "══════════════════════════════════════════════════════════"
 
 echo "[Phase 0] build"
-if ~/.cargo/bin/cargo build --bin ion >/dev/null 2>&1; then pass "build ion"; else fail "build ion"; exit 1; fi
+if cargo build --bin ion >/dev/null 2>&1; then pass "build ion"; else fail "build ion"; exit 1; fi
 [ -f "$BRIDGE_PY" ] && pass "桥脚本存在 (scripts/approval_push_bridge.py)" || fail "桥脚本缺失"
 [ -f "$BRIDGE_SH" ] && pass "sh 包装存在 (scripts/approval_push_bridge.sh)" || fail "sh 包装缺失"
 

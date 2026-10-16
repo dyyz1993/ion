@@ -35,7 +35,7 @@ printf '%s\n' '  Sandbox Policy / 审批泵 CI — '"$(date)"
 printf '%s\n' '════════════════════════════════════════════════════'
 
 echo "[Phase 0] build"
-if ~/.cargo/bin/cargo build --bin ion >/dev/null 2>&1; then pass "build ion"; else fail "build ion"; exit 1; fi
+if cargo build --bin ion >/dev/null 2>&1; then pass "build ion"; else fail "build ion"; exit 1; fi
 
 # start_host <name> — 起一台 HOME 隔离 host；沙盒池经 ION_REMOTE_WORKERS 注入
 #（两台 host 共用同一份沙盒配置：ci-auto=auto_approve+notes，ci-man=default）

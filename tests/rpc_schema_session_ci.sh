@@ -76,7 +76,7 @@ sys.exit(1 if errs else 0)
 # ── 确保 binary 存在 ──
 if [ ! -x "$ION_BIN" ]; then
   echo "ion binary missing, building..."
-  (cd "$PROJECT_DIR" && ~/.cargo/bin/cargo build --bin ion) || { echo "build failed"; exit 1; }
+  (cd "$PROJECT_DIR" && cargo build --bin ion) || { echo "build failed"; exit 1; }
 fi
 
 ensure_host || { echo "host 启动失败"; exit 1; }

@@ -52,7 +52,7 @@ start_host() {
 }
 
 echo '[build]'
-if ~/.cargo/bin/cargo build --bin ion >/dev/null 2>&1; then
+if cargo build --bin ion >/dev/null 2>&1; then
     pass 'cargo build --bin ion'
 else
     fail 'cargo build --bin ion'; exit 1

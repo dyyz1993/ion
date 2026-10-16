@@ -36,7 +36,7 @@ start_host() {
 }
 
 echo '[build]'
-~/.cargo/bin/cargo build --bin ion >/dev/null 2>&1 || { fail 'build ion'; exit 1; }
+cargo build --bin ion >/dev/null 2>&1 || { fail 'build ion'; exit 1; }
 pass 'build ion'
 
 mkdir -p "$ROOT/home/.ion" "$ROOT/project"

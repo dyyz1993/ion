@@ -47,29 +47,29 @@ echo "════════════════════════�
 
 # ── Phase 0: 构建（真实 HOME，rustup 需要工具链）──
 echo "[Phase 0] Build..."
-~/.cargo/bin/cargo build --bin ion 2>/dev/null || { echo "❌ build failed"; exit 1; }
+cargo build --bin ion 2>/dev/null || { echo "❌ build failed"; exit 1; }
 pass "build ion"
 echo ""
 
 # ── Group A: 单元测试（判死纯函数 + 泵事件活性信号 + 退出分类）──
 echo "[Group A] 单元测试（TDD 复现测试）"
 echo "---------------------------------------"
-if ~/.cargo/bin/cargo test --lib heartbeat_decision -- --test-threads=2 2>&1 | grep -q "test result: ok"; then
+if cargo test --lib heartbeat_decision -- --test-threads=2 2>&1 | grep -q "test result: ok"; then
     pass "A1 heartbeat_decision 判死阈值（Idle 180s→Stale / Busy 600s→Dead）"
 else
     fail "A1 heartbeat_decision"
 fi
-if ~/.cargo/bin/cargo test --lib test_bug1 -- --test-threads=2 2>&1 | grep -q "test result: ok"; then
+if cargo test --lib test_bug1 -- --test-threads=2 2>&1 | grep -q "test result: ok"; then
     pass "A2 Bug1：任何 stdout 事件刷新 last_heartbeat（工具期不判死）"
 else
     fail "A2 Bug1 活性信号"
 fi
-if ~/.cargo/bin/cargo test --lib test_bug2 -- --test-threads=2 2>&1 | grep -q "test result: ok"; then
+if cargo test --lib test_bug2 -- --test-threads=2 2>&1 | grep -q "test result: ok"; then
     pass "A3 Bug2：SIGKILL 信号死亡分类（不得当干净退出静默移除）"
 else
     fail "A3 Bug2 信号死亡"
 fi
-if ~/.cargo/bin/cargo test --lib test_f3 -- --test-threads=2 2>&1 | grep -q "test result: ok"; then
+if cargo test --lib test_f3 -- --test-threads=2 2>&1 | grep -q "test result: ok"; then
     pass "A4 功能3：auto_respawn_local 门禁（默认 false）"
 else
     fail "A4 功能3 门禁"

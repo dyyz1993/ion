@@ -188,7 +188,7 @@ echo "  Approval Bus CI（三合一）— $(date)  (root=$TEST_ROOT)"
 echo "══════════════════════════════════════════════════════════"
 
 echo "[Phase 0] build"
-if ~/.cargo/bin/cargo build --bin ion >/dev/null 2>&1; then pass "build ion"; else fail "build ion"; exit 1; fi
+if cargo build --bin ion >/dev/null 2>&1; then pass "build ion"; else fail "build ion"; exit 1; fi
 
 # ═══════════════════════════════════════════════════════════════
 echo ""

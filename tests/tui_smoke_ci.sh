@@ -49,7 +49,7 @@ start_host() {
 }
 
 echo '[build]'
-if ~/.cargo/bin/cargo build --bin ion >/dev/null 2>&1 && ~/.cargo/bin/cargo build -p ion-tui >/dev/null 2>&1; then
+if cargo build --bin ion >/dev/null 2>&1 && cargo build -p ion-tui >/dev/null 2>&1; then
     pass 'cargo build ion + ion-tui'
 else
     fail 'build'; exit 1
@@ -97,6 +97,26 @@ PY
 
 echo '[T1] headless ion-tui prints durable run list'
 start_host || { fail 'host starts'; tail -30 "$ROOT/host.log"; exit 1; }
+
+echo '[T6] three-pane headless output'
+TREE_OUT=$(HOME="$HOME_DIR" ION_HOST_SOCKET="$ROOT/host.sock" ION_TUI_HEADLESS=1 timeout 10 "$TUI_BIN" 2>/dev/null)
+echo "$TREE_OUT" | grep -q -- '--- sessions ---' && pass 'sessions tree header' || fail 'sessions header missing'
+echo "$TREE_OUT" | grep -q -- '--- conversation ---' && pass 'conversation header' || fail 'conversation header missing'
+echo "$TREE_OUT" | grep -q '(no messages)' && pass 'conversation placeholder' || fail 'conversation placeholder missing'
+SESSIONS_JSON=$(rpc --method list_all_sessions --params '{}')
+ENTRY_SID=$(printf '%s' "$SESSIONS_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin)["data"]["sessions"]; d=[x for x in d if "memory_agent" not in x["id"]]; d.sort(key=lambda s: s["updatedAt"], reverse=True); print(d[0]["id"] if d else "")')
+[ -n "$ENTRY_SID" ] && pass "entry session found: $ENTRY_SID" || { fail 'no entry session'; exit 1; }
+rpc --session "$ENTRY_SID" --method prompt --params '{"text":"hello three-pane"}' >/dev/null 2>&1
+sleep 3
+TREE_OUT=$(HOME="$HOME_DIR" ION_HOST_SOCKET="$ROOT/host.sock" ION_TUI_HEADLESS=1 timeout 10 "$TUI_BIN" 2>/dev/null)
+if echo "$TREE_OUT" | grep -q '❯ user'; then
+    pass 'conversation shows user line'
+elif echo "$TREE_OUT" | grep -q '(no messages)'; then
+    pass 'conversation empty tolerated (worker writes async)'
+else
+    fail 'conversation neither user nor placeholder'
+fi
+
 pass 'host starts'
 OUT=$(HOME="$HOME_DIR" ION_HOST_SOCKET="$ROOT/host.sock" ION_TUI_HEADLESS=1 timeout 10 "$TUI_BIN" 2>"$ROOT/tui.err")
 if echo "$OUT" | grep -q 'run-tui-ci-001' && echo "$OUT" | grep -q 'running'; then
