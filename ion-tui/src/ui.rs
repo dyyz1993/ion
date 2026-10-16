@@ -267,7 +267,20 @@ fn draw_conversation(f: &mut Frame, app: &App, panels: &PanelState, area: ratatu
             Style::default().fg(Color::Cyan),
         )));
     }
-    // Live tool card (design F skeleton).
+    // Completed cards stay in the history area; the latest run remains live.
+    for card in app.completed_tools.iter().rev() {
+        let lines_to_show = if app.completed_tools_expanded {
+            card.render_completed()
+        } else {
+            vec![card.completed_header()]
+        };
+        for l in lines_to_show {
+            lines.push(Line::from(Span::styled(
+                l,
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+    }
     if let Some(card) = &app.live_tool {
         for l in card.render() {
             lines.push(Line::from(Span::styled(

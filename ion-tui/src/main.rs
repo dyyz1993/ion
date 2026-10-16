@@ -138,7 +138,9 @@ async fn tui_loop(
     socket: &std::path::Path,
 ) -> Result<(), String> {
     let mut tool_stream = match app.conversation_session.clone() {
-        Some(sid) => stream::ToolEventStream::subscribe(socket, &sid).await.ok(),
+        Some(sid) => stream::SessionEventStream::subscribe(socket, &sid)
+            .await
+            .ok(),
         None => None,
     };
     let mut panels = ui::PanelState::default();
@@ -153,7 +155,9 @@ async fn tui_loop(
         if desired_stream_sid != current_stream_sid
             && let Some(sid) = desired_stream_sid
         {
-            tool_stream = stream::ToolEventStream::subscribe(socket, &sid).await.ok();
+            tool_stream = stream::SessionEventStream::subscribe(socket, &sid)
+                .await
+                .ok();
         }
         if let Some(sid) = app.selected_session_id().map(String::from)
             && app.conversation_session.as_deref() != Some(sid.as_str())
@@ -169,12 +173,16 @@ async fn tui_loop(
             _ = tick.tick() => {}
             event = async {
                 match tool_stream.as_mut() {
-                    Some(stream) => stream.next_tool_event().await,
+                    Some(stream) => stream.next_event().await,
                     None => None,
                 }
             } => {
-                if let Some(event) = event {
-                    app.apply_tool_event(event);
+                match event {
+                    Some(stream::StreamEvent::Tool(event)) => app.apply_tool_event(event),
+                    Some(stream::StreamEvent::ApprovalChanged) => {
+                        let _ = app.refresh_approvals(socket).await;
+                    }
+                    None => {}
                 }
             }
             event = crossterm_event().fuse() => {
@@ -297,10 +305,12 @@ async fn tui_loop(
                                 }
                             }
                             KeyCode::Char('e') if panels.focus == ui::Focus::Conversation => {
-                                // Toggle the newest history turn (0-based index len-2).
+                                // Prefer the just-completed tool card; otherwise toggle history.
                                 let turn_count =
                                     crate::conversation::group_turns(&app.conversation_lines).len();
-                                if turn_count >= 2 {
+                                if !app.completed_tools.is_empty() {
+                                    app.completed_tools_expanded = !app.completed_tools_expanded;
+                                } else if turn_count >= 2 {
                                     let idx = turn_count - 2;
                                     if app.expanded_turns.contains(&idx) {
                                         app.expanded_turns.remove(&idx);
@@ -683,12 +693,16 @@ mod tool_stream_state_tests {
             tool_call_id: "c".into(),
             duration_ms: 2500,
         });
-        let card = app.live_tool.unwrap();
+        let card = app.completed_tools.first().unwrap();
         assert_eq!(card.name, "bash");
         assert_eq!(card.command, "tail -f log");
         assert_eq!(card.elapsed_ms, 2500);
         assert!(card.output_tail.contains(&"first".to_string()));
         assert!(card.output_tail.contains(&"second".to_string()));
         assert!(card.output_tail.contains(&"— completed —".to_string()));
+        assert!(
+            app.render_conversation_text()
+                .contains(&format!("▸ 已完成工具 ({})", app.completed_tools.len()))
+        );
     }
 }

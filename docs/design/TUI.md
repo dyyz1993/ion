@@ -196,3 +196,12 @@ ion tui
 - 流事件按 sessionId 过滤，只作用于当前 Conversation；切换会话时重建流。
 - 定时刷新不再覆盖真实流输出；同一 running task 的实时 tail 保持。
 - 验证：`cargo test -p ion-tui` 57/0、`tests/tui_smoke_ci.sh` 34/0、`docs_links_ci.sh` 373/0；截图 `~/Downloads/ion-tui-v0.10-live-tool-stream.png`。
+
+## 15. v0.11 审批实时刷新与完成工具沉淀（已实现）
+
+- 会话工具流之外新增 UI 事件订阅；`ui_event.ui_type` 命中 `ApprovalRequest / ApprovalResolved / ApprovalRemoved / ApprovalReset / AskResolved / AskTimedOut` 时立即回读 `approvals_pending`，不做乐观删除。
+- 双路原始流分别由独立 pump 聚合到一个事件通道，避免 UI 流空闲时阻塞 session 工具事件；审批变化与工具输出都能实时进入主循环。
+- `tool_execution_end` 后的卡片写入 `completed_tools`（最多 10 张），作为历史折叠区展示；`e` 展开最近完成工具的输出尾部，运行中卡片继续保留在最新位置。
+- 快照派生的 running 占位卡只在无真实流卡片时创建，避免周期刷新把已完成的真实工具输出替换回 `running…`。
+- 截图转换使用 Menlo + Hiragino Sans GB 双字体：ASCII/线条用 Menlo，CJK 用 Hiragino，避免中文与符号在 PNG 中出现豆腐块；终端 capture 本身保持 UTF-8。
+- 验证：`cargo test -p ion-tui` 59/0、`cargo clippy -p ion-tui --all-targets -- -D warnings` 0 warning、`tests/tui_smoke_ci.sh` 34/0、`docs_links_ci.sh` 373/0；截图 `~/Downloads/ion-tui-v0.11-realtime-approval-completed-tools.png`。

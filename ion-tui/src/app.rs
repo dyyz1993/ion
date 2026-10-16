@@ -30,6 +30,9 @@ pub struct App {
     pub selected_busy: bool,
     pub attachment_picker: crate::conversation::AttachmentPicker,
     pub live_tool: Option<crate::conversation::LiveToolCard>,
+    pub completed_tools: Vec<crate::conversation::LiveToolCard>,
+    pub completed_tools_expanded: bool,
+    pub live_tool_from_snapshot: bool,
     #[allow(dead_code)]
     pub cursor: i64,
     #[allow(dead_code)]
@@ -58,6 +61,9 @@ impl App {
             selected_busy: false,
             attachment_picker: Default::default(),
             live_tool: None,
+            completed_tools: Vec::new(),
+            completed_tools_expanded: false,
+            live_tool_from_snapshot: false,
             cursor: 0,
             event_run_id: None,
         }
@@ -329,6 +335,7 @@ impl App {
                     output_tail: Vec::new(),
                     elapsed_ms: 0,
                 });
+                self.live_tool_from_snapshot = false;
             }
             ToolStreamEvent::Update { partial, .. } => {
                 if let Some(card) = &mut self.live_tool {
@@ -336,9 +343,11 @@ impl App {
                 }
             }
             ToolStreamEvent::Ended { duration_ms, .. } => {
-                if let Some(card) = &mut self.live_tool {
+                if let Some(mut card) = self.live_tool.take() {
                     card.elapsed_ms = duration_ms;
                     card.push_output("— completed —");
+                    self.completed_tools.insert(0, card);
+                    self.completed_tools.truncate(10);
                 }
             }
         }
@@ -465,11 +474,17 @@ impl App {
             .iter()
             .find(|t| matches!(t.state.as_str(), "running" | "claimed" | "executing"))
         {
+            let streamed_card = self
+                .live_tool
+                .as_ref()
+                .is_some_and(|c| c.output_tail.iter().any(|l| l != "running…"));
             let same_card = self
                 .live_tool
                 .as_ref()
                 .is_some_and(|c| c.name == task.kind && c.command == task.logical_key);
-            if !same_card {
+            if self.live_tool.is_none()
+                || (self.live_tool_from_snapshot && !same_card && !streamed_card)
+            {
                 self.live_tool = Some(crate::conversation::LiveToolCard {
                     name: task.kind.clone(),
                     command: task.logical_key.clone(),
@@ -477,6 +492,10 @@ impl App {
                     elapsed_ms: row.runtime_ms,
                 });
             }
+            self.live_tool_from_snapshot = self
+                .live_tool
+                .as_ref()
+                .is_some_and(|c| c.output_tail == vec!["running…".to_string()]);
         } else if self
             .live_tool
             .as_ref()
@@ -697,6 +716,15 @@ impl App {
             crate::conversation::render_turns(&turns, &self.expanded_turns)
         };
         lines.extend(conversation);
+        if !self.completed_tools.is_empty() {
+            lines.push(format!("▸ 已完成工具 ({})", self.completed_tools.len()));
+        }
+        for card in self.completed_tools.iter().rev() {
+            lines.push(card.completed_header());
+            if self.completed_tools_expanded {
+                lines.extend(card.output_tail.iter().map(|l| format!("  {l}")));
+            }
+        }
         if let Some(card) = &self.live_tool {
             lines.extend(card.render());
         }

@@ -658,6 +658,21 @@ impl LiveToolCard {
         out.push("  ▌".into());
         out
     }
+
+    pub fn render_completed(&self) -> Vec<String> {
+        let mut out = vec![self.completed_header()];
+        out.extend(self.output_tail.iter().map(|l| format!("  {l}")));
+        out
+    }
+
+    pub fn completed_header(&self) -> String {
+        format!(
+            "▸ [tool] {} — {} ({:.1}s)",
+            self.name,
+            self.command,
+            self.elapsed_ms as f64 / 1000.0
+        )
+    }
 }
 
 #[cfg(test)]
