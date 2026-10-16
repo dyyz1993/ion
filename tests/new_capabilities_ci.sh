@@ -27,12 +27,13 @@ if ! lsof -ti "$HOST_SOCK" &>/dev/null; then
   sleep 8
 fi
 
-# 找一个有效 session
-SID=$("$ION" rpc --method list_all_sessions 2>/dev/null | python3 -c "
+# 🔴 自建会话而非 list_all_sessions[0]——后者是 HashMap 无序遍历，d[0] 是
+# 随机会话（可能恰是别的 worker 的 Busy 会话 → approve_all 永久 busy，
+# run 38924139658 120s 轮询吃满实锤）
+SID=$("$ION" rpc --method create_session --params '{"cwd":"/tmp"}' 2>/dev/null | python3 -c "
 import json,sys
 try:
-    d=json.load(sys.stdin)['data']['sessions']
-    print(d[0]['id'] if d else '')
+    print(json.load(sys.stdin)['data']['session_id'])
 except: print('')
 ")
 
