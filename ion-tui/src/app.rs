@@ -22,6 +22,7 @@ pub struct App {
     pub conversation_lines: Vec<crate::conversation::MsgLine>,
     pub composer: crate::conversation::Composer,
     pub expanded_turns: std::collections::HashSet<usize>,
+    pub turn_cursor: Option<usize>,
     #[allow(dead_code)]
     pub cursor: i64,
     #[allow(dead_code)]
@@ -44,6 +45,7 @@ impl App {
             conversation_lines: Vec::new(),
             composer: Default::default(),
             expanded_turns: Default::default(),
+            turn_cursor: None,
             cursor: 0,
             event_run_id: None,
         }
@@ -287,6 +289,94 @@ impl App {
         self.composer.runtime_ms = row.runtime_ms;
         self.composer.child_count = usize::from(row.busy);
         self.composer.peer_count = usize::from(row.durable_active);
+        self.conversation_session = Some(row.session_id.clone());
+    }
+
+    pub fn add_attachment(&mut self, name: impl Into<String>) {
+        let name = name.into();
+        if !self.composer.attachments.contains(&name) {
+            self.composer.attachments.push(name);
+        }
+    }
+
+    pub fn turn_next(&mut self) {
+        let count = crate::conversation::group_turns(&self.conversation_lines).len();
+        if count == 0 {
+            return;
+        }
+        let next = match self.turn_cursor {
+            None => 0,
+            Some(i) => (i + 1).min(count - 1),
+        };
+        self.turn_cursor = Some(next);
+        self.expanded_turns.insert(next);
+    }
+
+    pub fn turn_prev(&mut self) {
+        let count = crate::conversation::group_turns(&self.conversation_lines).len();
+        if count == 0 {
+            return;
+        }
+        let prev = match self.turn_cursor {
+            None => count - 1,
+            Some(i) => i.saturating_sub(1),
+        };
+        self.turn_cursor = Some(prev);
+        self.expanded_turns.insert(prev);
+    }
+
+    pub fn remove_last_attachment(&mut self) -> Option<String> {
+        self.composer.attachments.pop()
+    }
+
+    /// Send the composer draft to the selected session via prompt RPC.
+    pub async fn send_draft(&mut self, socket: &std::path::Path) -> Result<(), String> {
+        async fn rpc_with_retry(
+            socket: &std::path::Path,
+            method: &str,
+            params: serde_json::Value,
+        ) -> Result<serde_json::Value, String> {
+            let mut conn = Connection::connect(socket).await?;
+            match conn.rpc(method, params.clone(), 10_000).await {
+                Ok(v) => Ok(v),
+                Err(e) if e.contains("writer closed") => {
+                    conn = Connection::connect(socket).await?;
+                    conn.rpc(method, params, 10_000).await
+                }
+                Err(e) => Err(e),
+            }
+        }
+        let Some(session_id) = self.conversation_session.clone() else {
+            return Err("select a session first".into());
+        };
+        let text = self.composer.draft.trim().to_string();
+        if text.is_empty() {
+            return Err("composer is empty".into());
+        }
+        rpc_with_retry(
+            socket,
+            "prompt",
+            serde_json::json!({
+                "session": session_id,
+                "text": text,
+                "attachments": self.composer.attachments,
+            }),
+        )
+        .await?;
+        self.composer.draft.clear();
+        self.composer.cursor = 0;
+        self.composer.attachments.clear();
+        // Reload conversation readback so the sent turn appears without optimistic state.
+        let response = rpc_with_retry(
+            socket,
+            "get_session_messages",
+            serde_json::json!({"session": session_id, "limit": 200, "view": "live"}),
+        )
+        .await?;
+        let msgs = parse_messages(&response);
+        self.conversation_lines = message_lines(&msgs, &self.expanded);
+        self.conversation_session = Some(session_id);
+        Ok(())
     }
 
     /// Load conversation for a session (get_session_messages).

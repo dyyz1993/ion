@@ -23,7 +23,15 @@ async fn main() {
     let headless = std::env::var("ION_TUI_HEADLESS")
         .map(|v| v == "1")
         .unwrap_or(false);
-    if let Err(e) = run(socket, headless).await {
+    let initial_attachments: Vec<String> = args
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| *a == "--attach")
+        .filter_map(|(i, _)| args.get(i + 1))
+        .filter(|v| !v.starts_with("--"))
+        .cloned()
+        .collect();
+    if let Err(e) = run(socket, headless, initial_attachments).await {
         eprintln!("ion-tui error: {e}");
         std::process::exit(1);
     }
@@ -37,9 +45,16 @@ fn default_socket() -> PathBuf {
     PathBuf::from(home).join(".ion").join("host.sock")
 }
 
-async fn run(socket: PathBuf, headless: bool) -> Result<(), String> {
+async fn run(
+    socket: PathBuf,
+    headless: bool,
+    initial_attachments: Vec<String>,
+) -> Result<(), String> {
     let mut conn = connection::Connection::connect(&socket).await?;
     let mut app = App::new();
+    for a in initial_attachments {
+        app.add_attachment(a);
+    }
     app.refresh(&mut conn).await?;
     app.select_next(); // default: first run selected so events poll has a target
     // v0.5: build session tree before first draw; retry up to 3x because the
@@ -124,6 +139,13 @@ async fn tui_loop(
         let _ = app.poll_events(conn).await;
         let _ = app.load_detail(conn).await;
         let _ = app.refresh_sessions(socket).await;
+        if let Some(sid) = app.selected_session_id().map(String::from)
+            && app.conversation_session.as_deref() != Some(sid.as_str())
+            && let Err(e) = app.load_conversation(conn, &sid).await
+            && !e.contains("writer closed")
+        {
+            app.status = e;
+        }
         terminal
             .draw(|f| ui::draw(f, app, &panels))
             .map_err(|e| format!("draw: {e}"))?;
@@ -144,11 +166,13 @@ async fn tui_loop(
                             KeyCode::Char('j') | KeyCode::Down => match panels.focus {
                                 ui::Focus::Sessions => app.session_cursor_next(),
                                 ui::Focus::Runs => app.select_next(),
+                                ui::Focus::Conversation => app.turn_next(),
                                 _ => {}
                             },
                             KeyCode::Char('k') | KeyCode::Up => match panels.focus {
                                 ui::Focus::Sessions => app.session_cursor_prev(),
                                 ui::Focus::Runs => app.select_prev(),
+                                ui::Focus::Conversation => app.turn_prev(),
                                 _ => {}
                             },
                             KeyCode::Enter => match panels.focus {
@@ -162,20 +186,36 @@ async fn tui_loop(
                                     }
                                 }
                                 ui::Focus::Conversation => {
-                                    // v0.6 composer send placeholder: validate draft,
-                                    // keep it in status until prompt RPC is wired.
-                                    if app.composer.draft.trim().is_empty() {
-                                        app.status = "composer: empty".into();
-                                    } else {
-                                        app.status =
-                                            format!("ready to send: {}", app.composer.draft);
-                                    }
+                                    let result = app.send_draft(socket).await;
+                                    let result = match result {
+                                        Err(e) if e.contains("writer closed") => {
+                                            *conn =
+                                                connection::Connection::connect(socket).await?;
+                                            app.send_draft(socket).await
+                                        }
+                                        result => result,
+                                    };
+                                    app.status = match result {
+                                        Ok(()) => "prompt sent".into(),
+                                        Err(e) => e,
+                                    };
                                 }
                                 _ => {}
                             },
                             KeyCode::Backspace => {
                                 if panels.focus == ui::Focus::Conversation {
                                     app.composer.backspace();
+                                }
+                            }
+                            KeyCode::Char('a') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                                if panels.focus == ui::Focus::Conversation {
+                                    // TTY file picker is v0.8; paste/current dir path mode.
+                                    app.status = "attachment picker pending (v0.8)".into();
+                                }
+                            }
+                            KeyCode::Char('x') if panels.focus == ui::Focus::Conversation => {
+                                if let Some(name) = app.remove_last_attachment() {
+                                    app.status = format!("removed attachment: {name}");
                                 }
                             }
                             KeyCode::Char('e') if panels.focus == ui::Focus::Conversation => {
@@ -233,4 +273,121 @@ async fn tui_loop(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use crate::app::App;
+    use crate::state::RunListEntry;
+
+    #[tokio::test]
+    async fn send_draft_sends_prompt_and_reloads_conversation() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        tokio::spawn(async move {
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().await.unwrap();
+                mock_prompt_host(stream).await;
+            }
+        });
+        let mut app = App::new();
+        app.runs = vec![RunListEntry {
+            run_id: "r".into(),
+            session_id: "s".into(),
+            state: "running".into(),
+            version: 1,
+            updated_ms: 0,
+        }];
+        app.conversation_session = Some("s".into());
+        app.composer.insert('h');
+        app.composer.insert('i');
+        app.composer.attach("image.png");
+        app.send_draft(&path).await.unwrap();
+        assert_eq!(app.composer.draft, "");
+        assert_eq!(app.composer.cursor, 0);
+        assert!(app.composer.attachments.is_empty());
+        assert!(
+            app.conversation_lines
+                .iter()
+                .any(|l| l.body == "hello from mock")
+        );
+    }
+
+    async fn mock_prompt_host(stream: tokio::net::UnixStream) {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let (r, mut w) = stream.into_split();
+        let mut reader = BufReader::new(r);
+        let mut prompt_seen = false;
+        let mut messages_seen = false;
+        let mut line = String::new();
+        while reader.read_line(&mut line).await.unwrap() != 0 {
+            if line.contains("\"method\":\"prompt\"") {
+                let resp = serde_json::json!({
+                    "type":"response", "id":"tui-0", "success":true, "data":null
+                });
+                w.write_all(format!("{}\n", ion_protocol::serialize_line(&resp)).as_bytes())
+                    .await
+                    .unwrap();
+                prompt_seen = true;
+            } else if line.contains("\"method\":\"get_session_messages\"") {
+                let resp = serde_json::json!({
+                    "type":"response", "id":"tui-1", "success":true,
+                    "data": {"messages": [
+                        {"message": {"role":"user", "content":"hello from mock"}}
+                    ]}
+                });
+                w.write_all(format!("{}\n", ion_protocol::serialize_line(&resp)).as_bytes())
+                    .await
+                    .unwrap();
+                messages_seen = true;
+                break;
+            }
+            line.clear();
+        }
+        w.flush().await.unwrap();
+        let _ = (prompt_seen, messages_seen);
+    }
+}
+
+#[cfg(test)]
+mod turn_navigation_tests {
+    use crate::app::App;
+    use serde_json::json;
+
+    fn app_with_turns() -> App {
+        let mut app = App::new();
+        let msgs = vec![
+            json!({"message": {"role":"user","content":"turn one"}}),
+            json!({"message": {"role":"tool","toolName":"bash","content":"done"},"id":"t1"}),
+            json!({"message": {"role":"user","content":"turn two"}}),
+        ];
+        app.conversation_lines = crate::conversation::message_lines(&msgs, &Default::default());
+        app
+    }
+
+    #[test]
+    fn turn_navigation_walks_history_and_expands_each_turn() {
+        let mut app = app_with_turns();
+        app.turn_next();
+        assert_eq!(app.turn_cursor, Some(0));
+        assert!(app.expanded_turns.contains(&0));
+        app.turn_next();
+        assert_eq!(app.turn_cursor, Some(1));
+        assert!(app.expanded_turns.contains(&1));
+        app.turn_prev();
+        assert_eq!(app.turn_cursor, Some(0));
+    }
+
+    #[test]
+    fn attachments_add_remove_and_dedupe() {
+        let mut app = App::new();
+        app.add_attachment("a.png");
+        app.add_attachment("a.png");
+        app.add_attachment("b.txt");
+        assert_eq!(app.composer.attachments, vec!["a.png", "b.txt"]);
+        assert_eq!(app.remove_last_attachment().as_deref(), Some("b.txt"));
+        assert_eq!(app.remove_last_attachment().as_deref(), Some("a.png"));
+        assert!(app.remove_last_attachment().is_none());
+    }
 }

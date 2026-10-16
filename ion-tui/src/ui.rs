@@ -128,6 +128,10 @@ pub fn draw(f: &mut Frame, app: &App, panels: &PanelState) {
     }
 
     let help = Line::from(vec![
+        Span::styled(
+            format!(" {}  ", app.status),
+            Style::default().fg(Color::Cyan),
+        ),
         Span::styled(" j/k select  ", Style::default().fg(Color::DarkGray)),
         Span::styled("Tab panel  ", Style::default().fg(Color::DarkGray)),
         Span::styled("p pause  ", Style::default().fg(Color::DarkGray)),

@@ -108,6 +108,9 @@ ENTRY_SID=$(printf '%s' "$SESSIONS_JSON" | python3 -c 'import json,sys; d=json.l
 [ -n "$ENTRY_SID" ] && pass "entry session found: $ENTRY_SID" || { fail 'no entry session'; exit 1; }
 rpc --session "$ENTRY_SID" --method prompt --params '{"text":"hello three-pane"}' >/dev/null 2>&1
 sleep 3
+TREE_OUT=$(HOME="$HOME_DIR" ION_HOST_SOCKET="$ROOT/host.sock" ION_TUI_HEADLESS=1 timeout 10 "$TUI_BIN" --attach image.png --attach logs.tar.gz 2>/dev/null)
+echo "$TREE_OUT" | grep -q '📎 image.png · logs.tar.gz' &&
+    pass 'CLI initial attachments rendered' || fail "attachments missing: $TREE_OUT"
 TREE_OUT=$(HOME="$HOME_DIR" ION_HOST_SOCKET="$ROOT/host.sock" ION_TUI_HEADLESS=1 timeout 10 "$TUI_BIN" 2>/dev/null)
 if echo "$TREE_OUT" | grep -q '❯ user'; then
     pass 'conversation shows user line'
