@@ -8,7 +8,7 @@ description = "ION CLI — Agent orchestration and AI agent loop"
 workspace = true
 
 [workspace]
-members = []
+members = ["ion-tui"]
 
 [workspace.lints.clippy]
 # async_trait 0.1.89 展开会给生成的 trait 方法加 #[must_use]，而返回的

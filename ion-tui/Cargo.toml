@@ -1,0 +1,19 @@
+[package]
+name = "ion-tui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ion-protocol = { path = "../ion-protocol" }
+ratatui = "0.30"
+crossterm = "0.29"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util", "sync", "signal"] }
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "ion-tui"
+path = "src/main.rs"
