@@ -43,6 +43,7 @@ impl PanelState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn toggle(&mut self, key: &str, running: bool) {
         if running {
             let collapse_key = format!("-{key}");
@@ -153,8 +154,25 @@ fn draw_events(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Line::from(Span::styled(l, style))
         })
         .collect();
+    let mut spans: Vec<Line> = lines;
+    if !spans.is_empty() {
+        spans.push(Line::from(""));
+    }
+    // Task detail collapse list shares this panel (below events).
+    for l in app.render_task_detail() {
+        let expanded = l.contains("(expanded)");
+        let running = l.contains("running");
+        let style = if expanded {
+            Style::default().fg(Color::Cyan)
+        } else if running {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        spans.push(Line::from(Span::styled(l, style)));
+    }
     let title = format!("Events ({} total)", app.events.len());
-    let para = Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(title));
+    let para = Paragraph::new(spans).block(Block::default().borders(Borders::ALL).title(title));
     f.render_widget(para, area);
 }
 

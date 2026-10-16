@@ -189,3 +189,143 @@ mod event_tests {
         assert!(rendered[2].contains("ev5"));
     }
 }
+
+/// Serializable task row inside a `run.get` snapshot.
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct TaskRow {
+    #[serde(alias = "taskId")]
+    pub task_id: String,
+    #[serde(alias = "logicalKey")]
+    pub logical_key: String,
+    pub kind: String,
+    pub state: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub version: i64,
+}
+
+/// Extract task rows from a `run.get` envelope.
+pub fn parse_tasks(response: &serde_json::Value) -> Vec<TaskRow> {
+    response
+        .get("data")
+        .and_then(|d| d.get("tasks"))
+        .and_then(|t| t.as_array())
+        .map(|arr| serde_json::from_value(arr.clone().into()).unwrap_or_default())
+        .unwrap_or_default()
+}
+
+/// A task collapsed-list row: expanded only when running unless toggled.
+#[derive(Clone, Debug)]
+pub struct TaskLine {
+    pub task_id: String,
+    pub logical_key: String,
+    pub kind: String,
+    pub state: String,
+    pub expanded: bool,
+}
+
+pub fn task_lines(
+    tasks: &[TaskRow],
+    expanded: &std::collections::HashSet<String>,
+) -> Vec<TaskLine> {
+    tasks
+        .iter()
+        .map(|t| {
+            let running = t.state == "running" || t.state == "claimed" || t.state == "executing";
+            let default_open = running;
+            let expanded = if default_open {
+                !expanded.contains(&format!("-{}", t.task_id))
+            } else {
+                expanded.contains(&t.task_id)
+            };
+            TaskLine {
+                task_id: t.task_id.clone(),
+                logical_key: t.logical_key.clone(),
+                kind: t.kind.clone(),
+                state: t.state.clone(),
+                expanded,
+            }
+        })
+        .collect()
+}
+
+pub fn render_task_lines(lines: &[TaskLine]) -> Vec<String> {
+    lines
+        .iter()
+        .map(|t| {
+            let arrow = if t.expanded { "v" } else { ">" };
+            if t.expanded {
+                format!(
+                    "{arrow} [{}] {} {} state={} (expanded)",
+                    t.kind, t.task_id, t.logical_key, t.state
+                )
+            } else {
+                format!(
+                    "{arrow} [{}] {} {} state={}",
+                    t.kind, t.task_id, t.logical_key, t.state
+                )
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod task_tests {
+    use super::*;
+
+    fn row(id: &str, state: &str) -> TaskRow {
+        TaskRow {
+            task_id: id.into(),
+            logical_key: format!("{id}:0"),
+            kind: "tool".into(),
+            state: state.into(),
+            version: 1,
+        }
+    }
+
+    #[test]
+    fn parse_tasks_reads_run_get_snapshot() {
+        let resp = serde_json::json!({
+            "data": {"tasks": [
+                {"taskId": "t1", "logicalKey": "k1", "kind": "tool", "state": "running", "version": 2},
+                {"taskId": "t2", "logicalKey": "k2", "kind": "tool", "state": "succeeded", "version": 3}
+            ]}
+        });
+        let tasks = parse_tasks(&resp);
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].task_id, "t1");
+        assert_eq!(tasks[1].state, "succeeded");
+    }
+
+    #[test]
+    fn running_default_expanded_others_collapsed_and_toggle_respects_state() {
+        let tasks = vec![row("t-running", "running"), row("t-done", "succeeded")];
+        let mut expanded = std::collections::HashSet::new();
+        let lines = task_lines(&tasks, &expanded);
+        assert!(lines[0].expanded, "running should default expanded");
+        assert!(!lines[1].expanded, "succeeded should default collapsed");
+
+        // Collapse the running one explicitly.
+        expanded.insert("-t-running".into());
+        let lines = task_lines(&tasks, &expanded);
+        assert!(!lines[0].expanded);
+
+        // Expand the done one explicitly.
+        expanded.remove("-t-running");
+        expanded.insert("t-done".into());
+        let lines = task_lines(&tasks, &expanded);
+        assert!(lines[0].expanded);
+        assert!(lines[1].expanded);
+    }
+
+    #[test]
+    fn render_task_lines_marks_expansion() {
+        let tasks = vec![row("t1", "running"), row("t2", "succeeded")];
+        let lines = task_lines(&tasks, &Default::default());
+        let rendered = render_task_lines(&lines);
+        assert!(rendered[0].starts_with("v "));
+        assert!(rendered[0].contains("(expanded)"));
+        assert!(rendered[1].starts_with("> "));
+        assert!(!rendered[1].contains("(expanded)"));
+    }
+}

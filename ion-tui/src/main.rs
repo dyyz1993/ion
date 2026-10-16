@@ -40,6 +40,14 @@ async fn run(socket: PathBuf, headless: bool) -> Result<(), String> {
     let mut app = App::new();
     app.refresh(&mut conn).await?;
     app.select_next(); // default: first run selected so events poll has a target
+    if let Err(e) = app.load_detail(&mut conn).await {
+        if e.contains("writer closed") {
+            conn = connection::Connection::connect(&socket).await?;
+            app.load_detail(&mut conn).await?;
+        } else {
+            return Err(e);
+        }
+    }
     if let Err(e) = app.poll_events(&mut conn).await {
         if e.contains("writer closed") {
             conn = connection::Connection::connect(&socket).await?;
@@ -85,6 +93,7 @@ async fn tui_loop(
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(1000));
     loop {
         let _ = app.poll_events(conn).await;
+        let _ = app.load_detail(conn).await;
         terminal
             .draw(|f| ui::draw(f, app, &panels))
             .map_err(|e| format!("draw: {e}"))?;
@@ -101,12 +110,10 @@ async fn tui_loop(
                             KeyCode::Char('k') | KeyCode::Up => app.select_prev(),
                             KeyCode::Tab => panels.toggle_focus(),
                             KeyCode::Char('e') => {
-                                if let Some(run_id) = app.selected_run_id() {
-                                    let running = app.runs.iter().any(|r| {
-                                        r.run_id == run_id
-                                            && (r.state == "running" || r.state == "recovering")
-                                    });
-                                    panels.toggle(run_id, running);
+                                // Toggle the first task of the selected run (detail list).
+                                if let Some(first) = app.tasks.first() {
+                                    let id = first.task_id.clone();
+                                    app.toggle_task(&id);
                                 }
                             }
                             KeyCode::Char('p') | KeyCode::Char('r') | KeyCode::Char('a') => {

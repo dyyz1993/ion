@@ -159,6 +159,25 @@ fi
 echo "$OUT" | grep -q 'sess-tui-ci-001' && pass 'session id preserved across recovery' || fail 'session id lost'
 echo "$OUT" | grep -vq 'paused' && pass 'stale paused label gone from TUI output' || fail 'stale paused still shown'
 
+echo '[T5b] task detail collapse list (running expanded, others collapsed)'
+python3 - "$DB" <<'PY'
+import json, sqlite3, sys
+db=sys.argv[1]; conn=sqlite3.connect(db)
+run_id='run-tui-ci-001'
+for tid, state, key in [('task-running-detail','running','call-running:0'),('task-done-detail','succeeded','call-done:0')]:
+    conn.execute("INSERT OR IGNORE INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?)", (
+        tid, run_id, None, key, 'tool', state, 0, 0,
+        json.dumps({}), None, '"replay_safe"'))
+conn.commit(); conn.close()
+PY
+OUT=$(HOME="$HOME_DIR" ION_HOST_SOCKET="$ROOT/host.sock" ION_TUI_HEADLESS=1 timeout 10 "$TUI_BIN" 2>/dev/null)
+echo "$OUT" | grep -q -- '--- tasks ---' &&
+    pass 'task detail panel rendered' || fail "no tasks panel: $OUT"
+echo "$OUT" | grep -q '^v \[tool\] task-running-detail.*running.*expanded' &&
+    pass 'running task defaults expanded' || fail "running task not expanded: $OUT"
+echo "$OUT" | grep -q '^> \[tool\] task-done-detail.*succeeded$' &&
+    pass 'succeeded task defaults collapsed' || fail "done task not collapsed: $OUT"
+
 echo '[T5] event stream visible in TUI output'
 # Drive one write so a run.state.changed event lands in the ledger, then poll.
 rpc --method run.pause --params '{"runId":"run-tui-ci-001","reason":"tui events"}' >/dev/null

@@ -1,7 +1,8 @@
 use crate::connection::Connection;
 use crate::input::Action;
 use crate::state::{
-    EventLine, RunListEntry, parse_event_page, parse_run_list, render_events, render_lines,
+    EventLine, RunListEntry, TaskRow, parse_event_page, parse_run_list, parse_tasks, render_events,
+    render_lines, render_task_lines, task_lines,
 };
 
 /// Headless-ish application core shared by the TUI loop and CI smoke mode.
@@ -10,6 +11,9 @@ pub struct App {
     pub selected: Option<usize>,
     pub status: String,
     pub events: Vec<EventLine>,
+    pub tasks: Vec<TaskRow>,
+    pub detail_run_id: Option<String>,
+    pub expanded: std::collections::HashSet<String>,
     #[allow(dead_code)]
     pub cursor: i64,
     #[allow(dead_code)]
@@ -23,6 +27,9 @@ impl App {
             selected: None,
             status: "ready".into(),
             events: Vec::new(),
+            tasks: Vec::new(),
+            detail_run_id: None,
+            expanded: Default::default(),
             cursor: 0,
             event_run_id: None,
         }
@@ -145,6 +152,50 @@ impl App {
         Ok(())
     }
 
+    /// Load task detail for the selected run (run.get) when selection changes.
+    pub async fn load_detail(&mut self, conn: &mut Connection) -> Result<(), String> {
+        let Some(run_id) = self.selected_run_id().map(String::from) else {
+            self.tasks.clear();
+            self.detail_run_id = None;
+            return Ok(());
+        };
+        if self.detail_run_id.as_deref() == Some(run_id.as_str()) {
+            return Ok(());
+        }
+        let resp = conn
+            .rpc("run.get", serde_json::json!({"runId": run_id}), 5000)
+            .await?;
+        self.tasks = parse_tasks(&resp);
+        self.detail_run_id = Some(run_id);
+        Ok(())
+    }
+
+    pub fn toggle_task(&mut self, task_id: &str) {
+        if self.expanded.contains(task_id) {
+            self.expanded.remove(task_id);
+        } else {
+            self.expanded.insert(task_id.to_string());
+        }
+    }
+
+    /// Whether a task is "active" for collapse defaults.
+    #[allow(dead_code)]
+    pub fn task_active(&self, task_id: &str) -> bool {
+        self.tasks.iter().any(|t| {
+            t.task_id == task_id
+                && (t.state == "running" || t.state == "claimed" || t.state == "executing")
+        })
+    }
+
+    pub fn render_task_detail(&self) -> Vec<String> {
+        if self.tasks.is_empty() {
+            return Vec::new();
+        }
+        let mut lines = vec!["--- tasks ---".into()];
+        lines.extend(render_task_lines(&task_lines(&self.tasks, &self.expanded)));
+        lines
+    }
+
     pub fn render(&self) -> Vec<String> {
         let mut lines = render_lines(&self.runs);
         lines.push(String::new());
@@ -159,6 +210,7 @@ impl App {
             lines.push("--- events ---".into());
             lines.extend(event_lines);
         }
+        lines.extend(self.render_task_detail());
         lines
     }
 }
