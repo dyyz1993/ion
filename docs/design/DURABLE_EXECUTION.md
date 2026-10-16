@@ -37,7 +37,7 @@ Recovery never means approval of unknown effects, arbitrary process revival, tok
 ## Public interface
 
 - `run.get {runId}` returns one coherent snapshot: run state, state version, task summary, cursor, blockers, and allowed actions. It never dispatches work.
-- `run.resume {runId, requestId, expectedStateVersion, recoveryPlanId?}` durably accepts a resume intent and is idempotent by `(principal, runId, requestId)`. It accepts no free prompt, tool arguments, or force flag.
+- `run.accept_resume {runId, requestId, expectedStateVersion, recoveryPlanId?}` durably accepts a resume intent and is idempotent by `(principal, runId, requestId)`. It accepts no free prompt, tool arguments, or force flag. `run.pause {runId, reason?}` and `run.resume {runId}` provide the simpler pause/resume lifecycle on top of it.
 - `events.subscribe {runId, afterCursor}` emits contiguous ledger events at least once, followed by `caught_up`; a missing notification causes a database re-read, never a silent gap.
 
 ## Automatic local scheduler

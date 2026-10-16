@@ -89,7 +89,7 @@ EVENTS=$(rpc --method events.subscribe --params '{"runId":"missing","afterCursor
 [ "$(jget "$EVENTS" 'd["success"]')" = "False" ] && pass "events.subscribe validates run" ||
     fail "events.subscribe validates run: $EVENTS"
 
-RESUME=$(rpc --method run.resume --params '{"runId":"missing","requestId":"r1","expectedStateVersion":0}')
+RESUME=$(rpc --method run.accept_resume --params '{"runId":"missing","requestId":"r1","expectedStateVersion":0}')
 [ "$(jget "$RESUME" 'd["success"]')" = "False" ] && pass "run.resume validates run" ||
     fail "run.resume validates run: $RESUME"
 DURABLE_APPROVALS=$(rpc --method durable_approvals_pending --params '{}')

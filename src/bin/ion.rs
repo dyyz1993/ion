@@ -8077,6 +8077,66 @@ async fn handle_manager_command(
                 })
                 .and_then(|runs| serde_json::to_value(runs).map_err(|e| e.to_string()))
         }
+        "run.pause" => {
+            let params = cmd.get("params").cloned().unwrap_or_default();
+            let run_id = params
+                .get("runId")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let reason = params
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("manual pause")
+                .to_string();
+            run_id
+                .ok_or_else(|| "missing 'runId' param".to_string())
+                .and_then(|run_id| {
+                    durable_execution_writer().and_then(move |writer| {
+                        writer
+                            .call(move |store| store.pause_run(&run_id, &reason))
+                            .map(|_| serde_json::json!({"paused": true}))
+                            .map_err(|e| e.to_string())
+                    })
+                })
+        }
+        "run.resume" => {
+            let params = cmd.get("params").cloned().unwrap_or_default();
+            let run_id = params
+                .get("runId")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            run_id
+                .ok_or_else(|| "missing 'runId' param".to_string())
+                .and_then(|run_id| {
+                    durable_execution_writer().and_then(move |writer| {
+                        writer
+                            .call(move |store| store.resume_run(&run_id))
+                            .map(|_| serde_json::json!({"resumed": true, "state": "recovering"}))
+                            .map_err(|e| e.to_string())
+                    })
+                })
+        }
+        "run.auto_resume" => {
+            let params = cmd.get("params").cloned().unwrap_or_default();
+            let run_id = params
+                .get("runId")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let enabled = params
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            run_id
+                .ok_or_else(|| "missing 'runId' param".to_string())
+                .and_then(|run_id| {
+                    durable_execution_writer().and_then(move |writer| {
+                        writer
+                            .call(move |store| store.set_run_auto_resume(&run_id, enabled))
+                            .map(|_| serde_json::json!({"autoResume": enabled}))
+                            .map_err(|e| e.to_string())
+                    })
+                })
+        }
         "run.project_transcripts" => durable_execution_writer().and_then(|writer| {
             let pending = writer
                 .call(|store| store.pending_transcripts())
@@ -8109,51 +8169,6 @@ async fn handle_manager_command(
             }
             Ok(serde_json::json!({ "projected": projected }))
         }),
-        "run.resume" => {
-            let params = cmd.get("params").cloned().unwrap_or_default();
-            let run_id = params
-                .get("runId")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
-            let request_id = params
-                .get("requestId")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
-            let expected_version = params.get("expectedStateVersion").and_then(|v| v.as_i64());
-            let recovery_plan_id = params
-                .get("recoveryPlanId")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
-            run_id
-                .ok_or_else(|| "missing 'runId' param".to_string())
-                .and_then(|run_id| {
-                    request_id
-                        .ok_or_else(|| "missing 'requestId' param".to_string())
-                        .and_then(move |request_id| {
-                            expected_version
-                                .ok_or_else(|| "missing 'expectedStateVersion' param".to_string())
-                                .and_then(move |expected_version| {
-                                    durable_execution_writer().and_then(move |writer| {
-                                        writer
-                                            .call(move |store| {
-                                                store.accept_resume(
-                                                    "local",
-                                                    &run_id,
-                                                    &request_id,
-                                                    expected_version,
-                                                    recovery_plan_id.as_deref(),
-                                                    &serde_json::Value::Null,
-                                                )
-                                            })
-                                            .map_err(|e| e.to_string())
-                                            .and_then(|v| {
-                                                serde_json::to_value(v).map_err(|e| e.to_string())
-                                            })
-                                    })
-                                })
-                        })
-                })
-        }
         "events.subscribe" => {
             let params = cmd.get("params").cloned().unwrap_or_default();
             let run_id = params
