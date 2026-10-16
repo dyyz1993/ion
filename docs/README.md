@@ -83,6 +83,7 @@ docs/
 | FauxProvider (LLM Mock) | [design/FAUX_PROVIDER.md](design/FAUX_PROVIDER.md) |
 | Record/Replay | [design/RECORD_REPLAY.md](design/RECORD_REPLAY.md) |
 | Crash Recovery | [design/CRASH_RECOVERY.md](design/CRASH_RECOVERY.md) |
+| Durable Execution | [design/DURABLE_EXECUTION.md](design/DURABLE_EXECUTION.md) |
 | Team 编排（agent.md 驱动） | [design/TEAM_ORCHESTRATION.md](design/TEAM_ORCHESTRATION.md) |
 | Workflow Gate（内核交付校验） | [design/WORKFLOW_GATE.md](design/WORKFLOW_GATE.md) |
 | Workflow Engine（结构化交付流水线） | [design/WORKFLOW_ENGINE.md](design/WORKFLOW_ENGINE.md) |

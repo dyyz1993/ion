@@ -804,7 +804,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     // LSP tool registration: deferred to after Agent::new (tools moved there)
     // The shared handles are set inside the extension block below
 
-    let mut agent = Agent::new(
+    let agent = Agent::new(
         Arc::clone(&registry),
         model.clone(),
         Some(initial_system_prompt),
@@ -814,6 +814,19 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     .with_runtime_arc(worker_rt.clone())
     .with_session_cwd(Some(worker_cwd.clone()))
     .with_session_id(Some(sid.clone()));
+    let mut agent = if ion_cfg.runtime.durable_execution {
+        match crate::execution::store::ExecutionStore::open_default() {
+            Ok(store) => agent.with_durable_execution(std::sync::Arc::new(
+                crate::execution::store::ExecutionWriter::spawn(store),
+            )),
+            Err(e) => {
+                tracing::error!("[worker] durable execution disabled: {e}");
+                agent
+            }
+        }
+    } else {
+        agent
+    };
 
     // INPUT_ORIGIN 消费侧①：按 origin 隐藏工具（schema 级）
     agent.set_origin_hide_tools(ion_cfg.origin_hide_tools.clone());

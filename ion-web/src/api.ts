@@ -18,8 +18,8 @@ export async function fetchInterrupted(): Promise<InterruptedSession[]> {
   return d.interrupted ?? []
 }
 
-// 一键接力：起 build worker 在断点会话上续作
-export async function resumeSession(sessionId: string, context: string): Promise<{ sessionId?: string; workerId?: string }> {
+// 明确不是持久恢复：创建新的 build worker 做接力任务
+export async function startRelayTask(sessionId: string, context: string): Promise<{ sessionId?: string; workerId?: string }> {
   const r = await fetch(BASE + "/api/create_worker", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

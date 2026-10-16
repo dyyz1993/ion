@@ -352,6 +352,7 @@
   <span class="meta">
     <span id="connState">连接中…</span>
     · <span id="gatewayHint">gateway</span>
+    · <span id="executionState">执行状态未同步</span>
   </span>
 </header>
 
@@ -451,6 +452,7 @@ let liveBuffer = "";          // 当前 agent turn 的累积文本
 let rounds = [];              // [{round, lyricText, lyricResult, verdict, reasons}]
 let runAbort = false;         // 用户中断标志
 const STREAM_ROLE = { stream: "lyricist" }; // 标记当前 stream 属于谁
+let durableRunId = null;      // 当前 durable run；断线不改变它
 
 // ---- presets / buttons ----------------------------------------------------
 document.querySelectorAll(".presets button").forEach((b) => {
@@ -469,6 +471,12 @@ function setConn(state, live = false) {
 function setStatus(text, busy = false) {
   $("status").textContent = text;
   $("status").classList.toggle("busy", busy);
+}
+
+function setExecutionState(text, live = false) {
+  const target = $("executionState");
+  target.textContent = text;
+  target.dataset.live = String(live);
 }
 function resetOutput() {
   $("placeholder").classList.remove("hidden");
@@ -498,6 +506,40 @@ async function rpc(method, params, session) {
   return json;
 }
 
+// Connection and execution state are separate: a socket failure is never shown
+// as task failure. The snapshot/cursor remains the durable source of truth.
+async function syncDurableRun(runId) {
+  durableRunId = runId || durableRunId;
+  if (!durableRunId) return null;
+  try {
+    const resp = await rpc("run.get", { runId: durableRunId });
+    const run = resp.data || {};
+    setExecutionState(`${run.state || "unknown"} · v${run.version ?? 0}`, true);
+    return run;
+  } catch (e) {
+    setExecutionState(`执行状态待确认 (${e.message})`, false);
+    return null;
+  }
+}
+
+async function resumeDurableRun(run) {
+  if (!run || !durableRunId) return;
+  const requestId = `web-${durableRunId}-${run.version ?? 0}`;
+  try {
+    setExecutionState("恢复请求待确认", false);
+    const resp = await rpc("run.resume", {
+      runId: durableRunId,
+      requestId,
+      expectedStateVersion: run.version,
+    });
+    setExecutionState(`恢复已接受 · op ${resp.data?.operationId?.slice(-8) || ""}`, true);
+  } catch (e) {
+    // Retrying a timeout must reuse this exact key; creating a new key would
+    // violate the durable resume idempotency contract.
+    setExecutionState(`恢复结果待确认 (${e.message})`, false);
+  }
+}
+
 // ---- WebSocket subscribe --------------------------------------------------
 function openStream(sid, onEvent) {
   return new Promise((resolve, reject) => {
@@ -519,6 +561,8 @@ function openStream(sid, onEvent) {
     sock.onerror = () => setConn("连接错误");
     sock.onclose = () => {
       setConn("已断开");
+      setExecutionState("执行状态待重新同步", false);
+      syncDurableRun();
       if (!subscribed) reject(new Error("ws closed before subscribe"));
     };
   });
@@ -938,7 +982,11 @@ $("runBtn").addEventListener("click", run);
 (async function init() {
   try {
     const h = await fetch("/healthz").then(r => r.json());
-    if (h.ok) { setConn("已连接 host", true); $("gatewayHint").textContent = `sock ok`; }
+    if (h.ok) {
+      setConn("已连接 host", true);
+      $("gatewayHint").textContent = `sock ok`;
+      await syncDurableRun();
+    }
   } catch { setConn("网关未就绪"); }
   refreshHistory();
 })();
