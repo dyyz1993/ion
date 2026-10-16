@@ -453,6 +453,7 @@ let rounds = [];              // [{round, lyricText, lyricResult, verdict, reaso
 let runAbort = false;         // 用户中断标志
 const STREAM_ROLE = { stream: "lyricist" }; // 标记当前 stream 属于谁
 let durableRunId = null;      // 当前 durable run；断线不改变它
+let durableWs = null;         // 独立 durable event stream
 
 // ---- presets / buttons ----------------------------------------------------
 document.querySelectorAll(".presets button").forEach((b) => {
@@ -522,6 +523,22 @@ async function syncDurableRun(runId) {
   }
 }
 
+async function bindDurableRun(runId) {
+  const run = await syncDurableRun(runId);
+  if (!run) return null;
+  if (durableWs) { try { durableWs.close(); } catch {} durableWs = null; }
+  durableWs = openDurableStream((obj) => {
+    if (obj.type === "durable_caught_up") return;
+    if (obj.type === "durable_event") {
+      setExecutionState("事件同步中", true);
+      syncDurableRun();
+    } else if (obj.type === "durable_reset_required") {
+      setExecutionState("执行状态需重置", false);
+    }
+  });
+  return run;
+}
+
 async function resumeDurableRun(run) {
   if (!run || !durableRunId) return;
   const requestId = `web-${durableRunId}-${run.version ?? 0}`;
@@ -541,6 +558,27 @@ async function resumeDurableRun(run) {
 }
 
 // ---- WebSocket subscribe --------------------------------------------------
+function openDurableStream(onEvent) {
+  if (!durableRunId) return null;
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const url = `${proto}//${location.host}/ws?runId=${encodeURIComponent(durableRunId)}`;
+  const sock = new WebSocket(url);
+  sock.onmessage = (ev) => {
+    let obj;
+    try { obj = JSON.parse(ev.data); } catch { return; }
+    if (obj.type === "gateway_subscribed") return;
+    if (obj.type === "gateway_error" || obj.type === "gateway_closed") return;
+    onEvent(obj);
+  };
+  sock.onopen = () => setConn("durable events 已连接", true);
+  sock.onclose = () => {
+    setConn("durable events 已断开");
+    setExecutionState("执行状态待重新同步", false);
+    syncDurableRun();
+  };
+  return sock;
+}
+
 function openStream(sid, onEvent) {
   return new Promise((resolve, reject) => {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -985,7 +1023,7 @@ $("runBtn").addEventListener("click", run);
     if (h.ok) {
       setConn("已连接 host", true);
       $("gatewayHint").textContent = `sock ok`;
-      await syncDurableRun();
+      await bindDurableRun(new URLSearchParams(location.search).get("runId"));
     }
   } catch { setConn("网关未就绪"); }
   refreshHistory();

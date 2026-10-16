@@ -167,6 +167,15 @@ fn durable_execution_writer() -> Result<Arc<ion::execution::store::ExecutionWrit
         .clone()
 }
 
+fn hash_approval_entry(entry: &ion::approval_bus::ApprovalEntry) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(entry.kind.as_str());
+    hasher.update(entry.summary.as_bytes());
+    hasher.update(entry.payload.to_string());
+    format!("{:x}", hasher.finalize())
+}
+
 /// 广播一条 route=ui 的 host 级事件（广播_ui_event 同款 Handle::spawn 模式；
 /// 无 tokio runtime 或未接线时静默跳过，不 panic）。
 fn broadcast_host_ui_event(custom_type: &str, data: serde_json::Value, session: Option<&str>) {
@@ -6853,6 +6862,134 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                 return;
                             }
 
+                            // ── Durable execution event stream ──
+                            // Unlike `ion rpc --method events.subscribe` (one page), this
+                            // connection mode stays open and polls contiguous ledger pages.
+                            if method == "events.subscribe" {
+                                let params = cmd.get("params").cloned().unwrap_or_default();
+                                let Some(run_id) = params
+                                    .get("runId")
+                                    .and_then(|v| v.as_str())
+                                    .map(str::to_string)
+                                else {
+                                    let resp = host_response::error(
+                                        cmd.get("id").cloned().unwrap_or_default(),
+                                        "missing 'runId' param",
+                                    );
+                                    let _ =
+                                        write_half.write_all(format!("{resp}\n").as_bytes()).await;
+                                    return;
+                                };
+                                let mut cursor = params
+                                    .get("afterCursor")
+                                    .and_then(|cursor| cursor.get("seq"))
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0);
+                                // Validate before ack so unknown runs never look streamable.
+                                {
+                                    let probe_run = run_id.clone();
+                                    if let Err(e) = durable_execution_writer().and_then(|writer| {
+                                        writer
+                                            .call(move |store| store.snapshot(&probe_run))
+                                            .map_err(|e| e.to_string())
+                                    }) {
+                                        let resp = host_response::error(
+                                            cmd.get("id").cloned().unwrap_or_default(),
+                                            e,
+                                        );
+                                        let _ = write_half
+                                            .write_all(format!("{resp}\n").as_bytes())
+                                            .await;
+                                        return;
+                                    }
+                                }
+                                let writer = match durable_execution_writer() {
+                                    Ok(writer) => writer,
+                                    Err(e) => {
+                                        let resp = host_response::error(
+                                            cmd.get("id").cloned().unwrap_or_default(),
+                                            e,
+                                        );
+                                        let _ = write_half
+                                            .write_all(format!("{resp}\n").as_bytes())
+                                            .await;
+                                        return;
+                                    }
+                                };
+                                let ack = host_response::success(
+                                    cmd.get("id").cloned().unwrap_or_default(),
+                                    serde_json::json!({
+                                        "stream": "durable_events",
+                                        "runId": run_id,
+                                        "afterCursor": cursor,
+                                    }),
+                                );
+                                if write_half
+                                    .write_all(format!("{ack}\n").as_bytes())
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                                let _ = write_half.flush().await;
+                                loop {
+                                    let page = {
+                                        let run_id = run_id.clone();
+                                        let after = cursor;
+                                        writer.call(move |store| {
+                                            store.events_after(&run_id, after, 100)
+                                        })
+                                    };
+                                    match page {
+                                        Ok(page) => {
+                                            cursor = page.cursor.seq;
+                                            for event in page.events {
+                                                let frame = serde_json::json!({
+                                                    "type": "durable_event",
+                                                    "runId": run_id,
+                                                    "cursor": cursor,
+                                                    "event": event,
+                                                });
+                                                if write_half
+                                                    .write_all(format!("{frame}\n").as_bytes())
+                                                    .await
+                                                    .is_err()
+                                                {
+                                                    return;
+                                                }
+                                            }
+                                            let caught_up = serde_json::json!({
+                                                "type": "durable_caught_up",
+                                                "runId": run_id,
+                                                "cursor": cursor,
+                                            });
+                                            if write_half
+                                                .write_all(format!("{caught_up}\n").as_bytes())
+                                                .await
+                                                .is_err()
+                                            {
+                                                return;
+                                            }
+                                            let _ = write_half.flush().await;
+                                        }
+                                        Err(e) => {
+                                            let frame = serde_json::json!({
+                                                "type": "durable_reset_required",
+                                                "runId": run_id,
+                                                "cursor": cursor,
+                                                "error": e.to_string(),
+                                            });
+                                            let _ = write_half
+                                                .write_all(format!("{frame}\n").as_bytes())
+                                                .await;
+                                            let _ = write_half.flush().await;
+                                            return;
+                                        }
+                                    }
+                                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                                }
+                            }
+
                             // ── RPC mode（以下为现有逻辑：session 转发 + 等响应）──
                             let session = cmd
                                 .get("session")
@@ -7695,6 +7832,50 @@ async fn handle_manager_command(
                 "requests": requests,
                 "pending": requests,
             }))
+        }
+        "durable_approvals_pending" => {
+            let session_filter = cmd
+                .get("params")
+                .and_then(|p| p.get("session"))
+                .or_else(|| cmd.get("session"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let entries: Vec<_> = ApprovalBus::global()
+                .pending()
+                .into_iter()
+                .filter(|e| session_filter.is_empty() || e.session_id == session_filter)
+                .collect();
+            durable_execution_writer()
+                .and_then(|writer| {
+                    writer
+                        .call(move |store| {
+                            let mut rows = Vec::new();
+                            for entry in entries {
+                                if let Some(run_id) =
+                                    entry.payload.get("durableRunId").and_then(|v| v.as_str())
+                                {
+                                    if let Some(task_id) =
+                                        entry.payload.get("durableTaskId").and_then(|v| v.as_str())
+                                    {
+                                        rows.push(store.checkpoint_approval(
+                                            run_id,
+                                            &ion::execution::types::ApprovalCheckpoint {
+                                                approval_id: entry.id.clone(),
+                                                task_id: task_id.to_string(),
+                                                action_digest: hash_approval_entry(&entry),
+                                                generation: store.snapshot(run_id)?.generation,
+                                                policy_version: "v1".into(),
+                                            },
+                                        )?);
+                                    }
+                                }
+                            }
+                            Ok(())
+                        })
+                        .map_err(|e| e.to_string())
+                })
+                .map(|_| serde_json::json!({ "checkpointed": true }))
         }
         "approval_respond" => {
             // 统一应答入口（单一路由）：host ui_ask oneshot / worker ask_respond /

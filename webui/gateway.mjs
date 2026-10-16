@@ -215,11 +215,13 @@ wss.on("connection", (ws, req) => {
   const url = new URL(req.url, "http://x");
   const session = url.searchParams.get("session") || "";
   const extension = url.searchParams.get("extension") || "";
+  const runId = url.searchParams.get("runId") || "";
   const ui = url.searchParams.get("ui") === "1" || url.searchParams.get("ui") === "true";
 
   const sub = { method: "subscribe" };
   if (session) sub.session = session;
   if (extension) sub.extension = extension;
+  if (runId) sub.params = { runId: decodeURIComponent(runId) };
   if (ui) sub.ui = true;
 
   let sock;
