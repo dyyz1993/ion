@@ -14,6 +14,15 @@ ION 的错题本：复盘**已合并/已修复**的工作——返工的、不�
 
 ---
 
+## Durable execution
+
+**把 fork/exec 相关配置放进显式请求对象，不在异步 spawn 调用返回后修改进程全局环境——子进程可能已经启动，全局 env 是竞态且会污染并发任务。**
+- Before, durable scheduler 先 `prepare_worker_spawn()`，再设置 `ION_DURABLE_RUN_ID_FOR_SPAWN`，最后注册 prepared worker。但 `prepare_worker_spawn` 的职责就是完成 fork/exec；迟到 env 根本不会进入已启动 child，多 run 并发时还会串值。
+- 证据：本 commit（`tests/durable_scheduler_ci.sh` 连续两轮 13/0，覆盖原 run/session 恢复与 unsafe 不派发）。
+- Seen 1× (2026-10-16)
+
+## Moved to the code standards
+
 ## 修复要断根
 
 **改取消/暂停类共享通道前，先 grep 全库确认语义闭环——有置位必有复位，有 send 必有消费。**

@@ -176,6 +176,64 @@ fn hash_approval_entry(entry: &ion::approval_bus::ApprovalEntry) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+async fn resume_durable_runs(
+    registry: &Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>>,
+) {
+    use ion::worker_registry::{WorkerCreateConfig, WorkerRelation};
+
+    let Ok(writer) = durable_execution_writer() else {
+        return;
+    };
+    let runs = match writer.call(|store| store.resumable_runs()) {
+        Ok(runs) => runs,
+        Err(e) => {
+            tracing::warn!("[durable-scheduler] resumable run scan failed: {e}");
+            return;
+        }
+    };
+    for run in runs {
+        let existing = {
+            let reg = registry.lock();
+            reg.workers
+                .values()
+                .any(|record| record.session_id == run.session_id)
+        };
+        if existing {
+            continue;
+        }
+        let cfg = WorkerCreateConfig {
+            session: Some(run.session_id.clone()),
+            relation: Some(WorkerRelation::Child),
+            initial_prompt: Some(format!(
+                "继续执行持久任务 {run_id}。基于既有会话与已完成工具结果继续，不要重复已经执行过的副作用；若无法确认某个外部操作是否已发生，请停止并说明需要人工确认。使用原始输入和会话历史恢复。",
+                run_id = run.run_id,
+            )),
+            input_origin: Some("system".into()),
+            skip_mcp: Some("stdio".into()),
+            durable_run_id: Some(run.run_id.clone()),
+            ..Default::default()
+        };
+        match ion::worker_registry::WorkerRegistry::prepare_worker_spawn(&cfg).await {
+            Ok(prepared) => {
+                let mut reg = registry.lock();
+                match reg.register_prepared_worker(prepared, &cfg, registry) {
+                    Ok(info) => {
+                        tracing::info!(
+                            "[durable-scheduler] resumed {} as worker {}",
+                            run.run_id,
+                            info.worker_id
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!("[durable-scheduler] register resume failed: {e}");
+                    }
+                }
+            }
+            Err(e) => tracing::warn!("[durable-scheduler] spawn resume failed: {e}"),
+        }
+    }
+}
+
 /// 广播一条 route=ui 的 host 级事件（广播_ui_event 同款 Handle::spawn 模式；
 /// 无 tokio runtime 或未接线时静默跳过，不 panic）。
 fn broadcast_host_ui_event(custom_type: &str, data: serde_json::Value, session: Option<&str>) {
@@ -6308,6 +6366,14 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
     let post_init_registry = Arc::clone(&registry);
     tokio::spawn(async move {
         ion::worker_registry::WorkerRegistry::post_init_singletons(&post_init_registry).await;
+    });
+
+    // Durable scheduler: resume persisted safe runs only after the process-local
+    // environment is isolated; the explicit variable scopes binding to this spawn.
+    let scheduler_registry = Arc::clone(&registry);
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        resume_durable_runs(&scheduler_registry).await;
     });
 
     // ── Host 单例检查 + Unix socket 启动（安全加固 G1）──

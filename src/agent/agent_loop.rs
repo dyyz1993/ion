@@ -307,6 +307,14 @@ impl Agent {
         self.durable_run_id.as_deref()
     }
 
+    pub fn durable_store_handle(&self) -> Option<Arc<crate::execution::store::ExecutionWriter>> {
+        self.durable_store.clone()
+    }
+
+    pub fn set_durable_run_id(&mut self, run_id: String) {
+        self.durable_run_id = Some(run_id);
+    }
+
     async fn checkpoint_tool_batch(
         &mut self,
         tool_calls: &[ion_provider::types::ToolCall],
@@ -1185,6 +1193,21 @@ impl Agent {
 
         let result = self.outer_loop().await;
         self.running = false;
+        if let (Some(run_id), Some(store)) =
+            (self.durable_run_id.clone(), self.durable_store.clone())
+        {
+            let terminal_state = if result.is_ok() {
+                "succeeded"
+            } else {
+                "failed"
+            };
+            let reason = result.as_ref().err().map(|e| e.to_string());
+            if let Err(e) =
+                store.call(move |s| s.set_run_state(&run_id, terminal_state, reason.as_deref()))
+            {
+                tracing::error!("failed to finalize durable run state: {e}");
+            }
+        }
 
         let ctx = self.build_ctx();
         self.extensions.on_agent_end(&ctx).await?;

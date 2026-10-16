@@ -828,6 +828,24 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         agent
     };
 
+    // Re-bind a worker to an existing durable run. The scheduler injects
+    // ION_DURABLE_RUN_ID when it restarts a session; normal new workers leave it unset.
+    if let Ok(existing_run) = std::env::var("ION_DURABLE_RUN_ID")
+        && let Some(writer) = agent.durable_store_handle()
+    {
+        let snap = writer
+            .call(move |store| store.snapshot(&existing_run))
+            .map_err(|e| {
+                tracing::error!("[worker] durable run rebind failed: {e}");
+                e
+            })
+            .ok();
+        if let Some(snap) = snap {
+            tracing::info!("[worker] rebound durable run {}", snap.run_id);
+            agent.set_durable_run_id(snap.run_id);
+        }
+    }
+
     // INPUT_ORIGIN 消费侧①：按 origin 隐藏工具（schema 级）
     agent.set_origin_hide_tools(ion_cfg.origin_hide_tools.clone());
 

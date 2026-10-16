@@ -40,6 +40,12 @@ Recovery never means approval of unknown effects, arbitrary process revival, tok
 - `run.resume {runId, requestId, expectedStateVersion, recoveryPlanId?}` durably accepts a resume intent and is idempotent by `(principal, runId, requestId)`. It accepts no free prompt, tool arguments, or force flag.
 - `events.subscribe {runId, afterCursor}` emits contiguous ledger events at least once, followed by `caught_up`; a missing notification causes a database re-read, never a silent gap.
 
+## Automatic local scheduler
+
+When durable execution is enabled, host startup opens and reconciles the ledger before RPC dispatch is accepted. `resumable_runs()` selects only `queued` and `recovering` runs. The scheduler skips a session that already has a live worker, otherwise it spawns a local Child worker with the original `sessionId`, a system-origin continuation prompt, and an explicit `durable_run_id`. The run ID is passed through `WorkerCreateConfig` into `ION_DURABLE_RUN_ID`; callers must not set a process-global environment variable after `prepare_worker_spawn`, because the child process may already have been forked.
+
+The resumed worker reopens the same ledger, snapshots and binds the exact run, and executes a normal Faux-or-real provider turn with transactional tool checkpoints. A successful turn marks the run `succeeded`; an error marks it `failed` with the error reason. The v5 scheduler is intentionally local-only; remote hosts and durable child graphs remain blocked.
+
 ## Iterations
 
 1. **PR0 - Contract cleanup:** approve this boundary, reserve stable API/state names, and rename the existing Web action to “new relay task” so it no longer claims durable recovery.
@@ -52,4 +58,4 @@ Recovery never means approval of unknown effects, arbitrary process revival, tok
 
 ## CLI verification
 
-Automated verification is `tests/durable_execution_ci.sh`. PR3 exposes host-level `run.get`, `run.resume`, and paginated `events.subscribe`; host startup initializes the ledger and performs epoch reconciliation. Current subscription RPC returns a durable event page and is a pull substrate for the PR4 live subscriber; clients must not infer execution state from socket liveness. PR1/PR2 store tests remain the transaction/recovery source of truth. Real-LLM cases are ignored unless `ION_E2E=1`.
+Automated verification is `tests/durable_execution_ci.sh`. PR3 exposes host-level `run.get`, `run.resume`, and paginated `events.subscribe`; host startup initializes the ledger and performs epoch reconciliation. Current subscription RPC returns a durable event page and is a pull substrate for the PR4 live subscriber; clients must not infer execution state from socket liveness. `tests/durable_scheduler_ci.sh` performs the v5 real-process gate: seed a replay-safe interrupted read, start host, SIGKILL only the script-owned host PID, restart, verify the original run/session converges to `succeeded`, verify exactly one `tool.completed` event, then seed an unsafe interrupted shell effect and verify it becomes `blocked`/`uncertain_tool_effect` and is never dispatched. PR1/PR2 store tests remain the transaction/recovery source of truth. Real-LLM cases are ignored unless `ION_E2E=1`.
