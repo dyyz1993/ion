@@ -21,6 +21,13 @@ ION 的错题本：复盘**已合并/已修复**的工作——返工的、不�
 - 证据：本 commit（`tests/durable_scheduler_ci.sh` 连续两轮 13/0，覆盖原 run/session 恢复与 unsafe 不派发）。
 - Seen 1× (2026-10-16)
 
+## TUI
+
+**Unix socket 写半边会被 host 主动关掉，但连接还活着——写前必须容忍 BrokenPipe 并重连一次，CI 用管道喂键时尤其常见。**
+- Before, TUI 交互循环只维护一条连接，host 在空闲窗口关闭写半边后 `run.pause` 直接 Broken pipe，测试脚本以为按键没生效。
+- 证据：本 commit（`tests/tui_smoke_ci.sh` T3 7/0，覆盖断连重连后 host state=recovering）。
+- Seen 1× (2026-10-16)
+
 ## Moved to the code standards
 
 ## 修复要断根
