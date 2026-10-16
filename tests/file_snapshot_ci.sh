@@ -587,7 +587,10 @@ if (
         -p "create the snapshot proof file" > "$DIRECT_LOG" 2>&1
 ); then
     DIRECT_BASE=$(basename "$DIRECT_DIR")
-    DIRECT_SESSION=$(find "$FS_HOME/.ion/agent/sessions" -path "*${DIRECT_BASE}*" -name '*.jsonl' -type f 2>/dev/null | head -1)
+    # 🔴 精确匹配顶层 <sid>.jsonl——裸 find 会先命中 session 子目录里的
+    # data/memory/transcript/input.jsonl（r41 自曝实锤：DIRECT_SESSION 指到
+    # memory 内部文件，snapshot 数 0 但 CLI 输出显示快照实际工作）
+    DIRECT_SESSION=$(find "$FS_HOME/.ion/agent/sessions" -path "*${DIRECT_BASE}*/*" -maxdepth 4 -name '*.jsonl' -type f 2>/dev/null | grep -v '/data/' | head -1)
     if [ -n "$DIRECT_SESSION" ] && python3 - "$DIRECT_SESSION" <<'PY'
 import json, sys
 entries = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
