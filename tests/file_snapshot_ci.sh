@@ -620,6 +620,11 @@ PY
             fail "K8: JSONL snapshot/摘要契约错误"
     else
         fail "K6: 直接 CLI session 缺少合法 parented step-snapshot"
+        # 自曝现场：snapshot 计数 + entry 类型分布 + CLI 输出尾（CI 定位用）
+        echo "      ── DIRECT_SESSION=$DIRECT_SESSION"
+        grep -c '"customType":"step-snapshot"' "$DIRECT_SESSION" 2>/dev/null | sed 's/^/      snapshot数: /'
+        grep -oE '"type":"[a-z_]+"' "$DIRECT_SESSION" 2>/dev/null | sort | uniq -c | sed 's/^/      /'
+        echo "      ── CLI 输出尾 ──"; tail -6 "$DIRECT_LOG" 2>/dev/null | sed 's/^/      /'
         skip "K7-K8: K6 未形成可验证 session"
     fi
 else
