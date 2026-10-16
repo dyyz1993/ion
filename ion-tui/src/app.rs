@@ -20,6 +20,8 @@ pub struct App {
     pub session_cursor: Option<usize>,
     pub conversation_session: Option<String>,
     pub conversation_lines: Vec<crate::conversation::MsgLine>,
+    pub composer: crate::conversation::Composer,
+    pub expanded_turns: std::collections::HashSet<usize>,
     #[allow(dead_code)]
     pub cursor: i64,
     #[allow(dead_code)]
@@ -40,6 +42,8 @@ impl App {
             session_cursor: None,
             conversation_session: None,
             conversation_lines: Vec::new(),
+            composer: Default::default(),
+            expanded_turns: Default::default(),
             cursor: 0,
             event_run_id: None,
         }
@@ -204,6 +208,7 @@ impl App {
                 busy.len()
             );
         }
+        self.sync_composer_from_selected();
         if self.session_cursor.is_none() && !self.session_rows.is_empty() {
             // First selectable (non-group) row.
             self.session_cursor = self
@@ -265,6 +270,23 @@ impl App {
             .and_then(|i| self.session_rows.get(i))
             .filter(|r| !r.session_id.starts_with("group:"))
             .map(|r| r.session_id.as_str())
+    }
+
+    /// Update composer metadata from the selected session card.
+    pub fn sync_composer_from_selected(&mut self) {
+        let Some(row) = self
+            .session_cursor
+            .and_then(|i| self.session_rows.get(i))
+            .filter(|r| !r.session_id.starts_with("group:"))
+        else {
+            return;
+        };
+        self.composer.model = "glm-5.2".into();
+        self.composer.ctx_used = row.ctx_used;
+        self.composer.ctx_max = row.ctx_max;
+        self.composer.runtime_ms = row.runtime_ms;
+        self.composer.child_count = usize::from(row.busy);
+        self.composer.peer_count = usize::from(row.durable_active);
     }
 
     /// Load conversation for a session (get_session_messages).
@@ -363,10 +385,32 @@ impl App {
     }
 
     pub fn render_conversation_text(&self) -> Vec<String> {
-        if self.conversation_lines.is_empty() {
-            return vec!["(no messages)".into()];
-        }
-        crate::conversation::render_lines(&self.conversation_lines)
+        let mut lines = if self.conversation_lines.is_empty() {
+            vec!["(no messages)".into()]
+        } else {
+            let turns = crate::conversation::group_turns(&self.conversation_lines);
+            crate::conversation::render_turns(&turns, &self.expanded_turns)
+        };
+        let attachments = if self.composer.attachments.is_empty() {
+            "(none)".to_string()
+        } else {
+            self.composer.attachments.join(" · ")
+        };
+        lines.push(format!("📎 {attachments}"));
+        lines.push(format!("input: {}▊", self.composer.draft));
+        let p = self.composer.ctx_percent();
+        lines.push(format!(
+            "{} · ctx {} {}% ({}/{}) · {}ms · 子{} · 同{}",
+            self.composer.model,
+            self.composer.ctx_bar(10),
+            p,
+            self.composer.ctx_used,
+            self.composer.ctx_max,
+            self.composer.runtime_ms,
+            self.composer.child_count,
+            self.composer.peer_count
+        ));
+        lines
     }
 
     pub fn render(&self) -> Vec<String> {

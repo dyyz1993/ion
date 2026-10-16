@@ -142,35 +142,67 @@ pub fn draw(f: &mut Frame, app: &App, panels: &PanelState) {
 fn draw_sessions(f: &mut Frame, app: &App, panels: &PanelState, area: ratatui::layout::Rect) {
     let focused = panels.focus == Focus::Sessions;
     let title = if focused { "Sessions ◆" } else { "Sessions" };
-    let lines: Vec<Line> = app
-        .session_rows
-        .iter()
-        .enumerate()
-        .map(|(i, r)| {
-            let cursor = if panels.focus == Focus::Sessions && app.session_cursor == Some(i) {
-                Span::styled("> ", Style::default().fg(Color::Cyan))
-            } else {
-                Span::raw("  ")
-            };
-            let mut spans = vec![
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, r) in app.session_rows.iter().enumerate() {
+        let cursor = if focused && app.session_cursor == Some(i) {
+            Span::styled("> ", Style::default().fg(Color::Cyan))
+        } else {
+            Span::raw("  ")
+        };
+        if r.session_id.starts_with("group:") {
+            lines.push(Line::from(vec![
                 cursor,
-                Span::raw("  ".repeat(r.indent)),
-                Span::raw(r.label.clone()),
-            ];
-            if r.busy {
-                spans.push(Span::styled(" ●", Style::default().fg(Color::Green)));
-            }
-            if r.durable_active {
-                spans.push(Span::styled(" ◐", Style::default().fg(Color::Yellow)));
-            }
-            let style = if r.kind == crate::sessions::SessionKind::Peer {
-                Style::default().fg(Color::DarkGray)
-            } else {
-                Style::default()
-            };
-            Line::from(spans).style(style)
-        })
-        .collect();
+                Span::styled(
+                    r.label.clone(),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            continue;
+        }
+        let badge = r
+            .agent
+            .clone()
+            .map(|a| format!("[{a}] "))
+            .unwrap_or_default();
+        let pct = if r.ctx_max == 0 {
+            0
+        } else {
+            u64::div_ceil(r.ctx_used * 100, r.ctx_max)
+        };
+        let status = format!(
+            "ctx {}% · {}s · 子{} 同{}",
+            pct,
+            r.runtime_ms / 1000,
+            usize::from(r.busy),
+            usize::from(r.durable_active)
+        );
+        let status_style = if pct > 85 {
+            Style::default().fg(Color::Red)
+        } else if pct > 60 {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        let mut spans = vec![
+            cursor,
+            Span::raw("  ".repeat(r.indent)),
+            Span::styled(badge, Style::default().fg(Color::Magenta)),
+            Span::raw(r.label.clone()),
+        ];
+        if r.busy {
+            spans.push(Span::styled(" ●", Style::default().fg(Color::Green)));
+        }
+        if r.durable_active {
+            spans.push(Span::styled(" ◐", Style::default().fg(Color::Yellow)));
+        }
+        lines.push(Line::from(spans));
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled(status, status_style),
+        ]));
+    }
     let para = Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(title));
     f.render_widget(para, area);
 }
@@ -181,11 +213,14 @@ fn draw_conversation(f: &mut Frame, app: &App, panels: &PanelState, area: ratatu
         Some(sid) => format!("Conversation ◆ {sid}"),
         None => "Conversation (select a session)".into(),
     };
-    let title = if focused {
-        format!("◆ {title}")
-    } else {
-        title
-    };
+    let rows = Layout::vertical([
+        Constraint::Min(3),
+        Constraint::Length(1), // attachments
+        Constraint::Length(3), // composer
+        Constraint::Length(1), // context status
+    ])
+    .split(area);
+
     let mut lines: Vec<Line> = Vec::new();
     if app.conversation_lines.is_empty() {
         lines.push(Line::from(Span::styled(
@@ -193,15 +228,16 @@ fn draw_conversation(f: &mut Frame, app: &App, panels: &PanelState, area: ratatu
             Style::default().fg(Color::DarkGray),
         )));
     } else {
-        for l in crate::conversation::render_lines(&app.conversation_lines) {
-            let style = if l.starts_with("❯") {
+        let turns = crate::conversation::group_turns(&app.conversation_lines);
+        for l in crate::conversation::render_turns(&turns, &app.expanded_turns) {
+            let style = if l.contains("历史轮次") || l.starts_with("  ▸ 第") {
+                Style::default().fg(Color::DarkGray)
+            } else if l.starts_with("❯") {
                 Style::default()
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD)
-            } else if l.starts_with("▸") {
+            } else if l.starts_with("▸") || l.starts_with("▾") {
                 Style::default().fg(Color::Yellow)
-            } else if l.starts_with('·') {
-                Style::default().fg(Color::DarkGray)
             } else {
                 Style::default()
             };
@@ -215,7 +251,65 @@ fn draw_conversation(f: &mut Frame, app: &App, panels: &PanelState, area: ratatu
         )));
     }
     let para = Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(title));
-    f.render_widget(para, area);
+    f.render_widget(para, rows[0]);
+
+    // Attachments row.
+    let attach_text = if app.composer.attachments.is_empty() {
+        "(no attachments)".to_string()
+    } else {
+        app.composer
+            .attachments
+            .iter()
+            .map(|a| format!("📎 {a}"))
+            .collect::<Vec<_>>()
+            .join(" · ")
+    };
+    f.render_widget(
+        Paragraph::new(attach_text).style(Style::default().fg(Color::DarkGray)),
+        rows[1],
+    );
+
+    // Composer: bordered box with a visible cursor block.
+    let draft = format!("{}▊", app.composer.draft);
+    let composer_title = if focused {
+        " Message ◆ "
+    } else {
+        " Message "
+    };
+    let composer_style = if focused {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let composer = Paragraph::new(draft)
+        .block(Block::default().borders(Borders::ALL).title(composer_title))
+        .style(composer_style);
+    f.render_widget(composer, rows[2]);
+
+    // Context/model/runtime strip.
+    let ctx = app.composer.ctx_percent();
+    let ctx_color = if ctx > 85 {
+        Color::Red
+    } else if ctx > 60 {
+        Color::Yellow
+    } else {
+        Color::Green
+    };
+    let status = format!(
+        "{} · ctx {} {}% ({}/{}) · {}ms · 子{} · 同{}",
+        app.composer.model,
+        app.composer.ctx_bar(10),
+        ctx,
+        app.composer.ctx_used,
+        app.composer.ctx_max,
+        app.composer.runtime_ms,
+        app.composer.child_count,
+        app.composer.peer_count
+    );
+    f.render_widget(
+        Paragraph::new(status).style(Style::default().fg(ctx_color)),
+        rows[3],
+    );
 }
 
 fn draw_runs(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {

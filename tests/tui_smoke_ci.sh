@@ -116,6 +116,12 @@ elif echo "$TREE_OUT" | grep -q '(no messages)'; then
 else
     fail 'conversation neither user nor placeholder'
 fi
+echo "$TREE_OUT" | grep -q '^input: .*▊' &&
+    pass 'composer visible with cursor' || fail "composer missing: $TREE_OUT"
+echo "$TREE_OUT" | grep -qE 'ctx .+% .+ms · 子[0-9]+ · 同[0-9]+' &&
+    pass 'ctx/runtime status strip rendered' || fail "status strip missing: $TREE_OUT"
+echo "$TREE_OUT" | grep -q -- '--- sessions ---' &&
+    pass 'sessions tree still rendered' || fail 'sessions tree missing'
 
 pass 'host starts'
 OUT=$(HOME="$HOME_DIR" ION_HOST_SOCKET="$ROOT/host.sock" ION_TUI_HEADLESS=1 timeout 10 "$TUI_BIN" 2>"$ROOT/tui.err")

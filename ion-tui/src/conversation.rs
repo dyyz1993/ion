@@ -267,3 +267,307 @@ mod tests {
         assert!(parse_messages(&json!({"data": {}})).is_empty());
     }
 }
+
+/// A conversation turn: one user prompt + assistant/tools until the next user.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TurnGroup {
+    pub title: String,
+    pub tool_calls: usize,
+    pub messages: Vec<MsgLine>,
+    pub expanded: bool,
+}
+
+/// Group messages into turns. The latest turn defaults expanded; older turns
+/// default collapsed to one summary line.
+pub fn group_turns(messages: &[MsgLine]) -> Vec<TurnGroup> {
+    let mut turns: Vec<TurnGroup> = Vec::new();
+    for m in messages {
+        if m.kind == MsgKind::User {
+            turns.push(TurnGroup {
+                title: m.body.clone(),
+                tool_calls: 0,
+                messages: Vec::new(),
+                expanded: false,
+            });
+        }
+        if turns.is_empty() {
+            // Pre-turn assistant/tool messages: synthesize an implicit turn.
+            turns.push(TurnGroup {
+                title: "(before first prompt)".into(),
+                tool_calls: 0,
+                messages: Vec::new(),
+                expanded: false,
+            });
+        }
+        let turn = turns.last_mut().unwrap();
+        turn.messages.push(m.clone());
+        if m.kind == MsgKind::Tool {
+            turn.tool_calls += 1;
+        }
+    }
+    if let Some(last) = turns.last_mut() {
+        last.expanded = true;
+    }
+    turns
+}
+
+pub fn render_turns(
+    turns: &[TurnGroup],
+    expanded_turns: &std::collections::HashSet<usize>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if turns.len() > 1 {
+        out.push(format!(
+            "▸ 历史轮次 ({}) — 已折叠",
+            turns.len().saturating_sub(1)
+        ));
+    }
+    for (i, t) in turns.iter().enumerate() {
+        let expanded = t.expanded || expanded_turns.contains(&i);
+        if !expanded {
+            out.push(format!(
+                "  ▸ 第{}轮 · {} · {} tool calls",
+                i + 1,
+                truncate_preview(&t.title, 28),
+                t.tool_calls
+            ));
+            continue;
+        }
+        if i == turns.len() - 1 {
+            out.push("── 当前轮次 ──".into());
+        } else {
+            out.push(format!(
+                "▾ 第{}轮 · {}",
+                i + 1,
+                truncate_preview(&t.title, 28)
+            ));
+        }
+        for l in crate::conversation::render_lines(&t.messages) {
+            out.push(format!("  {l}"));
+        }
+    }
+    out
+}
+
+fn truncate_preview(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let cut: String = s.chars().take(max).collect();
+        format!("{cut}…")
+    }
+}
+
+#[cfg(test)]
+mod turn_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn msgs() -> Vec<serde_json::Value> {
+        vec![
+            json!({"message": {"role": "user", "content": "第一轮：排查登录"}}),
+            json!({"message": {"role": "assistant", "content": "我先查日志"}}),
+            json!({"message": {"role": "tool", "toolName": "bash", "content": "tail logs"}, "id": "t1"}),
+            json!({"message": {"role": "user", "content": "第二轮：检查 Redis"}}),
+            json!({"message": {"role": "assistant", "content": "读取 redis.yml"}}),
+            json!({"message": {"role": "tool", "toolName": "read", "content": "pool config"}, "id": "t2"}),
+        ]
+    }
+
+    #[test]
+    fn groups_by_user_prompt_and_expands_only_latest() {
+        let lines = message_lines(&msgs(), &Default::default());
+        let turns = group_turns(&lines);
+        assert_eq!(turns.len(), 2);
+        assert!(!turns[0].expanded);
+        assert!(turns[1].expanded);
+        assert_eq!(turns[0].tool_calls, 1);
+        assert_eq!(turns[1].tool_calls, 1);
+    }
+
+    #[test]
+    fn render_turns_collapses_history_and_expands_current() {
+        let lines = message_lines(&msgs(), &Default::default());
+        let turns = group_turns(&lines);
+        let rendered = render_turns(&turns, &Default::default());
+        assert!(rendered.iter().any(|l| l.contains("历史轮次 (1)")));
+        assert!(
+            rendered
+                .iter()
+                .any(|l| l.contains("第1轮 · 第一轮：排查登录 · 1 tool calls"))
+        );
+        assert!(rendered.iter().any(|l| l.contains("── 当前轮次 ──")));
+        assert!(rendered.iter().any(|l| l.contains("❯ user")));
+    }
+
+    #[test]
+    fn explicit_expansion_reopens_history_turn() {
+        let lines = message_lines(&msgs(), &Default::default());
+        let turns = group_turns(&lines);
+        let mut expanded = std::collections::HashSet::new();
+        expanded.insert(0);
+        let rendered = render_turns(&turns, &expanded);
+        assert!(
+            rendered
+                .iter()
+                .any(|l| l.contains("▾ 第1轮 · 第一轮：排查登录"))
+        );
+        // No collapsed line for turn 1.
+        assert!(
+            !rendered
+                .iter()
+                .any(|l| l.contains("第1轮 · 第一轮：排查登录 · 1 tool calls"))
+        );
+    }
+
+    #[test]
+    fn empty_and_prefix_only_messages_tolerated() {
+        assert!(group_turns(&[]).is_empty());
+        let lines = message_lines(
+            &[json!({"message": {"role": "assistant", "content": "prefix"}})],
+            &Default::default(),
+        );
+        let turns = group_turns(&lines);
+        assert_eq!(turns.len(), 1);
+        assert!(turns[0].expanded);
+    }
+}
+
+/// Chat composer state: draft text, cursor, attachments, and status summary.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Composer {
+    pub draft: String,
+    pub cursor: usize,
+    pub attachments: Vec<String>,
+    pub model: String,
+    pub ctx_used: u64,
+    pub ctx_max: u64,
+    pub runtime_ms: u64,
+    pub child_count: usize,
+    pub peer_count: usize,
+}
+
+impl Composer {
+    pub fn insert(&mut self, ch: char) {
+        let byte = self.cursor.min(self.draft.len());
+        if self.draft.is_empty() {
+            self.draft.push(ch);
+            self.cursor = 1;
+        } else {
+            self.draft.insert(byte, ch);
+            self.cursor += ch.len_utf8();
+        }
+    }
+
+    pub fn backspace(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let end = self.cursor;
+        let start = self.draft[..end]
+            .char_indices()
+            .next_back()
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        self.draft.replace_range(start..end, "");
+        self.cursor = start;
+    }
+
+    #[allow(dead_code)]
+    pub fn attach(&mut self, name: impl Into<String>) {
+        self.attachments.push(name.into());
+    }
+
+    pub fn ctx_percent(&self) -> u32 {
+        if self.ctx_max == 0 {
+            0
+        } else {
+            u64::div_ceil(self.ctx_used * 100, self.ctx_max) as u32
+        }
+    }
+
+    pub fn ctx_bar(&self, width: usize) -> String {
+        let width = width.max(1) as u32;
+        let percent = self.ctx_percent().min(100);
+        let filled = (percent * width).div_ceil(100);
+        let filled = filled.min(width);
+        "█".repeat(filled as usize) + &"░".repeat((width - filled) as usize)
+    }
+
+    #[allow(dead_code)]
+    pub fn status_line(&self) -> String {
+        let p = self.ctx_percent();
+        let arrow = if p > 85 {
+            "red"
+        } else if p > 60 {
+            "amber"
+        } else {
+            "green"
+        };
+        format!(
+            "{} · ctx {} {}% ({}/{}) · {}ms · 子{} · 同{}",
+            self.model,
+            self.ctx_bar(10),
+            p,
+            self.ctx_used,
+            self.ctx_max,
+            self.runtime_ms,
+            self.child_count,
+            self.peer_count,
+        )
+        .replace(" · ", &format!(" · <{arrow}> · ")) // simplified marker for test; real color is renderer-side
+    }
+}
+
+#[cfg(test)]
+mod composer_tests {
+    use super::*;
+
+    #[test]
+    fn composer_edit_utf8_and_backspace() {
+        let mut c = Composer::default();
+        for ch in ['a', '中', 'b'] {
+            c.insert(ch);
+        }
+        assert_eq!(c.draft, "a中b");
+        c.backspace();
+        assert_eq!(c.draft, "a中");
+        assert_eq!(c.cursor, "a中".len());
+    }
+
+    #[test]
+    fn composer_ctx_percent_ceil_and_bar() {
+        let mut c = Composer {
+            ctx_used: 1,
+            ctx_max: 128,
+            ..Default::default()
+        };
+        assert_eq!(c.ctx_percent(), 1);
+        assert_eq!(c.ctx_bar(10).chars().filter(|c| *c == '█').count(), 1);
+        c.ctx_used = 126;
+        assert_eq!(c.ctx_percent(), 99);
+        c.ctx_used = 128;
+        assert_eq!(c.ctx_percent(), 100);
+        assert_eq!(c.ctx_bar(10).chars().filter(|c| *c == '█').count(), 10);
+    }
+
+    #[test]
+    fn composer_status_includes_context_and_runtime() {
+        let c = Composer {
+            model: "glm-5.2".into(),
+            ctx_used: 78,
+            ctx_max: 128,
+            runtime_ms: 872_000,
+            child_count: 1,
+            peer_count: 2,
+            ..Default::default()
+        };
+        let status = c.status_line();
+        assert!(status.contains("glm-5.2"));
+        assert!(status.contains("61%"));
+        assert!(status.contains("78/128"));
+        assert!(status.contains("872000ms"));
+        assert!(status.contains("子1"));
+        assert!(status.contains("同2"));
+    }
+}
