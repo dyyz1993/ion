@@ -6,8 +6,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::types::{
-    AttemptLease, EventPage, ExecutionCursor, ReconciliationSummary, ResumeReceipt, RunSnapshot,
-    TERMINAL_RUN_STATES, TaskSummary, ToolCheckpoint, ToolOutcome,
+    ApprovalCheckpoint, AttemptLease, ChildRunPlan, EventPage, ExecutionCursor,
+    ReconciliationSummary, ResumeReceipt, RunSnapshot, TERMINAL_RUN_STATES, TaskSummary,
+    ToolCheckpoint, ToolOutcome,
 };
 
 const SCHEMA_VERSION: i64 = 1;
@@ -169,6 +170,33 @@ impl ExecutionStore {
               ordinal INTEGER NOT NULL,
               payload_json TEXT NOT NULL,
               UNIQUE(run_id, ordinal)
+            );
+            CREATE TABLE IF NOT EXISTS task_edges (
+              parent_id TEXT NOT NULL REFERENCES tasks(task_id),
+              child_id TEXT NOT NULL REFERENCES tasks(task_id),
+              edge_key TEXT NOT NULL,
+              ownership TEXT NOT NULL CHECK(ownership IN ('owned','detached')),
+              wait_policy TEXT NOT NULL CHECK(wait_policy IN ('all_settled','first_success')),
+              PRIMARY KEY(parent_id, edge_key),
+              UNIQUE(parent_id, child_id)
+            );
+            CREATE TABLE IF NOT EXISTS queued_inputs (
+              input_id TEXT PRIMARY KEY,
+              run_id TEXT NOT NULL REFERENCES runs(run_id),
+              payload_json TEXT NOT NULL,
+              consumed_by_task TEXT REFERENCES tasks(task_id)
+            );
+            CREATE TABLE IF NOT EXISTS approvals (
+              approval_id TEXT PRIMARY KEY,
+              run_id TEXT NOT NULL REFERENCES runs(run_id),
+              task_id TEXT NOT NULL REFERENCES tasks(task_id),
+              action_digest TEXT NOT NULL,
+              generation INTEGER NOT NULL CHECK(generation >= 0),
+              policy_version TEXT NOT NULL,
+              status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','consumed','stale')),
+              expires_ms INTEGER,
+              decision_json TEXT,
+              version INTEGER NOT NULL CHECK(version >= 0)
             );
             "#,
         )?;
@@ -543,6 +571,124 @@ impl ExecutionStore {
             }))?;
             store.insert_outbox_tx(run_id, "dispatch_tools", &serde_json::json!({ "taskIds": task_ids }))?;
             Ok(task_ids)
+        })
+    }
+
+    pub fn checkpoint_child_run(
+        &mut self,
+        parent_run_id: &str,
+        parent_task_id: &str,
+        plan: &ChildRunPlan,
+    ) -> StoreResult<String> {
+        self.transaction(|store| {
+            let parent = store.load_run(parent_run_id)?;
+            let existing: Option<String> = store
+                .conn
+                .query_row(
+                    "SELECT child_id FROM task_edges WHERE parent_id=?1 AND edge_key=?2",
+                    params![parent_task_id, plan.spawn_key],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(child_id) = existing {
+                return Ok(child_id);
+            }
+            let child_id = format!("task-{}", uuid::Uuid::new_v4());
+            store.conn.execute(
+                "INSERT INTO tasks(task_id,run_id,parent_task_id,logical_key,kind,state,version,checkpoint_version,checkpoint_json,result_json,policy_json) \
+                 VALUES(?1,?2,?3,?4,'child_run','waiting',0,0,?5,NULL,'\"unsafe\"')",
+                params![
+                    child_id,
+                    parent_run_id,
+                    parent_task_id,
+                    format!("spawn:{}", plan.spawn_key),
+                    serde_json::json!({ "input": plan.input, "sessionId": plan.session_id }).to_string(),
+                ],
+            )?;
+            store.conn.execute(
+                "INSERT INTO task_edges(parent_id,child_id,edge_key,ownership,wait_policy) VALUES(?1,?2,?3,'owned','all_settled')",
+                params![parent_task_id, child_id, plan.spawn_key],
+            )?;
+            store.conn.execute(
+                "INSERT INTO queued_inputs(input_id,run_id,payload_json,consumed_by_task) VALUES(?1,?2,?3,?4)",
+                params![format!("input-{}", uuid::Uuid::new_v4()), parent_run_id, plan.input.to_string(), child_id],
+            )?;
+            let version = parent.version + 1;
+            store.conn.execute(
+                "UPDATE runs SET state='waiting_children',version=?2,updated_ms=?3 WHERE run_id=?1",
+                params![parent_run_id, version, now_ms()],
+            )?;
+            store.append_event_tx(parent_run_id, version, "child.checkpointed", &serde_json::json!({
+                "parentTaskId": parent_task_id,
+                "childTaskId": child_id,
+                "spawnKey": plan.spawn_key,
+            }))?;
+            store.insert_outbox_tx(parent_run_id, "spawn_child", &serde_json::json!({ "childTaskId": child_id }))?;
+            Ok(child_id)
+        })
+    }
+
+    pub fn checkpoint_approval(
+        &mut self,
+        run_id: &str,
+        approval: &ApprovalCheckpoint,
+    ) -> StoreResult<()> {
+        self.transaction(|store| {
+            let run = store.load_run(run_id)?;
+            if approval.generation != run.generation {
+                return Err(ExecutionStoreError::Invariant(format!(
+                    "approval generation {} != run generation {}",
+                    approval.generation, run.generation
+                )));
+            }
+            store.conn.execute(
+                "UPDATE approvals SET status='stale',version=version+1 WHERE run_id=?1 AND task_id=?2 AND status='pending' AND (generation<>?3 OR policy_version<>?4 OR action_digest<>?5)",
+                params![run_id, approval.task_id, approval.generation, approval.policy_version, approval.action_digest],
+            )?;
+            store.conn.execute(
+                "INSERT INTO approvals(approval_id,run_id,task_id,action_digest,generation,policy_version,status,expires_ms,decision_json,version) \
+                 VALUES(?1,?2,?3,?4,?5,?6,'pending',NULL,NULL,0) \
+                 ON CONFLICT(approval_id) DO UPDATE SET action_digest=excluded.action_digest,generation=excluded.generation,policy_version=excluded.policy_version,status='pending',version=approvals.version+1",
+                params![approval.approval_id, run_id, approval.task_id, approval.action_digest, approval.generation, approval.policy_version],
+            )?;
+            let version = run.version + 1;
+            store.conn.execute(
+                "UPDATE runs SET state='waiting_approval',version=?2,updated_ms=?3 WHERE run_id=?1",
+                params![run_id, version, now_ms()],
+            )?;
+            store.append_event_tx(run_id, version, "approval.pending", &serde_json::json!({
+                "approvalId": approval.approval_id,
+                "taskId": approval.task_id,
+            }))?;
+            Ok(())
+        })
+    }
+
+    pub fn consume_approval(
+        &mut self,
+        run_id: &str,
+        approval_id: &str,
+        action_digest: &str,
+        generation: i64,
+    ) -> StoreResult<()> {
+        self.transaction(|store| {
+            let run = store.load_run(run_id)?;
+            let changed = store.conn.execute(
+                "UPDATE approvals SET status='consumed',version=version+1 WHERE approval_id=?1 AND run_id=?2 AND action_digest=?3 AND generation=?4 AND status='approved'",
+                params![approval_id, run_id, action_digest, generation],
+            )?;
+            if changed != 1 {
+                return Err(ExecutionStoreError::Invariant("stale_approval".into()));
+            }
+            let version = run.version + 1;
+            store.conn.execute(
+                "UPDATE runs SET state='running',version=?2,updated_ms=?3 WHERE run_id=?1",
+                params![run_id, version, now_ms()],
+            )?;
+            store.append_event_tx(run_id, version, "approval.consumed", &serde_json::json!({
+                "approvalId": approval_id,
+            }))?;
+            Ok(())
         })
     }
 
@@ -1175,5 +1321,85 @@ mod tests {
         ));
         let final_snap = store.snapshot(&snap.run_id).unwrap();
         assert_eq!(final_snap.tasks[0].state, "succeeded");
+    }
+
+    #[test]
+    fn child_run_checkpoint_is_unique_by_spawn_key() {
+        let (mut store, _dir) = temp_store();
+        let snap = store
+            .create_run(
+                "parent",
+                "main",
+                serde_json::json!({}),
+                serde_json::json!({}),
+            )
+            .unwrap();
+        let checkpoint = ToolCheckpoint {
+            task_id: "parent-task".into(),
+            logical_key: "spawn-parent".into(),
+            name: "spawn_worker".into(),
+            call_id: "call-parent".into(),
+            arguments: serde_json::json!({}),
+            policy: crate::agent::tool::RecoveryPolicy::Unsafe,
+        };
+        store
+            .checkpoint_tool_batch(
+                &snap.run_id,
+                &serde_json::json!({}),
+                std::slice::from_ref(&checkpoint),
+            )
+            .unwrap();
+        let plan = ChildRunPlan {
+            parent_task_id: "parent-task".into(),
+            spawn_key: "child-a".into(),
+            session_id: "child-session".into(),
+            input: serde_json::json!({ "task": "do work" }),
+        };
+        let first = store
+            .checkpoint_child_run(&snap.run_id, "parent-task", &plan)
+            .unwrap();
+        let second = store
+            .checkpoint_child_run(&snap.run_id, "parent-task", &plan)
+            .unwrap();
+        assert_eq!(first, second);
+        let snapshot = store.snapshot(&snap.run_id).unwrap();
+        assert_eq!(snapshot.state, "waiting_children");
+        assert_eq!(snapshot.tasks.len(), 2);
+    }
+
+    #[test]
+    fn approval_binding_rejects_stale_digest_or_generation() {
+        let (mut store, _dir) = temp_store();
+        let snap = store
+            .create_run("s1", "main", serde_json::json!({}), serde_json::json!({}))
+            .unwrap();
+        let checkpoint = ToolCheckpoint {
+            task_id: "unsafe-task".into(),
+            logical_key: "call".into(),
+            name: "bash".into(),
+            call_id: "call".into(),
+            arguments: serde_json::json!({}),
+            policy: crate::agent::tool::RecoveryPolicy::Unsafe,
+        };
+        store
+            .checkpoint_tool_batch(
+                &snap.run_id,
+                &serde_json::json!({}),
+                std::slice::from_ref(&checkpoint),
+            )
+            .unwrap();
+        let approval = ApprovalCheckpoint {
+            approval_id: "apr_1".into(),
+            task_id: "unsafe-task".into(),
+            action_digest: "digest-1".into(),
+            generation: 0,
+            policy_version: "v1".into(),
+        };
+        store.checkpoint_approval(&snap.run_id, &approval).unwrap();
+        let stale = store.consume_approval(&snap.run_id, "apr_1", "digest-2", 0);
+        assert!(matches!(
+            stale.unwrap_err(),
+            ExecutionStoreError::Invariant(_)
+        ));
     }
 }

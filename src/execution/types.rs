@@ -13,6 +13,23 @@ pub struct ToolCheckpoint {
 }
 
 #[derive(Clone, Debug)]
+pub struct ChildRunPlan {
+    pub parent_task_id: String,
+    pub spawn_key: String,
+    pub session_id: String,
+    pub input: serde_json::Value,
+}
+
+#[derive(Clone, Debug)]
+pub struct ApprovalCheckpoint {
+    pub approval_id: String,
+    pub task_id: String,
+    pub action_digest: String,
+    pub generation: i64,
+    pub policy_version: String,
+}
+
+#[derive(Clone, Debug)]
 pub struct AttemptLease {
     pub task_id: String,
     pub attempt_id: String,
