@@ -200,7 +200,10 @@ pub fn retrieve_messages(entries: &[Value], params: &RetrievalParams) -> Retriev
         .iter()
         .filter(|e| {
             let t = e.get("type").and_then(|v| v.as_str()).unwrap_or("");
-            t == "message" || t == "branch_summary"
+            t == "message"
+                || t == "branch_summary"
+                || (t == "custom"
+                    && e.get("customType").and_then(|v| v.as_str()) == Some("tool_card"))
         })
         .cloned()
         .collect();
@@ -597,7 +600,16 @@ fn apply_custom_filter(entries: &[Value], filter: &CustomFilter) -> Vec<Value> {
             .filter(|e| {
                 let t = e.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 // 默认只返回对话与内置会话控制 entry；custom 由 include_custom 控制。
-                t == "message" || t == "branch_summary" || t == "compaction" || t == "leaf_pointer"
+                if t == "message"
+                    || t == "branch_summary"
+                    || t == "compaction"
+                    || t == "leaf_pointer"
+                {
+                    return true;
+                }
+                // Tool cards are conversation history for UI reconstruction even
+                // though they remain bypass custom entries for LLM context.
+                t == "custom" && e.get("customType").and_then(|v| v.as_str()) == Some("tool_card")
             })
             .cloned()
             .collect(),
@@ -1325,6 +1337,29 @@ mod tests {
             .iter()
             .any(|e| e.get("type").and_then(|v| v.as_str()) == Some("custom"));
         assert!(!has_custom, "None filter should exclude custom entries");
+    }
+
+    #[test]
+    fn test_custom_filter_none_keeps_tool_card_history() {
+        let mut entries = make_3_turn_session();
+        entries.push(json!({
+            "type":"custom","id":"tc_001","parentId":null,
+            "customType":"tool_card","data":{"toolName":"bash","resultTail":["ok"]}
+        }));
+        let params = RetrievalParams {
+            view: View::Full,
+            include_custom: CustomFilter::None,
+            limit: 0,
+            ..Default::default()
+        };
+        let result = retrieve_messages(&entries, &params);
+        assert!(
+            result
+                .messages
+                .iter()
+                .any(|e| e.get("id").and_then(|v| v.as_str()) == Some("tc_001")),
+            "tool_card is conversation history even with CustomFilter::None"
+        );
     }
 
     #[test]

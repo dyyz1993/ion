@@ -252,6 +252,7 @@ pub fn parse_sessions(response: &serde_json::Value) -> Vec<SessionInfo> {
     response
         .get("data")
         .and_then(|d| d.get("sessions"))
+        .or_else(|| response.get("sessions"))
         .and_then(|s| s.as_array())
         .map(|arr| serde_json::from_value(arr.clone().into()).unwrap_or_default())
         .unwrap_or_default()
@@ -261,6 +262,7 @@ pub fn parse_busy_ids(list_sessions_resp: &serde_json::Value) -> std::collection
     list_sessions_resp
         .get("data")
         .and_then(|d| d.get("sessions"))
+        .or_else(|| list_sessions_resp.get("sessions"))
         .and_then(|s| s.as_array())
         .map(|arr| {
             arr.iter()

@@ -9,7 +9,7 @@
 //! intact because the agent may still reference them (rollback, compare, re-read).
 //! After the heat window expires, they become reclaimable.
 //!
-//! ```
+//! ```text
 //! Timeline (messages):
 //! ┌──────────────────────────────────────────────────────────────┐
 //! │  Old (cold)      ←── hot (30% of window) ──→        Recent   │

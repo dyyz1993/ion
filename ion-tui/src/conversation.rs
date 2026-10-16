@@ -46,6 +46,60 @@ pub fn message_lines(
 
         // Extract primary text.
         let text = extract_text(obj);
+        let custom_type = m
+            .get("customType")
+            .and_then(|v| v.as_str())
+            .or(Some(mtype.as_str()))
+            .unwrap_or_default();
+        if custom_type == "tool_card" {
+            let data = m.get("data").cloned().unwrap_or_else(|| obj.clone());
+            let tool_name = data
+                .get("toolName")
+                .and_then(|v| v.as_str())
+                .unwrap_or("tool");
+            let command = data
+                .get("args")
+                .and_then(|args| {
+                    args.get("command")
+                        .or_else(|| args.get("file_path"))
+                        .or_else(|| args.get("path"))
+                })
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let duration_ms = data
+                .get("durationMs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or_default();
+            let body = data
+                .get("resultTail")
+                .and_then(|v| v.as_array())
+                .map(|lines| {
+                    lines
+                        .iter()
+                        .rev()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+            let error = data
+                .get("isError")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let key = format!("tool:{id}");
+            let expanded = error || expanded.contains(&key);
+            out.push(MsgLine {
+                kind: MsgKind::Tool,
+                header: format!(
+                    "▸ [tool] {tool_name} — {command} ({:.1}s)",
+                    duration_ms as f64 / 1000.0
+                ),
+                body,
+                expanded,
+                error,
+            });
+            continue;
+        }
         let kind = match role.as_str() {
             "user" => MsgKind::User,
             "assistant" => MsgKind::Assistant,
@@ -245,6 +299,30 @@ mod tests {
         assert_eq!(lines[0].kind, MsgKind::System);
         assert!(!lines[0].expanded);
         assert_eq!(lines[1].kind, MsgKind::Unknown);
+    }
+
+    #[test]
+    fn persisted_tool_card_renders_in_history() {
+        let msgs = vec![json!({
+            "type": "custom",
+            "id": "tc1",
+            "customType": "tool_card",
+            "data": {
+                "toolName": "bash",
+                "args": {"command": "tail -f app.log"},
+                "durationMs": 2600,
+                "isError": false,
+                "resultTail": ["last", "middle", "first"]
+            }
+        })];
+        let lines = message_lines(&msgs, &Default::default());
+        assert_eq!(lines[0].kind, MsgKind::Tool);
+        assert_eq!(lines[0].header, "▸ [tool] bash — tail -f app.log (2.6s)");
+        assert_eq!(lines[0].body, "first\nmiddle\nlast");
+        assert!(
+            !lines[0].expanded,
+            "successful completed card defaults folded"
+        );
     }
 
     #[test]

@@ -10203,6 +10203,7 @@ fn save_session_messages(id: &str, messages: &[ion::agent::messages::Message]) {
             agent: std::env::var("ION_SESSION_AGENT").ok(),
             model: std::env::var("ION_SESSION_MODEL").ok(),
             provider: std::env::var("ION_SESSION_PROVIDER").ok(),
+            extra: serde_json::Map::new(),
         };
         if let Ok(h) = serde_json::to_string(&header) {
             use std::io::Write;

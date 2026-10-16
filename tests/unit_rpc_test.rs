@@ -772,6 +772,7 @@ fn u17_create_session_writes_jsonl() {
         agent: None,
         model: None,
         provider: None,
+        extra: serde_json::Map::new(),
     };
     ion::session_jsonl::SessionFile::save(&cwd, &header, &[]);
 
@@ -805,6 +806,7 @@ fn u18_load_session_restores_messages() {
         agent: None,
         model: None,
         provider: None,
+        extra: serde_json::Map::new(),
     };
 
     // Build entries with parent chain
@@ -880,6 +882,7 @@ fn u19_session_index_updates() {
         agent: None,
         model: None,
         provider: None,
+        extra: serde_json::Map::new(),
     };
     ion::session_jsonl::SessionFile::save(&cwd, &header, &[]);
 
@@ -948,6 +951,7 @@ fn u20_token_stats_are_accurate() {
         agent: None,
         model: None,
         provider: None,
+        extra: serde_json::Map::new(),
     };
 
     let mut entries: Vec<serde_json::Value> = Vec::new();
