@@ -18,6 +18,24 @@ if [ -z "${ION_SESSION_DIR:-}" ]; then
     mkdir -p "$ION_SESSION_DIR"
     trap 'rm -rf "$ION_SESSION_DIR"' EXIT
 fi
+# 🔴 file-snapshot 扩展默认 disabled——K 段（直接 CLI -p）依赖它产生
+# parented step-snapshot；CI 种子 HOME / 开发机真实 config 都可能没开
+# （run 38863530014 K6 假红根因）。隔离 HOME 显式启用。
+FS_HOME=$(mktemp -d /tmp/fs-ci-home-XXXXXX)
+mkdir -p "$FS_HOME/.ion/agent/sessions"
+python3 -c "
+import json, os
+cfg_path = os.path.join('$FS_HOME', '.ion', 'config.json')
+cfg = {}
+if os.path.exists(cfg_path):
+    try: cfg = json.load(open(cfg_path))
+    except Exception: cfg = {}
+cfg.setdefault('extensions', {})['file-snapshot'] = {'enabled': True}
+cfg.setdefault('default_provider', 'faux')
+cfg.setdefault('default_model', 'faux')
+json.dump(cfg, open(cfg_path, 'w'))
+"
+export FS_HOME
 green() { echo -e "\033[32m  ✅ $1\033[0m"; }
 red()   { echo -e "\033[31m  ❌ $1\033[0m"; }
 yellow(){ echo -e "\033[33m  ⏭️  $1\033[0m"; }
@@ -562,12 +580,14 @@ sed "s|__WORKDIR__|$DIRECT_DIR|g" \
 
 if (
     cd "$DIRECT_DIR"
+    HOME="$FS_HOME" \
+    ION_SESSION_DIR="$FS_HOME/.ion/agent/sessions" \
     ION_FAUX_SCRIPT="$DIRECT_SCRIPT" ION_GRACEFUL_DRAIN_MS=50 \
         timeout 90 "$PROJECT_DIR/target/debug/ion" --offline --agent build \
         -p "create the snapshot proof file" > "$DIRECT_LOG" 2>&1
 ); then
     DIRECT_BASE=$(basename "$DIRECT_DIR")
-    DIRECT_SESSION=$(find "$ION_SESSION_DIR" -path "*${DIRECT_BASE}*" -name '*.jsonl' -type f 2>/dev/null | head -1)
+    DIRECT_SESSION=$(find "$FS_HOME/.ion/agent/sessions" -path "*${DIRECT_BASE}*" -name '*.jsonl' -type f 2>/dev/null | head -1)
     if [ -n "$DIRECT_SESSION" ] && python3 - "$DIRECT_SESSION" <<'PY'
 import json, sys
 entries = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
@@ -589,7 +609,7 @@ PY
         DIRECT_SID=$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())["id"])' "$DIRECT_SESSION")
         if jq --arg sid "$DIRECT_SID" -e \
             '.sessions[$sid] | .user_prompt_count==1 and .llm_request_count==2 and .turn_count==1 and .message_count==4' \
-            "$HOME/.ion/agent/sessions.index.json" >/dev/null 2>&1; then
+            "$FS_HOME/.ion/agent/sessions.index.json" >/dev/null 2>&1; then
             pass "K7: SessionIndex 区分 1 个用户回合与 2 次 LLM 调用"
         else
             fail "K7: SessionIndex 回合/LLM 统计错误"
