@@ -99,6 +99,22 @@ export ION_HOST_SOCKET="$SOCK"
 export ION_SKIP_MCP=1
 rm -f "$SOCK"
 
+# ⚠️ Phase 3+ 是真实 LLM e2e（serve 用真实 config 的 glm-5.2 驱动多轮 write/
+# mod/审批/回滚，无 faux 剧本）——CI 的隔离 HOME 无真实 provider 时诚实 SKIP。
+# 历史：曾借开发机真实 provider 静默运行，CI 上 prompt 无响应 → 文件全缺 +
+# review 系列全红（run 38855316691）。
+REAL_PROVIDER=$(python3 -c "
+import json,sys
+try:
+    cfg = json.load(open('$HOME/.ion/config.json'))
+    p = cfg.get('default_provider') or ''
+    print(p if p and p != 'faux' else '')
+except Exception: print('')" 2>/dev/null)
+if [ -z "$REAL_PROVIDER" ]; then
+    echo "  ⏭️  SKIP: Phase 3+ 需要真实 LLM provider（当前 HOME 未配置）——同 ext07/vision_notify 模式"
+    exit 0
+fi
+
 ION_SESSION_DIR="$TEST_ROOT/sessions" \
   "$ION_BIN" serve > "$TEST_ROOT/serve.log" 2>&1 &
 SERVE_PID=$!
