@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use super::types::{
     ApprovalCheckpoint, AttemptLease, ChildRunPlan, EventPage, ExecutionCursor,
     ReconciliationSummary, ResumeReceipt, RunListEntry, RunSnapshot, TERMINAL_RUN_STATES,
-    TaskSummary, ToolCheckpoint, ToolOutcome,
+    TaskSummary, ToolCheckpoint, ToolOutcome, TranscriptProjection,
 };
 
 const SCHEMA_VERSION: i64 = 1;
@@ -1041,6 +1041,64 @@ impl ExecutionStore {
             )
             .map_err(Into::into)
     }
+
+    /// Pull unprojected transcript entries. Delivery happens outside the ledger;
+    /// mark_transcript_projected must only run after the JSONL append succeeds.
+    pub fn pending_transcripts(&self) -> StoreResult<Vec<TranscriptProjection>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT t.entry_id,t.run_id,r.session_id,t.payload_json FROM transcript_entries t \
+             JOIN runs r ON r.run_id=t.run_id \
+             LEFT JOIN outbox o ON o.run_id=t.run_id AND o.kind='project_transcript' \
+               AND json_extract(o.payload_json,'$.entryId')=t.entry_id \
+             WHERE o.outbox_id IS NULL ORDER BY t.run_id,t.ordinal",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                let payload = row.get::<_, String>(3)?;
+                Ok(TranscriptProjection {
+                    entry_id: row.get(0)?,
+                    run_id: row.get(1)?,
+                    session_id: row.get(2)?,
+                    payload: serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn mark_transcript_projected(
+        &mut self,
+        entry_id: &str,
+        projected: bool,
+    ) -> StoreResult<()> {
+        self.transaction(|store| {
+            let transcript: (String, String) = store.conn.query_row(
+                "SELECT entry_id,run_id FROM transcript_entries WHERE entry_id=?1",
+                params![entry_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            if projected {
+                store.conn.execute(
+                    "INSERT INTO outbox(outbox_id,run_id,effect_key,kind,payload_json,delivered_ms) \
+                     VALUES(?1,?2,?3,'project_transcript',?4,?5) \
+                     ON CONFLICT(effect_key) DO UPDATE SET delivered_ms=excluded.delivered_ms",
+                    params![
+                        format!("outbox-{}", uuid::Uuid::new_v4()),
+                        transcript.1,
+                        format!("project_transcript:{entry_id}"),
+                        serde_json::json!({ "entryId": entry_id }).to_string(),
+                        now_ms()
+                    ],
+                )?;
+            } else {
+                store.conn.execute(
+                    "DELETE FROM outbox WHERE kind='project_transcript' AND json_extract(payload_json,'$.entryId')=?1",
+                    params![entry_id],
+                )?;
+            }
+            Ok(())
+        })
+    }
 }
 
 struct RunRow {
@@ -1223,6 +1281,53 @@ mod tests {
         let only_a = store.list_runs(Some("session-a")).unwrap();
         assert_eq!(only_a.len(), 1);
         assert_eq!(only_a[0].run_id, a.run_id);
+    }
+
+    #[test]
+    fn transcript_projection_is_idempotent_after_ack() {
+        let (mut store, _dir) = temp_store();
+        let snap = store
+            .create_run("s1", "main", serde_json::json!({}), serde_json::json!({}))
+            .unwrap();
+        let checkpoint = ToolCheckpoint {
+            task_id: "safe-task".into(),
+            logical_key: "call".into(),
+            name: "read".into(),
+            call_id: "call".into(),
+            arguments: serde_json::json!({}),
+            policy: crate::agent::tool::RecoveryPolicy::ReplaySafe,
+        };
+        store
+            .checkpoint_tool_batch(
+                &snap.run_id,
+                &serde_json::json!({}),
+                std::slice::from_ref(&checkpoint),
+            )
+            .unwrap();
+        let lease = store
+            .start_tool_attempt(&snap.run_id, "safe-task", None)
+            .unwrap();
+        store
+            .complete_tool_attempt(
+                &snap.run_id,
+                &lease,
+                &ToolOutcome {
+                    task_id: "safe-task".into(),
+                    success: true,
+                    output: "projected once".into(),
+                },
+            )
+            .unwrap();
+
+        let pending = store.pending_transcripts().unwrap();
+        assert_eq!(pending.len(), 1);
+        let id = pending[0].entry_id.clone();
+        store.mark_transcript_projected(&id, true).unwrap();
+        assert!(store.pending_transcripts().unwrap().is_empty());
+        // Re-ack is idempotent and rollback removes delivery state for retry.
+        store.mark_transcript_projected(&id, true).unwrap();
+        store.mark_transcript_projected(&id, false).unwrap();
+        assert_eq!(store.pending_transcripts().unwrap().len(), 1);
     }
 
     #[test]
