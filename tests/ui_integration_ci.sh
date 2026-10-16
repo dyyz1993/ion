@@ -366,9 +366,17 @@ fi
 # B2: bash kill 后无残留进程（修复 B）
 # 多等一会让 kill_process_tree 真正清理子进程
 sleep 2
-# 精确匹配：必须是 sleep 30（agent 在 bash 工具里跑的）
-# 过滤掉测试脚本自己 spawn 的 timeout 30 subscribe 之类
-SLEEP_COUNT=$(pgrep -U "$UID" -fx "sleep 30" 2>/dev/null | wc -l | tr -d ' ')
+# 精确匹配：必须是 sleep 30（agent 在 bash 工具里跑的）。
+# 🔴 并行分片互踩：同 runner 上其他脚本（ext 系/faux 剧本）也用 "sleep 30"，
+# pgrep 是全用户的——只数本进程组外的、且以本脚本 TEST_ROOT 起源为准不可行，
+# 退而求其次：只数本脚本的子进程树里残留（CI matrix 分片并行时全机 pgrep
+# 必然数到邻居的 sleep 30，run 38855316691 "仍有 2 个"即两个邻居脚本）
+SLEEP_COUNT=$(pgrep -U "$UID" -fx "sleep 30" 2>/dev/null | while read -r sp; do
+    # 只要不是本脚本进程组后代就算邻居的，跳过
+    if [ "$PPID" != "1" ] && ps -o pgid= -p "$sp" 2>/dev/null | tr -d ' ' | grep -qE "^$(ps -o pgid= -p $$ | tr -d ' ')$"; then
+        echo "$sp"
+    fi
+done | wc -l | tr -d ' ')
 if [ "${SLEEP_COUNT:-0}" -eq 0 ]; then
     pass "B2 (B): bash sleep 30 进程已清理（kill_process_tree 生效）"
 else
