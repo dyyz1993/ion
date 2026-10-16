@@ -62,6 +62,7 @@ LIST2=$(rpc --method run.list --params '{}')
 echo '[F2] truncated ledger is fail-closed'
 kill -9 "$HOST_PID"; wait "$HOST_PID" 2>/dev/null; HOST_PID=""
 DB="$ROOT/home/.ion/execution.sqlite3"
+rm -f "$DB-wal" "$DB-shm" 2>/dev/null || true
 python3 - "$DB" <<'PY'
 from pathlib import Path
 import sys
