@@ -8169,6 +8169,30 @@ async fn handle_manager_command(
             }
             Ok(serde_json::json!({ "projected": projected }))
         }),
+        // One-page pull (TUI polling): the stream interceptor owns
+        // "events.subscribe", so a plain RPC cannot reach the arm below.
+        "events.page" => {
+            let params = cmd.get("params").cloned().unwrap_or_default();
+            let run_id = params
+                .get("runId")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let after_seq = params
+                .get("afterCursor")
+                .and_then(|cursor| cursor.get("seq"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            run_id
+                .ok_or_else(|| "missing 'runId' param".to_string())
+                .and_then(|run_id| {
+                    durable_execution_writer().and_then(move |writer| {
+                        writer
+                            .call(move |store| store.events_after(&run_id, after_seq, 100))
+                            .map_err(|e| e.to_string())
+                            .and_then(|v| serde_json::to_value(v).map_err(|e| e.to_string()))
+                    })
+                })
+        }
         "events.subscribe" => {
             let params = cmd.get("params").cloned().unwrap_or_default();
             let run_id = params

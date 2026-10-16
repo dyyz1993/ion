@@ -720,8 +720,16 @@ impl ExecutionStore {
         )?;
         let events = stmt
             .query_map(params![run_id, after_seq, limit as i64], |row| {
+                let seq = row.get::<_, i64>(0)?;
+                let kind = row.get::<_, String>(2)?;
                 let payload = row.get::<_, String>(3)?;
-                Ok(serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null))
+                let mut value = serde_json::from_str::<serde_json::Value>(&payload)
+                    .unwrap_or(serde_json::Value::Null);
+                if let Some(obj) = value.as_object_mut() {
+                    obj.insert("kind".into(), serde_json::Value::String(kind));
+                    obj.insert("seq".into(), serde_json::Value::from(seq));
+                }
+                Ok(value)
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(EventPage {
@@ -1589,10 +1597,10 @@ mod tests {
         assert_eq!(snap.version, 0);
         assert_eq!(snap.cursor.seq, 0);
         let page = store.events_after(&snap.run_id, 0, 10).unwrap();
-        assert_eq!(
-            page.events,
-            vec![serde_json::json!({ "runId": snap.run_id })]
-        );
+        assert_eq!(page.events.len(), 1);
+        assert_eq!(page.events[0]["runId"], snap.run_id);
+        assert_eq!(page.events[0]["kind"], "run.created");
+        assert_eq!(page.events[0]["seq"], 0);
         assert_eq!(page.cursor.seq, 1);
     }
 

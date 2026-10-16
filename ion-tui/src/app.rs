@@ -1,12 +1,19 @@
 use crate::connection::Connection;
 use crate::input::Action;
-use crate::state::{RunListEntry, parse_run_list, render_lines};
+use crate::state::{
+    EventLine, RunListEntry, parse_event_page, parse_run_list, render_events, render_lines,
+};
 
 /// Headless-ish application core shared by the TUI loop and CI smoke mode.
 pub struct App {
     pub runs: Vec<RunListEntry>,
     pub selected: Option<usize>,
     pub status: String,
+    pub events: Vec<EventLine>,
+    #[allow(dead_code)]
+    pub cursor: i64,
+    #[allow(dead_code)]
+    pub event_run_id: Option<String>,
 }
 
 impl App {
@@ -15,6 +22,9 @@ impl App {
             runs: Vec::new(),
             selected: None,
             status: "ready".into(),
+            events: Vec::new(),
+            cursor: 0,
+            event_run_id: None,
         }
     }
 
@@ -105,6 +115,36 @@ impl App {
         Ok(true)
     }
 
+    /// Poll one page of events for the selected run and advance the cursor.
+    #[allow(dead_code)]
+    pub async fn poll_events(&mut self, conn: &mut Connection) -> Result<(), String> {
+        let Some(run_id) = self.selected_run_id().map(String::from) else {
+            return Ok(());
+        };
+        if self.event_run_id.as_deref() != Some(run_id.as_str()) {
+            self.cursor = 0;
+            self.events.clear();
+            self.event_run_id = Some(run_id.clone());
+        }
+        let resp = conn
+            .rpc(
+                "events.page",
+                serde_json::json!({ "runId": run_id, "afterCursor": { "seq": self.cursor } }),
+                5000,
+            )
+            .await?;
+        let (new_cursor, events) = parse_event_page(&resp);
+        if new_cursor > self.cursor {
+            self.cursor = new_cursor;
+            self.events.extend(events);
+            let keep = self.events.len().saturating_sub(1000);
+            if keep > 0 {
+                self.events.drain(..keep);
+            }
+        }
+        Ok(())
+    }
+
     pub fn render(&self) -> Vec<String> {
         let mut lines = render_lines(&self.runs);
         lines.push(String::new());
@@ -113,6 +153,11 @@ impl App {
             && let Some(run) = self.runs.get(i)
         {
             lines.push(format!("selected: {}", run.run_id));
+        }
+        let event_lines = render_events(&self.events, 20);
+        if !event_lines.is_empty() {
+            lines.push("--- events ---".into());
+            lines.extend(event_lines);
         }
         lines
     }

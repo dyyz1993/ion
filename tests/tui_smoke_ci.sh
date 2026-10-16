@@ -151,5 +151,18 @@ fi
 echo "$OUT" | grep -q 'sess-tui-ci-001' && pass 'session id preserved across recovery' || fail 'session id lost'
 echo "$OUT" | grep -vq 'paused' && pass 'stale paused label gone from TUI output' || fail 'stale paused still shown'
 
+echo '[T5] event stream visible in TUI output'
+# Drive one write so a run.state.changed event lands in the ledger, then poll.
+rpc --method run.pause --params '{"runId":"run-tui-ci-001","reason":"tui events"}' >/dev/null
+rpc --method run.resume --params '{"runId":"run-tui-ci-001"}' >/dev/null
+sleep 1
+OUT=$(HOME="$HOME_DIR" ION_HOST_SOCKET="$ROOT/host.sock" ION_TUI_HEADLESS=1 timeout 10 "$TUI_BIN" 2>"$ROOT/tui-events.err")
+echo "$OUT" | grep -q -- '--- events ---' &&
+    pass 'TUI output includes events panel' ||
+    { fail "no events panel in TUI output: $OUT / $(cat "$ROOT/tui-events.err")"; }
+echo "$OUT" | grep -qE 'run\.(state\.changed|paused|resumed)' &&
+    pass 'lifecycle events rendered in events panel' ||
+    { fail "no lifecycle events in panel: $OUT"; }
+
 printf 'PASS: %s, FAIL: %s\n' "$PASS" "$FAIL"
 test "$FAIL" -eq 0

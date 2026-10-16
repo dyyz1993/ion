@@ -38,6 +38,15 @@ async fn run(socket: PathBuf, headless: bool) -> Result<(), String> {
     let mut conn = connection::Connection::connect(&socket).await?;
     let mut app = App::new();
     app.refresh(&mut conn).await?;
+    app.select_next(); // default: first run selected so events poll has a target
+    if let Err(e) = app.poll_events(&mut conn).await {
+        if e.contains("writer closed") {
+            conn = connection::Connection::connect(&socket).await?;
+            app.poll_events(&mut conn).await?;
+        } else {
+            return Err(e);
+        }
+    }
 
     if headless {
         for line in app.render() {
@@ -83,6 +92,7 @@ async fn run(socket: PathBuf, headless: bool) -> Result<(), String> {
         if action == Action::Quit {
             break;
         }
+        let _ = app.poll_events(&mut conn).await;
         if let Err(e) = app.dispatch(&mut conn, action.clone()).await {
             // Host may close idle pipes between key presses; reconnect once and retry,
             // tolerating a second broken pipe on the reconnect window.

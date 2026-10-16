@@ -93,3 +93,99 @@ mod tests {
         assert_eq!(run_state(&resp).as_deref(), Some("paused"));
     }
 }
+
+/// One polled event from `events.subscribe` (already unwrapped from the page).
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub struct EventLine {
+    pub seq: i64,
+    pub kind: String,
+}
+
+#[allow(dead_code)]
+pub fn parse_event_page(response: &serde_json::Value) -> (i64, Vec<EventLine>) {
+    let data = response
+        .get("data")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let cursor_seq = data
+        .get("cursor")
+        .and_then(|c| c.get("seq"))
+        .and_then(|s| s.as_i64())
+        .unwrap_or(0);
+    let events = data
+        .get("events")
+        .and_then(|e| e.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|ev| {
+                    let kind = ev.get("kind").and_then(|k| k.as_str())?;
+                    let seq = ev.get("seq").and_then(|s| s.as_i64()).unwrap_or(cursor_seq);
+                    Some(EventLine {
+                        seq,
+                        kind: kind.into(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (cursor_seq, events)
+}
+
+#[allow(dead_code)]
+pub fn render_events(lines: &[EventLine], max: usize) -> Vec<String> {
+    lines
+        .iter()
+        .rev()
+        .take(max)
+        .rev()
+        .map(|e| format!("seq={:>3} {}", e.seq, e.kind))
+        .collect()
+}
+
+#[cfg(test)]
+mod event_tests {
+    use super::*;
+
+    #[test]
+    fn parse_event_page_extracts_cursor_and_kinds() {
+        let resp = serde_json::json!({
+            "data": {
+                "cursor": {"seq": 3, "runId": "r1", "storeId": "s1"},
+                "events": [
+                    {"kind": "run.created"},
+                    {"kind": "run.paused"},
+                    {"kind": "run.resumed"}
+                ]
+            }
+        });
+        let (cursor, events) = parse_event_page(&resp);
+        assert_eq!(cursor, 3);
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].seq, 3); // payload seq wins over inferred
+        assert_eq!(events[0].kind, "run.created");
+        assert_eq!(events[2].kind, "run.resumed");
+    }
+
+    #[test]
+    fn parse_event_page_tolerates_empty() {
+        let resp = serde_json::json!({"data": {"cursor": {"seq": 0}, "events": []}});
+        let (cursor, events) = parse_event_page(&resp);
+        assert_eq!(cursor, 0);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn render_events_keeps_latest_tail() {
+        let lines: Vec<EventLine> = (1..=5)
+            .map(|i| EventLine {
+                seq: i,
+                kind: format!("ev{i}"),
+            })
+            .collect();
+        let rendered = render_events(&lines, 3);
+        assert_eq!(rendered.len(), 3);
+        assert!(rendered[0].contains("ev3"));
+        assert!(rendered[2].contains("ev5"));
+    }
+}
