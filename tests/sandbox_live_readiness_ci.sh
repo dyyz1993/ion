@@ -82,7 +82,7 @@ echo ""
 echo "═ Phase C: --check 判定（本地 listener 模拟可达端点 → 按套件差异化）"
 # ════════════════════════════════════════════════════════
 LP=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
-python3 -c "import socket,time; s=socket.socket(); s.bind(('127.0.0.1',$LP)); s.listen(5); time.sleep(120)" &
+python3 -c "import socket,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('127.0.0.1',$LP)); s.listen(5); time.sleep(120)" &
 LISTEN_PID=$!
 # 轮询等 listener 真正 accept——固定 sleep 1 在慢 CI 上 python 还没 bind 完
 # （run 38750756657 C2/C3 假红：TCP 不可达被如实标注）
@@ -98,7 +98,7 @@ check $CR2 "C1 --check（可达端点）退出 0"
 # ASCII 断言：CI 的 POSIX locale 会把 emoji/中文打碎，grep 'TCP 可达' 在
 # runner 上不可靠（C1 exit 0 但 C2/C3 恒红的形态，r22）
 echo "$CHK2_OUT" | grep -aq 'TCP' && echo "$CHK2_OUT" | grep -aq '127.0.0.1'; check $? "C2 端点标记可达"
-echo "$CHK2_OUT" | grep -aq 'policy-rpc' && echo "$CHK2_OUT" | grep -aq '可执行'; check $? "C3 policy-rpc 判定可执行（隔离 HOME 无需 LLM）"
+echo "$CHK2_OUT" | grep -aq 'policy-rpc' && echo "$CHK2_OUT" | grep -aq 'READY\|--run policy-rpc'; check $? "C3 policy-rpc 判定可执行（隔离 HOME 无需 LLM）"
 if [ "$FAIL" -gt 0 ] 2>/dev/null; then :; fi
 echo "$CHK2_OUT" | grep -aq 'pump-e2e'; check $? "C4 pump-e2e 判定未就绪（隔离 HOME 无 LLM 配置）"
 echo "$CHK2_OUT" | grep -aq 'stateless' && echo "$CHK2_OUT" | grep -aq '未就绪'; check $? "C5 stateless 判定未就绪（同上）"
@@ -108,7 +108,7 @@ echo "$CHK2_OUT" | grep -aq 'stateless' && echo "$CHK2_OUT" | grep -aq '未就�
 echo ""
 echo "═ Phase D: --run 安全门（可达端点 + 本地 listener；绝不进入执行体）"
 # ════════════════════════════════════════════════════════
-python3 -c "import socket,time; s=socket.socket(); s.bind(('127.0.0.1',$LP)); s.listen(5); time.sleep(120)" &
+python3 -c "import socket,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('127.0.0.1',$LP)); s.listen(5); time.sleep(120)" &
 LISTEN_PID=$!
 # 同 C 段：轮询等 bind（固定 sleep 1 在慢 CI 上未就绪 → tcp_probe 挂 →
 # --run 走 exit 3 而非预期 exit 2，D1 假红）
@@ -229,7 +229,7 @@ emit({"success": False, "error": "unknown command"})
 PYEOF
 chmod +x "$FAKE_ION"
 
-python3 -c "import socket,time; s=socket.socket(); s.bind(('127.0.0.1',$LP)); s.listen(5); time.sleep(120)" &
+python3 -c "import socket,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('127.0.0.1',$LP)); s.listen(5); time.sleep(120)" &
 LISTEN_PID=$!
 for _ in $(seq 1 20); do
     if python3 -c "import socket; s=socket.create_connection(('127.0.0.1',$LP),timeout=1)" 2>/dev/null; then
