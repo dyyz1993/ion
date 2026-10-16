@@ -145,6 +145,28 @@ use ion::approval_bus::{ApprovalBus, ApprovalChange, ApprovalDecision, ApprovalK
 static HOST_EVENT_BUS: OnceLock<Arc<tokio::sync::Mutex<ion::event_bus::ExtensionEventBus>>> =
     OnceLock::new();
 
+/// Durable execution ledger writer, initialized only when runtime config opts in.
+static DURABLE_EXECUTION: OnceLock<Result<Arc<ion::execution::store::ExecutionWriter>, String>> =
+    OnceLock::new();
+
+fn durable_execution_writer() -> Result<Arc<ion::execution::store::ExecutionWriter>, String> {
+    if !ion::config::IonConfig::load().runtime.durable_execution {
+        return Err("durable execution disabled".into());
+    }
+    DURABLE_EXECUTION
+        .get_or_init(|| {
+            ion::execution::store::ExecutionStore::open_default()
+                .and_then(|mut store| {
+                    store.reconcile_on_open()?;
+                    Ok(Arc::new(ion::execution::store::ExecutionWriter::spawn(
+                        store,
+                    )))
+                })
+                .map_err(|e| e.to_string())
+        })
+        .clone()
+}
+
 /// 广播一条 route=ui 的 host 级事件（广播_ui_event 同款 Handle::spawn 模式；
 /// 无 tokio runtime 或未接线时静默跳过，不 panic）。
 fn broadcast_host_ui_event(custom_type: &str, data: serde_json::Value, session: Option<&str>) {
@@ -7746,6 +7768,90 @@ async fn handle_manager_command(
         "verb_pending" => Ok(serde_json::json!({
             "pending": ion::worker_registry::verb_pending_list()
         })),
+        "run.get" => {
+            let params = cmd.get("params").cloned().unwrap_or_default();
+            let run_id = params
+                .get("runId")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            run_id
+                .ok_or_else(|| "missing 'runId' param".to_string())
+                .and_then(|run_id| {
+                    durable_execution_writer().and_then(move |writer| {
+                        writer
+                            .call(move |store| store.snapshot(&run_id))
+                            .map_err(|e| e.to_string())
+                            .and_then(|v| serde_json::to_value(v).map_err(|e| e.to_string()))
+                    })
+                })
+        }
+        "run.resume" => {
+            let params = cmd.get("params").cloned().unwrap_or_default();
+            let run_id = params
+                .get("runId")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let request_id = params
+                .get("requestId")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let expected_version = params.get("expectedStateVersion").and_then(|v| v.as_i64());
+            let recovery_plan_id = params
+                .get("recoveryPlanId")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            run_id
+                .ok_or_else(|| "missing 'runId' param".to_string())
+                .and_then(|run_id| {
+                    request_id
+                        .ok_or_else(|| "missing 'requestId' param".to_string())
+                        .and_then(move |request_id| {
+                            expected_version
+                                .ok_or_else(|| "missing 'expectedStateVersion' param".to_string())
+                                .and_then(move |expected_version| {
+                                    durable_execution_writer().and_then(move |writer| {
+                                        writer
+                                            .call(move |store| {
+                                                store.accept_resume(
+                                                    "local",
+                                                    &run_id,
+                                                    &request_id,
+                                                    expected_version,
+                                                    recovery_plan_id.as_deref(),
+                                                    &serde_json::Value::Null,
+                                                )
+                                            })
+                                            .map_err(|e| e.to_string())
+                                            .and_then(|v| {
+                                                serde_json::to_value(v).map_err(|e| e.to_string())
+                                            })
+                                    })
+                                })
+                        })
+                })
+        }
+        "events.subscribe" => {
+            let params = cmd.get("params").cloned().unwrap_or_default();
+            let run_id = params
+                .get("runId")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let after_seq = params
+                .get("afterCursor")
+                .and_then(|cursor| cursor.get("seq"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            run_id
+                .ok_or_else(|| "missing 'runId' param".to_string())
+                .and_then(|run_id| {
+                    durable_execution_writer().and_then(move |writer| {
+                        writer
+                            .call(move |store| store.events_after(&run_id, after_seq, 100))
+                            .map_err(|e| e.to_string())
+                            .and_then(|v| serde_json::to_value(v).map_err(|e| e.to_string()))
+                    })
+                })
+        }
         // Host 级会话直读：纯磁盘读 JSONL，不拉起 worker（UI 浏览历史会话用，毫秒级）
         "get_session_messages" => host_direct_session_read(&cmd, "messages"),
         "list_session_turns" => host_direct_session_read(&cmd, "turns"),

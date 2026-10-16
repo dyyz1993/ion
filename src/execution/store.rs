@@ -6,8 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::types::{
-    AttemptLease, EventPage, ExecutionCursor, ResumeReceipt, RunSnapshot, TERMINAL_RUN_STATES,
-    TaskSummary, ToolCheckpoint, ToolOutcome,
+    AttemptLease, EventPage, ExecutionCursor, ReconciliationSummary, ResumeReceipt, RunSnapshot,
+    TERMINAL_RUN_STATES, TaskSummary, ToolCheckpoint, ToolOutcome,
 };
 
 const SCHEMA_VERSION: i64 = 1;
@@ -60,11 +60,19 @@ impl ExecutionStore {
         conn.pragma_update(None, "synchronous", "FULL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_millis(5_000))?;
-        let store_id = format!("exec-{}", uuid::Uuid::new_v4());
-        Self::initialize(conn, &store_id).map(|conn| Self {
-            path: path.as_ref().to_path_buf(),
-            conn,
-            store_id,
+        let proposed_store_id = format!("exec-{}", uuid::Uuid::new_v4());
+        Self::initialize(conn, &proposed_store_id).and_then(|conn| {
+            conn.query_row(
+                "SELECT store_id FROM store_meta WHERE singleton=1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .map(|store_id| Self {
+                path: path.as_ref().to_path_buf(),
+                conn,
+                store_id,
+            })
+            .map_err(Into::into)
         })
     }
 
@@ -168,6 +176,19 @@ impl ExecutionStore {
             "INSERT OR IGNORE INTO store_meta(singleton, store_id, schema_version, host_epoch) VALUES(1, ?1, ?2, 0)",
             params![store_id, SCHEMA_VERSION],
         )?;
+        conn.query_row(
+            "SELECT store_id FROM store_meta WHERE singleton=1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .map(Some)
+        .or_else(|e| {
+            if matches!(e, rusqlite::Error::QueryReturnedNoRows) {
+                Ok(None)
+            } else {
+                Err(e)
+            }
+        })?;
         Ok(conn)
     }
 
@@ -177,6 +198,42 @@ impl ExecutionStore {
 
     pub fn store_id(&self) -> &str {
         &self.store_id
+    }
+
+    pub fn reconcile_on_open(&mut self) -> StoreResult<ReconciliationSummary> {
+        self.transaction_mut(|store| {
+            let (schema_version, old_epoch): (i64, i64) = store.conn.query_row(
+                "SELECT schema_version,host_epoch FROM store_meta WHERE singleton=1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            if schema_version != SCHEMA_VERSION {
+                return Err(ExecutionStoreError::Invariant(format!(
+                    "unsupported schema {schema_version}, expected {SCHEMA_VERSION}"
+                )));
+            }
+            let epoch = old_epoch.saturating_add(1);
+            store.conn.execute(
+                "UPDATE store_meta SET host_epoch=?1 WHERE singleton=1",
+                params![epoch],
+            )?;
+            let mut stmt = store.conn.prepare(
+                "SELECT run_id FROM runs WHERE state NOT IN ('succeeded','failed','cancelled')",
+            )?;
+            let run_ids = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(stmt);
+            let mut reconciled = 0;
+            for run_id in &run_ids {
+                reconciled += store.recover_interrupted_attempts_tx(run_id)?;
+            }
+            Ok(ReconciliationSummary {
+                host_epoch: epoch,
+                runs_scanned: run_ids.len(),
+                changed_attempts: reconciled,
+            })
+        })
     }
 
     pub fn create_run(
@@ -583,8 +640,12 @@ impl ExecutionStore {
     }
 
     pub fn recover_interrupted_attempts(&mut self, run_id: &str) -> StoreResult<usize> {
-        self.transaction(|store| {
-            let mut stmt = store.conn.prepare(
+        self.transaction(|store| store.recover_interrupted_attempts_tx(run_id))
+    }
+
+    fn recover_interrupted_attempts_tx(&self, run_id: &str) -> StoreResult<usize> {
+        {
+            let mut stmt = self.conn.prepare(
                 "SELECT a.task_id,a.attempt_id,t.policy_json FROM attempts a \
                  JOIN tasks t ON t.task_id=a.task_id \
                  WHERE t.run_id=?1 AND a.phase='executing' AND t.result_json IS NULL",
@@ -609,11 +670,11 @@ impl ExecutionStore {
                     "replaySafe": replay_safe,
                 })
                 .to_string();
-                store.conn.execute(
+                self.conn.execute(
                     "UPDATE attempts SET phase=?2,outcome_json=?3 WHERE attempt_id=?1 AND phase='executing'",
                     params![attempt_id, phase, outcome],
                 )?;
-                store.conn.execute(
+                self.conn.execute(
                     "UPDATE tasks SET state=?2,version=version+1 WHERE task_id=?1",
                     params![task_id, task_state],
                 )?;
@@ -623,28 +684,54 @@ impl ExecutionStore {
                 }
             }
             if changed > 0 {
-                let run = store.load_run(run_id)?;
+                let run = self.load_run(run_id)?;
                 let version = run.version + 1;
                 let state = if blocked {
                     "blocked".to_string()
                 } else {
                     run.state
                 };
-                let reason = if blocked { Some("uncertain_tool_effect".to_string()) } else { None };
-                store.conn.execute(
+                let reason = if blocked {
+                    Some("uncertain_tool_effect".to_string())
+                } else {
+                    None
+                };
+                self.conn.execute(
                     "UPDATE runs SET state=?2,reason_code=?3,version=?4,updated_ms=?5 WHERE run_id=?1",
                     params![run_id, state, reason, version, now_ms()],
                 )?;
-                store.append_event_tx(run_id, version, "run.recovery.reconciled", &serde_json::json!({
-                    "changedAttempts": changed,
-                    "blocked": blocked,
-                }))?;
+                self.append_event_tx(
+                    run_id,
+                    version,
+                    "run.recovery.reconciled",
+                    &serde_json::json!({
+                        "changedAttempts": changed,
+                        "blocked": blocked,
+                    }),
+                )?;
             }
             Ok(changed)
-        })
+        }
     }
 
     fn transaction<T>(&mut self, f: impl FnOnce(&Self) -> StoreResult<T>) -> StoreResult<T> {
+        self.conn.execute("BEGIN IMMEDIATE", [])?;
+        match f(self) {
+            Ok(value) => {
+                self.conn.execute("COMMIT", [])?;
+                Ok(value)
+            }
+            Err(e) => {
+                let _ = self.conn.execute("ROLLBACK", []);
+                Err(e)
+            }
+        }
+    }
+
+    fn transaction_mut<T>(
+        &mut self,
+        mut f: impl FnMut(&mut Self) -> StoreResult<T>,
+    ) -> StoreResult<T> {
         self.conn.execute("BEGIN IMMEDIATE", [])?;
         match f(self) {
             Ok(value) => {
@@ -996,6 +1083,45 @@ mod tests {
                 .tasks
                 .iter()
                 .any(|t| t.task_id == "unsafe-task" && t.state == "uncertain")
+        );
+    }
+
+    #[test]
+    fn reopen_reconciles_host_epoch_and_uncertain_attempt() {
+        let (mut store, dir) = temp_store();
+        let snap = store
+            .create_run("s1", "main", serde_json::json!({}), serde_json::json!({}))
+            .unwrap();
+        let checkpoint = ToolCheckpoint {
+            task_id: "unsafe-task".into(),
+            logical_key: "call-unsafe".into(),
+            name: "bash".into(),
+            call_id: "call-unsafe".into(),
+            arguments: serde_json::json!({}),
+            policy: crate::agent::tool::RecoveryPolicy::Unsafe,
+        };
+        store
+            .checkpoint_tool_batch(
+                &snap.run_id,
+                &serde_json::json!({}),
+                std::slice::from_ref(&checkpoint),
+            )
+            .unwrap();
+        store
+            .start_tool_attempt(&snap.run_id, "unsafe-task", Some("old-worker"))
+            .unwrap();
+        drop(store);
+
+        let mut reopened = ExecutionStore::open(dir.path().join("execution.sqlite3")).unwrap();
+        let summary = reopened.reconcile_on_open().unwrap();
+        assert_eq!(summary.host_epoch, 1);
+        assert_eq!(summary.runs_scanned, 1);
+        assert_eq!(summary.changed_attempts, 1);
+        let recovered = reopened.snapshot(&snap.run_id).unwrap();
+        assert_eq!(recovered.state, "blocked");
+        assert_eq!(
+            recovered.reason_code.as_deref(),
+            Some("uncertain_tool_effect")
         );
     }
 

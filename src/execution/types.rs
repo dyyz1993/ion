@@ -83,3 +83,10 @@ pub struct ToolOutcome {
     pub success: bool,
     pub output: String,
 }
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ReconciliationSummary {
+    pub host_epoch: i64,
+    pub runs_scanned: usize,
+    pub changed_attempts: usize,
+}

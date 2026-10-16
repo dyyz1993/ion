@@ -52,4 +52,4 @@ Recovery never means approval of unknown effects, arbitrary process revival, tok
 
 ## CLI verification
 
-Automated verification is `tests/durable_execution_ci.sh` once PR3 exposes the API. PR1/PR2 store tests must also be observable through a library test harness before public RPC exists. Real-LLM cases are ignored unless `ION_E2E=1`.
+Automated verification is `tests/durable_execution_ci.sh`. PR3 exposes host-level `run.get`, `run.resume`, and paginated `events.subscribe`; host startup initializes the ledger and performs epoch reconciliation. Current subscription RPC returns a durable event page and is a pull substrate for the PR4 live subscriber; clients must not infer execution state from socket liveness. PR1/PR2 store tests remain the transaction/recovery source of truth. Real-LLM cases are ignored unless `ION_E2E=1`.
