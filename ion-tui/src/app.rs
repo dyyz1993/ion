@@ -1,5 +1,7 @@
 use crate::connection::Connection;
+use crate::conversation::{message_lines, parse_messages};
 use crate::input::Action;
+use crate::sessions::{TreeRow, build_tree, parse_busy_ids, parse_sessions};
 use crate::state::{
     EventLine, RunListEntry, TaskRow, parse_event_page, parse_run_list, parse_tasks, render_events,
     render_lines, render_task_lines, task_lines,
@@ -14,6 +16,10 @@ pub struct App {
     pub tasks: Vec<TaskRow>,
     pub detail_run_id: Option<String>,
     pub expanded: std::collections::HashSet<String>,
+    pub session_rows: Vec<TreeRow>,
+    pub session_cursor: Option<usize>,
+    pub conversation_session: Option<String>,
+    pub conversation_lines: Vec<crate::conversation::MsgLine>,
     #[allow(dead_code)]
     pub cursor: i64,
     #[allow(dead_code)]
@@ -30,6 +36,10 @@ impl App {
             tasks: Vec::new(),
             detail_run_id: None,
             expanded: Default::default(),
+            session_rows: Vec::new(),
+            session_cursor: None,
+            conversation_session: None,
+            conversation_lines: Vec::new(),
             cursor: 0,
             event_run_id: None,
         }
@@ -152,6 +162,108 @@ impl App {
         Ok(())
     }
 
+    /// Refresh session tree from two RPCs and rebuild rows.
+    pub async fn refresh_sessions(&mut self, conn: &mut Connection) -> Result<(), String> {
+        let all = conn
+            .rpc("list_all_sessions", serde_json::json!({}), 5000)
+            .await?;
+        let live = conn
+            .rpc("list_sessions", serde_json::json!({}), 5000)
+            .await?;
+        let sessions = parse_sessions(&all);
+        let busy = parse_busy_ids(&live);
+        let durable: std::collections::HashSet<String> = self
+            .runs
+            .iter()
+            .filter(|r| !matches!(r.state.as_str(), "succeeded" | "failed" | "cancelled"))
+            .map(|r| r.session_id.clone())
+            .collect();
+        self.session_rows = build_tree(&sessions, &busy, &durable);
+        if self.session_cursor.is_none() && !self.session_rows.is_empty() {
+            // First selectable (non-group) row.
+            self.session_cursor = self
+                .session_rows
+                .iter()
+                .position(|r| !r.session_id.starts_with("group:"));
+        }
+        Ok(())
+    }
+
+    pub fn session_cursor_next(&mut self) {
+        let selectable: Vec<usize> = self
+            .session_rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| !r.session_id.starts_with("group:"))
+            .map(|(i, _)| i)
+            .collect();
+        if selectable.is_empty() {
+            return;
+        }
+        let next = match self.session_cursor {
+            None => selectable[0],
+            Some(cur) => {
+                let pos = selectable
+                    .iter()
+                    .position(|&i| i >= cur)
+                    .map(|p| p + 1)
+                    .unwrap_or(0);
+                selectable[pos.min(selectable.len() - 1)]
+            }
+        };
+        self.session_cursor = Some(next);
+    }
+
+    pub fn session_cursor_prev(&mut self) {
+        let selectable: Vec<usize> = self
+            .session_rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| !r.session_id.starts_with("group:"))
+            .map(|(i, _)| i)
+            .collect();
+        if selectable.is_empty() {
+            return;
+        }
+        let prev = match self.session_cursor {
+            None => selectable[selectable.len() - 1],
+            Some(cur) => {
+                let pos = selectable.iter().position(|&i| i >= cur).unwrap_or(1);
+                selectable[pos.saturating_sub(1)]
+            }
+        };
+        self.session_cursor = Some(prev);
+    }
+
+    pub fn selected_session_id(&self) -> Option<&str> {
+        self.session_cursor
+            .and_then(|i| self.session_rows.get(i))
+            .filter(|r| !r.session_id.starts_with("group:"))
+            .map(|r| r.session_id.as_str())
+    }
+
+    /// Load conversation for a session (get_session_messages).
+    pub async fn load_conversation(
+        &mut self,
+        conn: &mut Connection,
+        session_id: &str,
+    ) -> Result<(), String> {
+        if self.conversation_session.as_deref() == Some(session_id) {
+            return Ok(());
+        }
+        let resp = conn
+            .rpc(
+                "get_session_messages",
+                serde_json::json!({"session": session_id, "limit": 200, "view": "live"}),
+                5000,
+            )
+            .await?;
+        let msgs = parse_messages(&resp);
+        self.conversation_lines = message_lines(&msgs, &self.expanded);
+        self.conversation_session = Some(session_id.to_string());
+        Ok(())
+    }
+
     /// Load task detail for the selected run (run.get) when selection changes.
     pub async fn load_detail(&mut self, conn: &mut Connection) -> Result<(), String> {
         let Some(run_id) = self.selected_run_id().map(String::from) else {
@@ -194,6 +306,42 @@ impl App {
         let mut lines = vec!["--- tasks ---".into()];
         lines.extend(render_task_lines(&task_lines(&self.tasks, &self.expanded)));
         lines
+    }
+
+    pub fn render_sessions_text(&self) -> Vec<String> {
+        let mut lines = vec!["--- sessions ---".into()];
+        if self.session_rows.is_empty() {
+            lines.push("(no sessions)".into());
+            return lines;
+        }
+        for (i, r) in self.session_rows.iter().enumerate() {
+            if r.session_id.starts_with("group:") {
+                lines.push(r.label.to_string());
+                continue;
+            }
+            let cursor = if self.session_cursor == Some(i) {
+                "> "
+            } else {
+                "  "
+            };
+            let pad = "  ".repeat(r.indent);
+            let mut line = format!("{cursor}{pad}{}", r.label);
+            if r.busy {
+                line.push_str(" ●");
+            }
+            if r.durable_active {
+                line.push_str(" ◐");
+            }
+            lines.push(line);
+        }
+        lines
+    }
+
+    pub fn render_conversation_text(&self) -> Vec<String> {
+        if self.conversation_lines.is_empty() {
+            return vec!["(no messages)".into()];
+        }
+        crate::conversation::render_lines(&self.conversation_lines)
     }
 
     pub fn render(&self) -> Vec<String> {

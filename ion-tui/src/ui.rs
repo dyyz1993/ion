@@ -12,8 +12,38 @@ use crate::app::App;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Focus {
     #[default]
+    Sessions,
+    Conversation,
     Runs,
     Events,
+}
+
+impl Focus {
+    pub fn next(self) -> Self {
+        match self {
+            Focus::Sessions => Focus::Conversation,
+            Focus::Conversation => Focus::Runs,
+            Focus::Runs => Focus::Events,
+            Focus::Events => Focus::Sessions,
+        }
+    }
+    #[allow(dead_code)]
+    pub fn from_index(i: usize) -> Self {
+        match i {
+            0 => Focus::Sessions,
+            1 => Focus::Conversation,
+            2 => Focus::Runs,
+            _ => Focus::Events,
+        }
+    }
+    pub fn index(self) -> usize {
+        match self {
+            Focus::Sessions => 0,
+            Focus::Conversation => 1,
+            Focus::Runs => 2,
+            Focus::Events => 3,
+        }
+    }
 }
 
 /// Collapse/expand state for detail groups.
@@ -26,10 +56,7 @@ pub struct PanelState {
 
 impl PanelState {
     pub fn toggle_focus(&mut self) {
-        self.focus = match self.focus {
-            Focus::Runs => Focus::Events,
-            Focus::Events => Focus::Runs,
-        };
+        self.focus = self.focus.next();
     }
 
     /// Running/uncertain tasks default to expanded; everything else collapsed
@@ -64,28 +91,40 @@ impl PanelState {
 }
 
 pub fn draw(f: &mut Frame, app: &App, panels: &PanelState) {
-    let chunks = Layout::vertical([
+    let outer = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(8),
         Constraint::Length(1),
     ])
     .split(f.area());
 
-    let tabs = Tabs::new(vec!["[1] Runs", "[2] Events"])
-        .select(match panels.focus {
-            Focus::Runs => 0,
-            Focus::Events => 1,
-        })
-        .highlight_style(
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        );
-    f.render_widget(tabs, chunks[0]);
+    let tabs = Tabs::new(vec![
+        "[1] Sessions",
+        "[2] Conversation",
+        "[3] Runs",
+        "[4] Events",
+    ])
+    .select(panels.focus.index())
+    .highlight_style(
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
+    f.render_widget(tabs, outer[0]);
 
+    let cols = Layout::horizontal([
+        Constraint::Percentage(30),
+        Constraint::Percentage(40),
+        Constraint::Percentage(30),
+    ])
+    .split(outer[1]);
+
+    draw_sessions(f, app, panels, cols[0]);
+    draw_conversation(f, app, panels, cols[1]);
     match panels.focus {
-        Focus::Runs => draw_runs(f, app, chunks[1]),
-        Focus::Events => draw_events(f, app, chunks[1]),
+        Focus::Runs => draw_runs(f, app, cols[2]),
+        Focus::Events => draw_events(f, app, cols[2]),
+        _ => draw_runs(f, app, cols[2]),
     }
 
     let help = Line::from(vec![
@@ -97,7 +136,86 @@ pub fn draw(f: &mut Frame, app: &App, panels: &PanelState) {
         Span::styled("e expand  ", Style::default().fg(Color::DarkGray)),
         Span::styled("q quit", Style::default().fg(Color::DarkGray)),
     ]);
-    f.render_widget(Paragraph::new(help), chunks[2]);
+    f.render_widget(Paragraph::new(help), outer[2]);
+}
+
+fn draw_sessions(f: &mut Frame, app: &App, panels: &PanelState, area: ratatui::layout::Rect) {
+    let focused = panels.focus == Focus::Sessions;
+    let title = if focused { "Sessions ◆" } else { "Sessions" };
+    let lines: Vec<Line> = app
+        .session_rows
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let cursor = if panels.focus == Focus::Sessions && app.session_cursor == Some(i) {
+                Span::styled("> ", Style::default().fg(Color::Cyan))
+            } else {
+                Span::raw("  ")
+            };
+            let mut spans = vec![
+                cursor,
+                Span::raw("  ".repeat(r.indent)),
+                Span::raw(r.label.clone()),
+            ];
+            if r.busy {
+                spans.push(Span::styled(" ●", Style::default().fg(Color::Green)));
+            }
+            if r.durable_active {
+                spans.push(Span::styled(" ◐", Style::default().fg(Color::Yellow)));
+            }
+            let style = if r.kind == crate::sessions::SessionKind::Peer {
+                Style::default().fg(Color::DarkGray)
+            } else {
+                Style::default()
+            };
+            Line::from(spans).style(style)
+        })
+        .collect();
+    let para = Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(title));
+    f.render_widget(para, area);
+}
+
+fn draw_conversation(f: &mut Frame, app: &App, panels: &PanelState, area: ratatui::layout::Rect) {
+    let focused = panels.focus == Focus::Conversation;
+    let title = match app.conversation_session.as_deref() {
+        Some(sid) => format!("Conversation ◆ {sid}"),
+        None => "Conversation (select a session)".into(),
+    };
+    let title = if focused {
+        format!("◆ {title}")
+    } else {
+        title
+    };
+    let mut lines: Vec<Line> = Vec::new();
+    if app.conversation_lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "(no messages)",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        for l in crate::conversation::render_lines(&app.conversation_lines) {
+            let style = if l.starts_with("❯") {
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else if l.starts_with("▸") {
+                Style::default().fg(Color::Yellow)
+            } else if l.starts_with('·') {
+                Style::default().fg(Color::DarkGray)
+            } else {
+                Style::default()
+            };
+            lines.push(Line::from(Span::styled(l, style)));
+        }
+    }
+    for l in app.render_task_detail() {
+        lines.push(Line::from(Span::styled(
+            l,
+            Style::default().fg(Color::Cyan),
+        )));
+    }
+    let para = Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(title));
+    f.render_widget(para, area);
 }
 
 fn draw_runs(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -203,10 +321,14 @@ mod tests {
     #[test]
     fn focus_toggles_between_panels() {
         let mut panels = PanelState::default();
+        assert_eq!(panels.focus, Focus::Sessions);
+        panels.toggle_focus();
+        assert_eq!(panels.focus, Focus::Conversation);
+        panels.toggle_focus();
         assert_eq!(panels.focus, Focus::Runs);
         panels.toggle_focus();
         assert_eq!(panels.focus, Focus::Events);
         panels.toggle_focus();
-        assert_eq!(panels.focus, Focus::Runs);
+        assert_eq!(panels.focus, Focus::Sessions);
     }
 }

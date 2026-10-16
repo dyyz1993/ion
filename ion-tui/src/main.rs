@@ -1,6 +1,8 @@
 mod app;
 mod connection;
+mod conversation;
 mod input;
+mod sessions;
 mod state;
 mod ui;
 
@@ -40,6 +42,17 @@ async fn run(socket: PathBuf, headless: bool) -> Result<(), String> {
     let mut app = App::new();
     app.refresh(&mut conn).await?;
     app.select_next(); // default: first run selected so events poll has a target
+    // v0.5: build session tree before first draw; retry up to 3x because the
+    // host closes idle write halves between startup RPCs.
+    for _ in 0..3 {
+        match app.refresh_sessions(&mut conn).await {
+            Ok(()) => break,
+            Err(e) if e.contains("writer closed") => {
+                conn = connection::Connection::connect(&socket).await?;
+            }
+            Err(e) => return Err(e),
+        }
+    }
     if let Err(e) = app.load_detail(&mut conn).await {
         if e.contains("writer closed") {
             conn = connection::Connection::connect(&socket).await?;
@@ -58,6 +71,15 @@ async fn run(socket: PathBuf, headless: bool) -> Result<(), String> {
     }
 
     if headless {
+        // Text render: sessions tree + runs + events + tasks (conversation body
+        // needs a selected session; print placeholder line for CI assertions).
+        for line in app.render_sessions_text() {
+            println!("{line}");
+        }
+        println!("--- conversation ---");
+        for line in app.render_conversation_text() {
+            println!("{line}");
+        }
         for line in app.render() {
             println!("{line}");
         }
@@ -94,6 +116,7 @@ async fn tui_loop(
     loop {
         let _ = app.poll_events(conn).await;
         let _ = app.load_detail(conn).await;
+        let _ = app.refresh_sessions(conn).await;
         terminal
             .draw(|f| ui::draw(f, app, &panels))
             .map_err(|e| format!("draw: {e}"))?;
@@ -106,9 +129,30 @@ async fn tui_loop(
                         use crossterm::event::KeyCode;
                         match key.code {
                             KeyCode::Char('q') | KeyCode::Esc => break,
-                            KeyCode::Char('j') | KeyCode::Down => app.select_next(),
-                            KeyCode::Char('k') | KeyCode::Up => app.select_prev(),
                             KeyCode::Tab => panels.toggle_focus(),
+                            KeyCode::Char('1') => panels.focus = ui::Focus::Sessions,
+                            KeyCode::Char('2') => panels.focus = ui::Focus::Conversation,
+                            KeyCode::Char('3') => panels.focus = ui::Focus::Runs,
+                            KeyCode::Char('4') => panels.focus = ui::Focus::Events,
+                            KeyCode::Char('j') | KeyCode::Down => match panels.focus {
+                                ui::Focus::Sessions => app.session_cursor_next(),
+                                ui::Focus::Runs => app.select_next(),
+                                _ => {}
+                            },
+                            KeyCode::Char('k') | KeyCode::Up => match panels.focus {
+                                ui::Focus::Sessions => app.session_cursor_prev(),
+                                ui::Focus::Runs => app.select_prev(),
+                                _ => {}
+                            },
+                            KeyCode::Enter => {
+                                if panels.focus == ui::Focus::Sessions
+                                    && let Some(sid) = app.selected_session_id().map(String::from)
+                                    && let Err(e) = app.load_conversation(conn, &sid).await
+                                    && !e.contains("writer closed")
+                                {
+                                    app.status = e;
+                                }
+                            }
                             KeyCode::Char('e') => {
                                 // Toggle the first task of the selected run (detail list).
                                 if let Some(first) = app.tasks.first() {
