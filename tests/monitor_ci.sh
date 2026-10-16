@@ -163,6 +163,14 @@ else
     record_fail "A1: monitor not added"
 fi
 
+# 🔴 add 响应明说 "restart serve to activate new monitors"——RPC 加的 monitor
+# 只落盘不热加载。重启 serve 让 A1 的定义被 startup 扫描拾起（此前直接等
+# 事件 = 等一个永远不会来的 tick，A2 恒红的真根因）
+cleanup_serve
+RUST_LOG="ion=info" "$ION" serve > /tmp/mon_ci_serve.log 2>&1 &
+SERVE_PID=$!
+wait_for_socket || { echo "FATAL: serve did not restart"; exit 1; }
+
 # A2: workers spawned by monitor (check serve log — deterministic, not timing-dependent)
 # The monitor spawns a worker every `interval_secs`. With FauxProvider the
 # worker completes quickly and exits, so list_workers may show 0 by the time
