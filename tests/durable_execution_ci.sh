@@ -92,6 +92,17 @@ EVENTS=$(rpc --method events.subscribe --params '{"runId":"missing","afterCursor
 RESUME=$(rpc --method run.resume --params '{"runId":"missing","requestId":"r1","expectedStateVersion":0}')
 [ "$(jget "$RESUME" 'd["success"]')" = "False" ] && pass "run.resume validates run" ||
     fail "run.resume validates run: $RESUME"
+STREAM_MISSING=$(python3 - "$SOCK" <<'PYEOF'
+import json, socket, sys
+s=socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect(sys.argv[1])
+req={"id":"sub-missing","method":"events.subscribe","params":{"runId":"missing"}}
+s.sendall((json.dumps(req)+"\n").encode()); s.settimeout(2)
+try: print(s.recv(65536).decode())
+except Exception as e: print("STREAM_ERROR", e)
+PYEOF
+)
+echo "$STREAM_MISSING" | grep -q '"success":false' && echo "$STREAM_MISSING" | grep -q 'run not found' &&
+    pass "events.subscribe stream validates run" || fail "events.subscribe stream: $STREAM_MISSING"
 
 if [ "$FAIL" -eq 0 ]; then
     echo "PASS: $PASS, FAIL: $FAIL"

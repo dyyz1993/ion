@@ -511,6 +511,17 @@ impl ExecutionStore {
     ) -> StoreResult<EventPage> {
         let run = self.load_run(run_id)?;
         if after_seq < 0 || after_seq >= run.next_event_seq {
+            // A new run has no event yet: cursor 0 is valid and returns an empty page.
+            if after_seq == 0 && run.next_event_seq == 0 {
+                return Ok(EventPage {
+                    cursor: ExecutionCursor {
+                        store_id: self.store_id.clone(),
+                        run_id: run_id.to_string(),
+                        seq: 0,
+                    },
+                    events: Vec::new(),
+                });
+            }
             return Err(ExecutionStoreError::InvalidCursor {
                 store_id: self.store_id.clone(),
                 seq: after_seq,

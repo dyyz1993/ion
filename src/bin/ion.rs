@@ -6853,6 +6853,134 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                 return;
                             }
 
+                            // ── Durable execution event stream ──
+                            // Unlike `ion rpc --method events.subscribe` (one page), this
+                            // connection mode stays open and polls contiguous ledger pages.
+                            if method == "events.subscribe" {
+                                let params = cmd.get("params").cloned().unwrap_or_default();
+                                let Some(run_id) = params
+                                    .get("runId")
+                                    .and_then(|v| v.as_str())
+                                    .map(str::to_string)
+                                else {
+                                    let resp = host_response::error(
+                                        cmd.get("id").cloned().unwrap_or_default(),
+                                        "missing 'runId' param",
+                                    );
+                                    let _ =
+                                        write_half.write_all(format!("{resp}\n").as_bytes()).await;
+                                    return;
+                                };
+                                let mut cursor = params
+                                    .get("afterCursor")
+                                    .and_then(|cursor| cursor.get("seq"))
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0);
+                                // Validate before ack so unknown runs never look streamable.
+                                {
+                                    let probe_run = run_id.clone();
+                                    if let Err(e) = durable_execution_writer().and_then(|writer| {
+                                        writer
+                                            .call(move |store| store.snapshot(&probe_run))
+                                            .map_err(|e| e.to_string())
+                                    }) {
+                                        let resp = host_response::error(
+                                            cmd.get("id").cloned().unwrap_or_default(),
+                                            e,
+                                        );
+                                        let _ = write_half
+                                            .write_all(format!("{resp}\n").as_bytes())
+                                            .await;
+                                        return;
+                                    }
+                                }
+                                let writer = match durable_execution_writer() {
+                                    Ok(writer) => writer,
+                                    Err(e) => {
+                                        let resp = host_response::error(
+                                            cmd.get("id").cloned().unwrap_or_default(),
+                                            e,
+                                        );
+                                        let _ = write_half
+                                            .write_all(format!("{resp}\n").as_bytes())
+                                            .await;
+                                        return;
+                                    }
+                                };
+                                let ack = host_response::success(
+                                    cmd.get("id").cloned().unwrap_or_default(),
+                                    serde_json::json!({
+                                        "stream": "durable_events",
+                                        "runId": run_id,
+                                        "afterCursor": cursor,
+                                    }),
+                                );
+                                if write_half
+                                    .write_all(format!("{ack}\n").as_bytes())
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                                let _ = write_half.flush().await;
+                                loop {
+                                    let page = {
+                                        let run_id = run_id.clone();
+                                        let after = cursor;
+                                        writer.call(move |store| {
+                                            store.events_after(&run_id, after, 100)
+                                        })
+                                    };
+                                    match page {
+                                        Ok(page) => {
+                                            cursor = page.cursor.seq;
+                                            for event in page.events {
+                                                let frame = serde_json::json!({
+                                                    "type": "durable_event",
+                                                    "runId": run_id,
+                                                    "cursor": cursor,
+                                                    "event": event,
+                                                });
+                                                if write_half
+                                                    .write_all(format!("{frame}\n").as_bytes())
+                                                    .await
+                                                    .is_err()
+                                                {
+                                                    return;
+                                                }
+                                            }
+                                            let caught_up = serde_json::json!({
+                                                "type": "durable_caught_up",
+                                                "runId": run_id,
+                                                "cursor": cursor,
+                                            });
+                                            if write_half
+                                                .write_all(format!("{caught_up}\n").as_bytes())
+                                                .await
+                                                .is_err()
+                                            {
+                                                return;
+                                            }
+                                            let _ = write_half.flush().await;
+                                        }
+                                        Err(e) => {
+                                            let frame = serde_json::json!({
+                                                "type": "durable_reset_required",
+                                                "runId": run_id,
+                                                "cursor": cursor,
+                                                "error": e.to_string(),
+                                            });
+                                            let _ = write_half
+                                                .write_all(format!("{frame}\n").as_bytes())
+                                                .await;
+                                            let _ = write_half.flush().await;
+                                            return;
+                                        }
+                                    }
+                                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                                }
+                            }
+
                             // ── RPC mode（以下为现有逻辑：session 转发 + 等响应）──
                             let session = cmd
                                 .get("session")
