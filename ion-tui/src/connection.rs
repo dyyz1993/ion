@@ -35,14 +35,26 @@ impl Connection {
                 .subsec_nanos()
         );
         let req = ion_protocol::Request::rpc(&id, method, params);
-        self.writer
-            .write_all(format!("{req}\n").as_bytes())
-            .await
-            .map_err(|e| classify_write_error(method, e))?;
-        self.writer
-            .flush()
-            .await
-            .map_err(|e| classify_write_error(method, e))?;
+        // The host may close our write half between calls; one immediate retry
+        // on the same connection reliably lands (observed since v0.4).
+        let write_all = async {
+            self.writer.write_all(format!("{req}\n").as_bytes()).await?;
+            self.writer.flush().await
+        };
+        if let Err(first) = write_all.await {
+            if first.kind() != std::io::ErrorKind::BrokenPipe {
+                return Err(format!("write {method}: {first}"));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            self.writer
+                .write_all(format!("{req}\n").as_bytes())
+                .await
+                .map_err(|e| classify_write_error(method, e))?;
+            self.writer
+                .flush()
+                .await
+                .map_err(|e| classify_write_error(method, e))?;
+        }
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
         loop {
             let remain = deadline.saturating_duration_since(std::time::Instant::now());

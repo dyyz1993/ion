@@ -162,14 +162,28 @@ impl App {
         Ok(())
     }
 
-    /// Refresh session tree from two RPCs and rebuild rows.
-    pub async fn refresh_sessions(&mut self, conn: &mut Connection) -> Result<(), String> {
-        let all = conn
-            .rpc("list_all_sessions", serde_json::json!({}), 5000)
-            .await?;
-        let live = conn
-            .rpc("list_sessions", serde_json::json!({}), 5000)
-            .await?;
+    /// Refresh session tree from two RPCs and rebuild rows. Each call uses a
+    /// short-lived connection because the host aggressively closes idle write
+    /// halves; a single in-place retry on a fresh connection is reliable.
+    pub async fn refresh_sessions(&mut self, socket: &std::path::Path) -> Result<(), String> {
+        async fn fetch(
+            socket: &std::path::Path,
+            method: &str,
+        ) -> Result<serde_json::Value, String> {
+            let mut conn = Connection::connect(socket).await?;
+            let out = match conn.rpc(method, serde_json::json!({}), 5000).await {
+                Ok(v) => v,
+                Err(e) if e.contains("writer closed") => {
+                    conn = Connection::connect(socket).await?;
+                    conn.rpc(method, serde_json::json!({}), 5000).await?
+                }
+                Err(e) => return Err(e),
+            };
+            drop(conn);
+            Ok(out)
+        }
+        let all = fetch(socket, "list_all_sessions").await?;
+        let live = fetch(socket, "list_sessions").await?;
         let sessions = parse_sessions(&all);
         let busy = parse_busy_ids(&live);
         let durable: std::collections::HashSet<String> = self
@@ -179,6 +193,17 @@ impl App {
             .map(|r| r.session_id.clone())
             .collect();
         self.session_rows = build_tree(&sessions, &busy, &durable);
+        if std::env::var("ION_TUI_DEBUG")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "[tui-debug] refresh_sessions: {} sessions -> {} rows (busy={})",
+                sessions.len(),
+                self.session_rows.len(),
+                busy.len()
+            );
+        }
         if self.session_cursor.is_none() && !self.session_rows.is_empty() {
             // First selectable (non-group) row.
             self.session_cursor = self

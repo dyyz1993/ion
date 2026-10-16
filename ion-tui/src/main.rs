@@ -44,14 +44,21 @@ async fn run(socket: PathBuf, headless: bool) -> Result<(), String> {
     app.select_next(); // default: first run selected so events poll has a target
     // v0.5: build session tree before first draw; retry up to 3x because the
     // host closes idle write halves between startup RPCs.
-    for _ in 0..3 {
-        match app.refresh_sessions(&mut conn).await {
-            Ok(()) => break,
-            Err(e) if e.contains("writer closed") => {
-                conn = connection::Connection::connect(&socket).await?;
+    let mut last_err = String::new();
+    for _ in 0..5 {
+        match app.refresh_sessions(&socket).await {
+            Ok(()) => {
+                last_err.clear();
+                break;
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                last_err = e.clone();
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
         }
+    }
+    if !last_err.is_empty() {
+        return Err(last_err);
     }
     if let Err(e) = app.load_detail(&mut conn).await {
         if e.contains("writer closed") {
@@ -116,7 +123,7 @@ async fn tui_loop(
     loop {
         let _ = app.poll_events(conn).await;
         let _ = app.load_detail(conn).await;
-        let _ = app.refresh_sessions(conn).await;
+        let _ = app.refresh_sessions(&socket).await;
         terminal
             .draw(|f| ui::draw(f, app, &panels))
             .map_err(|e| format!("draw: {e}"))?;
