@@ -7,6 +7,7 @@ use crate::state::{
     EventLine, RunListEntry, TaskRow, parse_event_page, parse_run_list, parse_tasks, render_events,
     render_lines, render_task_lines, task_lines,
 };
+use crate::stream::ToolStreamEvent;
 
 /// Headless-ish application core shared by the TUI loop and CI smoke mode.
 pub struct App {
@@ -309,6 +310,40 @@ impl App {
         rpc(socket, method, params.clone()).await
     }
 
+    pub fn apply_tool_event(&mut self, event: ToolStreamEvent) {
+        let sid = match &event {
+            ToolStreamEvent::Started { session_id, .. }
+            | ToolStreamEvent::Update { session_id, .. }
+            | ToolStreamEvent::Ended { session_id, .. } => session_id.clone(),
+        };
+        if self.conversation_session.as_deref() != Some(sid.as_str()) {
+            return;
+        }
+        match event {
+            ToolStreamEvent::Started {
+                tool_name, command, ..
+            } => {
+                self.live_tool = Some(crate::conversation::LiveToolCard {
+                    name: tool_name,
+                    command,
+                    output_tail: Vec::new(),
+                    elapsed_ms: 0,
+                });
+            }
+            ToolStreamEvent::Update { partial, .. } => {
+                if let Some(card) = &mut self.live_tool {
+                    card.push_output(partial);
+                }
+            }
+            ToolStreamEvent::Ended { duration_ms, .. } => {
+                if let Some(card) = &mut self.live_tool {
+                    card.elapsed_ms = duration_ms;
+                    card.push_output("— completed —");
+                }
+            }
+        }
+    }
+
     pub async fn refresh_approvals(&mut self, socket: &std::path::Path) -> Result<(), String> {
         let resp = Self::rpc_with_retry(socket, "approvals_pending", serde_json::json!({})).await?;
         let mut cards = parse_approvals(&resp);
@@ -430,13 +465,23 @@ impl App {
             .iter()
             .find(|t| matches!(t.state.as_str(), "running" | "claimed" | "executing"))
         {
-            self.live_tool = Some(crate::conversation::LiveToolCard {
-                name: task.kind.clone(),
-                command: task.logical_key.clone(),
-                output_tail: vec!["running…".into()],
-                elapsed_ms: row.runtime_ms,
-            });
-        } else {
+            let same_card = self
+                .live_tool
+                .as_ref()
+                .is_some_and(|c| c.name == task.kind && c.command == task.logical_key);
+            if !same_card {
+                self.live_tool = Some(crate::conversation::LiveToolCard {
+                    name: task.kind.clone(),
+                    command: task.logical_key.clone(),
+                    output_tail: vec!["running…".into()],
+                    elapsed_ms: row.runtime_ms,
+                });
+            }
+        } else if self
+            .live_tool
+            .as_ref()
+            .is_none_or(|c| !c.output_tail.iter().any(|l| l == "— completed —"))
+        {
             self.live_tool = None;
         }
         self.composer.child_count = usize::from(row.busy);
