@@ -258,7 +258,7 @@ impl ExecutionStore {
             }
             // Safe pending work is ready to dispatch; uncertain side effects stay blocked.
             let auto_resumed: usize = store.conn.query_row(
-                "SELECT COUNT(*) FROM runs WHERE auto_resume=1 AND state IN ('queued','recovering') AND \
+                "SELECT COUNT(*) FROM runs WHERE auto_resume=1 AND state IN ('queued','recovering','paused') AND \
                  NOT EXISTS (SELECT 1 FROM tasks t WHERE t.run_id=runs.run_id AND t.state='uncertain')",
                 [],
                 |row| row.get(0),
@@ -266,7 +266,7 @@ impl ExecutionStore {
             if auto_resumed > 0 {
                 store.conn.execute(
                     "UPDATE runs SET state='queued',reason_code=NULL,version=version+1,updated_ms=?1 \
-                     WHERE auto_resume=1 AND state IN ('queued','recovering') AND \
+                     WHERE auto_resume=1 AND state IN ('queued','recovering','paused') AND \
                      NOT EXISTS (SELECT 1 FROM tasks t WHERE t.run_id=runs.run_id AND t.state='uncertain')",
                     params![now_ms()],
                 )?;
