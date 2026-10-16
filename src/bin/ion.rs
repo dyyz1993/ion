@@ -7905,14 +7905,45 @@ async fn handle_manager_command(
             } else if id.is_empty() {
                 Err("missing params.id".to_string())
             } else {
-                ion::worker_registry::WorkerRegistry::execute_unified_approval(
+                let durable_entry = ApprovalBus::global()
+                    .pending()
+                    .into_iter()
+                    .find(|entry| entry.id == id);
+                let outcome = ion::worker_registry::WorkerRegistry::execute_unified_approval(
                     registry,
                     &id,
                     decision_str,
                     ion::approval_bus::ApprovalActor::User,
                     reason.as_deref(),
                 )
-                .await
+                .await;
+                // Persist the decision only after the source-side approval route
+                // succeeded; unknown/durable-only approvals remain source-owned.
+                if outcome.is_ok()
+                    && let Some(entry) = durable_entry
+                    && let Some(run_id) = entry
+                        .payload
+                        .get("durableRunId")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                {
+                    let approval_id = id.clone();
+                    let approve = decision_str == "approve";
+                    let durable_result = durable_execution_writer()
+                        .and_then(|writer| {
+                            writer
+                                .call(move |store| {
+                                    store.decide_approval(&run_id, &approval_id, approve)
+                                })
+                                .map_err(|e| e.to_string())
+                        })
+                        .map_err(|e| e.to_string())
+                        .map(|_| ());
+                    if let Err(e) = durable_result {
+                        tracing::warn!("[durable] approval decision persistence failed: {e}");
+                    }
+                }
+                outcome
             }
         }
         // ── M4.5 VerbGate 审批 RPC ──

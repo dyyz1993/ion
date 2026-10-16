@@ -686,6 +686,46 @@ impl ExecutionStore {
         })
     }
 
+    pub fn consume_child_input(
+        &mut self,
+        run_id: &str,
+        child_task_id: &str,
+        output: &serde_json::Value,
+    ) -> StoreResult<()> {
+        self.transaction(|store| {
+            let run = store.load_run(run_id)?;
+            let input_id: Option<String> = store.conn.query_row(
+                "SELECT input_id FROM queued_inputs WHERE run_id=?1 AND consumed_by_task=?2",
+                params![run_id, child_task_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+            let Some(input_id) = input_id else {
+                return Err(ExecutionStoreError::Invariant(
+                    "child input already consumed or missing".into(),
+                ));
+            };
+            store.conn.execute(
+                "UPDATE tasks SET state='succeeded',version=version+1,result_json=?2 WHERE task_id=?1",
+                params![child_task_id, output.to_string()],
+            )?;
+            store.conn.execute(
+                "DELETE FROM queued_inputs WHERE input_id=?1",
+                params![input_id],
+            )?;
+            let version = run.version + 1;
+            store.conn.execute(
+                "UPDATE runs SET state='running',reason_code=NULL,version=?2,updated_ms=?3 WHERE run_id=?1",
+                params![run_id, version, now_ms()],
+            )?;
+            store.append_event_tx(run_id, version, "child.completed", &serde_json::json!({
+                "childTaskId": child_task_id,
+                "inputId": input_id,
+            }))?;
+            Ok(())
+        })
+    }
+
     pub fn checkpoint_approval(
         &mut self,
         run_id: &str,
@@ -746,6 +786,50 @@ impl ExecutionStore {
             store.append_event_tx(run_id, version, "approval.consumed", &serde_json::json!({
                 "approvalId": approval_id,
             }))?;
+            Ok(())
+        })
+    }
+
+    pub fn decide_approval(
+        &mut self,
+        run_id: &str,
+        approval_id: &str,
+        approve: bool,
+    ) -> StoreResult<()> {
+        self.transaction(|store| {
+            let run = store.load_run(run_id)?;
+            let changed = store.conn.execute(
+                "UPDATE approvals SET status=?3,decision_json=?4,version=version+1 \
+                 WHERE approval_id=?1 AND run_id=?2 AND status='pending'",
+                params![
+                    approval_id,
+                    run_id,
+                    if approve { "approved" } else { "rejected" },
+                    serde_json::json!({ "approve": approve }).to_string()
+                ],
+            )?;
+            if changed != 1 {
+                return Err(ExecutionStoreError::Invariant("stale_approval".into()));
+            }
+            let version = run.version + 1;
+            store.conn.execute(
+                "UPDATE runs SET state=?2,version=?3,updated_ms=?4 WHERE run_id=?1",
+                params![
+                    run_id,
+                    if approve { "running" } else { "failed" },
+                    version,
+                    now_ms()
+                ],
+            )?;
+            store.append_event_tx(
+                run_id,
+                version,
+                "approval.decided",
+                &serde_json::json!({
+                    "approvalId": approval_id,
+                    "approve": approve,
+                }),
+            )?;
             Ok(())
         })
     }
@@ -1703,6 +1787,65 @@ mod tests {
         let stale = store.consume_approval(&snap.run_id, "apr_1", "digest-2", 0);
         assert!(matches!(
             stale.unwrap_err(),
+            ExecutionStoreError::Invariant(_)
+        ));
+    }
+
+    #[test]
+    fn child_and_approval_runtime_lifecycle_close_once() {
+        let (mut store, _dir) = temp_store();
+        let snap = store
+            .create_run("s1", "main", serde_json::json!({}), serde_json::json!({}))
+            .unwrap();
+        let parent = ToolCheckpoint {
+            task_id: "parent-task".into(),
+            logical_key: "spawn".into(),
+            name: "spawn_worker".into(),
+            call_id: "call".into(),
+            arguments: serde_json::json!({}),
+            policy: crate::agent::tool::RecoveryPolicy::Unsafe,
+        };
+        store
+            .checkpoint_tool_batch(
+                &snap.run_id,
+                &serde_json::json!({}),
+                std::slice::from_ref(&parent),
+            )
+            .unwrap();
+        let child = store
+            .checkpoint_child_run(
+                &snap.run_id,
+                "parent-task",
+                &ChildRunPlan {
+                    parent_task_id: "parent-task".into(),
+                    spawn_key: "child".into(),
+                    session_id: "child-session".into(),
+                    input: serde_json::json!({ "task": "x" }),
+                },
+            )
+            .unwrap();
+        store
+            .consume_child_input(&snap.run_id, &child, &serde_json::json!({ "ok": true }))
+            .unwrap();
+        let replay =
+            store.consume_child_input(&snap.run_id, &child, &serde_json::json!({ "ok": true }));
+        assert!(matches!(
+            replay.unwrap_err(),
+            ExecutionStoreError::Invariant(_)
+        ));
+
+        let approval = ApprovalCheckpoint {
+            approval_id: "apr_1".into(),
+            task_id: "parent-task".into(),
+            action_digest: "digest".into(),
+            generation: 0,
+            policy_version: "v1".into(),
+        };
+        store.checkpoint_approval(&snap.run_id, &approval).unwrap();
+        store.decide_approval(&snap.run_id, "apr_1", true).unwrap();
+        let replay_decision = store.decide_approval(&snap.run_id, "apr_1", true);
+        assert!(matches!(
+            replay_decision.unwrap_err(),
             ExecutionStoreError::Invariant(_)
         ));
     }
