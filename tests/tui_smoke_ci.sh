@@ -220,5 +220,63 @@ echo "$OUT" | grep -qE 'run\.(state\.changed|paused|resumed)' &&
     pass 'lifecycle events rendered in events panel' ||
     { fail "no lifecycle events in panel: $OUT"; }
 
+
+cat >"$ROOT/mock_approval_host.py" <<'PY'
+import json, os, signal, socket, sys
+path = sys.argv[1]
+pending = [{
+  "id":"apr_1","kind":"ui_ask","sessionId":"sess-tui-ci-001",
+  "summary":"允许执行部署命令？","payload":{"command":"./deploy.sh --env ci"}
+}]
+approved = False
+def accept(sig, frm):
+    global approved
+    approved = True
+signal.signal(signal.SIGUSR1, accept)
+try: os.unlink(path)
+except FileNotFoundError: pass
+s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM); s.bind(path); s.listen(10)
+while True:
+    c,_=s.accept(); f=c.makefile('rw')
+    for line in f:
+        req=json.loads(line); method=req.get('method')
+        if method=='approval_respond': approved=True
+        data={}
+        if method=='approvals_pending': data={"pending":[] if approved else pending,"requests":[] if approved else pending,"total":0 if approved else 1}
+        elif method=='list_all_sessions': data={"sessions":[{"id":"sess-tui-ci-001","name":"审批演示","project":"ci","updatedAt":1}],"totalCount":1}
+        elif method=='list_sessions': data={"sessions":[]}
+        elif method=='run.list': data=[]
+        elif method=='events.page': data={"cursor":{"seq":0},"events":[]}
+        resp={"type":"response","id":req.get('id'),"success":True,"data":data}
+        c.sendall((json.dumps(resp)+"\n").encode())
+        break
+    c.close()
+PY
+
+echo '[T7] approval card + respond/abort CLI-facing mock'
+MOCK_SOCK="$ROOT/approval-mock.sock"
+python3 "$ROOT/mock_approval_host.py" "$MOCK_SOCK" &
+MOCK_PID=$!
+sleep 1
+OUT=$(HOME="$HOME_DIR" ION_HOST_SOCKET="$MOCK_SOCK" ION_TUI_HEADLESS=1 timeout 10 "$TUI_BIN" 2>/dev/null)
+echo "$OUT" | grep -q '⏸ 审批请求 — \[ui_ask\]' &&
+    pass 'approval card rendered' || fail "approval card missing: $OUT"
+echo "$OUT" | grep -q '✓ 允许 (y)' && echo "$OUT" | grep -q '✗ 拒绝 (n)' &&
+    pass 'approve/reject actions rendered' || fail "approval actions missing: $OUT"
+echo "$OUT" | grep -q '等待审批决策' && pass 'composer locked during approval' || fail 'composer not locked'
+# Signal mock to accept next approval_respond and return empty pending.
+kill -USR1 "$MOCK_PID" 2>/dev/null || true
+sleep 1
+# Direct RPC against mock is unavailable via ion rpc because interceptor? use mock protocol through Python.
+python3 - "$MOCK_SOCK" <<'PY'
+import json,socket,sys
+s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM); s.connect(sys.argv[1])
+req={"id":"approve","method":"approval_respond","params":{"id":"apr_1","decision":"approve"}}
+s.sendall((json.dumps(req)+"\n").encode()); print(s.recv(65536).decode()); s.close()
+PY
+OUT=$(HOME="$HOME_DIR" ION_HOST_SOCKET="$MOCK_SOCK" ION_TUI_HEADLESS=1 timeout 10 "$TUI_BIN" 2>/dev/null)
+echo "$OUT" | grep -vq '⏸ 审批请求' && pass 'approval card clears after approve' || fail "approval still visible: $OUT"
+kill "$MOCK_PID" 2>/dev/null || true
+
 printf 'PASS: %s, FAIL: %s\n' "$PASS" "$FAIL"
 test "$FAIL" -eq 0

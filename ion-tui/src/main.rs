@@ -1,4 +1,5 @@
 mod app;
+mod approvals;
 mod connection;
 mod conversation;
 mod input;
@@ -92,6 +93,7 @@ async fn run(
         }
     }
 
+    let _ = app.refresh_approvals(&socket).await;
     if headless {
         // Text render: sessions tree + runs + events + tasks (conversation body
         // needs a selected session; print placeholder line for CI assertions).
@@ -139,6 +141,7 @@ async fn tui_loop(
         let _ = app.poll_events(conn).await;
         let _ = app.load_detail(conn).await;
         let _ = app.refresh_sessions(socket).await;
+        let _ = app.refresh_approvals(socket).await;
         if let Some(sid) = app.selected_session_id().map(String::from)
             && app.conversation_session.as_deref() != Some(sid.as_str())
             && let Err(e) = app.load_conversation(conn, &sid).await
@@ -157,7 +160,16 @@ async fn tui_loop(
                     crossterm::event::Event::Key(key) if key.kind == crossterm::event::KeyEventKind::Press => {
                         use crossterm::event::KeyCode;
                         match key.code {
-                            KeyCode::Char('q') | KeyCode::Esc => break,
+                            KeyCode::Char('q') => break,
+                            KeyCode::Esc => {
+                                if panels.focus == ui::Focus::Conversation {
+                                    if let Err(e) = app.abort_selected(socket).await {
+                                        app.status = e;
+                                    }
+                                } else {
+                                    break;
+                                }
+                            }
                             KeyCode::Tab => panels.toggle_focus(),
                             KeyCode::Char('1') => panels.focus = ui::Focus::Sessions,
                             KeyCode::Char('2') => panels.focus = ui::Focus::Conversation,
@@ -166,13 +178,25 @@ async fn tui_loop(
                             KeyCode::Char('j') | KeyCode::Down => match panels.focus {
                                 ui::Focus::Sessions => app.session_cursor_next(),
                                 ui::Focus::Runs => app.select_next(),
-                                ui::Focus::Conversation => app.turn_next(),
+                                ui::Focus::Conversation => {
+                                    if !app.approvals.is_empty() {
+                                        app.approval_next();
+                                    } else {
+                                        app.turn_next();
+                                    }
+                                }
                                 _ => {}
                             },
                             KeyCode::Char('k') | KeyCode::Up => match panels.focus {
                                 ui::Focus::Sessions => app.session_cursor_prev(),
                                 ui::Focus::Runs => app.select_prev(),
-                                ui::Focus::Conversation => app.turn_prev(),
+                                ui::Focus::Conversation => {
+                                    if !app.approvals.is_empty() {
+                                        app.approval_prev();
+                                    } else {
+                                        app.turn_prev();
+                                    }
+                                }
                                 _ => {}
                             },
                             KeyCode::Enter => match panels.focus {
@@ -218,6 +242,21 @@ async fn tui_loop(
                                     app.status = format!("removed attachment: {name}");
                                 }
                             }
+                            KeyCode::Char('y') if panels.focus == ui::Focus::Conversation => {
+                                if let Err(e) = app.respond_approval(socket, true).await {
+                                    app.status = e;
+                                }
+                            }
+                            KeyCode::Char('n') if panels.focus == ui::Focus::Conversation => {
+                                if let Err(e) = app.respond_approval(socket, false).await {
+                                    app.status = e;
+                                }
+                            }
+                            KeyCode::Char('s') if panels.focus == ui::Focus::Conversation => {
+                                if let Err(e) = app.abort_selected(socket).await {
+                                    app.status = e;
+                                }
+                            }
                             KeyCode::Char('e') if panels.focus == ui::Focus::Conversation => {
                                 // Toggle the newest history turn (0-based index len-2).
                                 let turn_count =
@@ -239,7 +278,7 @@ async fn tui_loop(
                                 }
                             }
                             KeyCode::Char(c)
-                                if !matches!(c, 'p' | 'r' | 'a' | 'q' | 'j' | 'k' | 'e') =>
+                                if !matches!(c, 'p' | 'r' | 'a' | 'q' | 'j' | 'k' | 'e' | 'y' | 'n' | 's') =>
                             {
                                 if panels.focus == ui::Focus::Conversation {
                                     app.composer.insert(c);
@@ -389,5 +428,126 @@ mod turn_navigation_tests {
         assert_eq!(app.remove_last_attachment().as_deref(), Some("b.txt"));
         assert_eq!(app.remove_last_attachment().as_deref(), Some("a.png"));
         assert!(app.remove_last_attachment().is_none());
+    }
+}
+
+#[cfg(test)]
+mod approval_state_tests {
+    use crate::app::App;
+    use crate::approvals::ApprovalCard;
+
+    fn card(id: &str, sid: &str) -> ApprovalCard {
+        ApprovalCard {
+            id: id.into(),
+            kind: "ui_ask".into(),
+            session_id: sid.into(),
+            title: None,
+            summary: None,
+            payload: serde_json::json!({}),
+        }
+    }
+
+    #[test]
+    fn approval_cursor_moves_and_clears() {
+        let mut app = App::new();
+        app.approvals = vec![card("a", "s"), card("b", "s")];
+        app.approval_next();
+        assert_eq!(app.selected_approval_id().as_deref(), Some("a"));
+        app.approval_next();
+        assert_eq!(app.selected_approval_id().as_deref(), Some("b"));
+        app.approval_prev();
+        assert_eq!(app.selected_approval_id().as_deref(), Some("a"));
+        app.approvals.clear();
+        app.approval_cursor = None;
+    }
+
+    #[test]
+    fn busy_state_reflected_in_headless_output() {
+        let mut app = App::new();
+        app.selected_busy = true;
+        let out = app.render_conversation_text();
+        assert!(out.iter().any(|l| l.contains("⏹ 停止 (Esc/s)")));
+        app.selected_busy = false;
+        let out = app.render_conversation_text();
+        assert!(!out.iter().any(|l| l.contains("⏹ 停止")));
+    }
+}
+
+#[cfg(test)]
+mod approval_rpc_tests {
+    use crate::app::App;
+    use std::path::PathBuf;
+
+    async fn serve(path: PathBuf, script: Vec<&'static str>) {
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        tokio::spawn(async move {
+            for expected in script {
+                let (stream, _) = listener.accept().await.unwrap();
+                let (r, mut w) = stream.into_split();
+                let mut reader = tokio::io::BufReader::new(r);
+                let mut line = String::new();
+                use tokio::io::AsyncBufReadExt;
+                reader.read_line(&mut line).await.unwrap();
+                assert!(line.contains(expected), "expected {expected} in {line}");
+                let id = serde_json::from_str::<serde_json::Value>(&line)
+                    .unwrap()
+                    .get("id")
+                    .cloned()
+                    .unwrap_or_default();
+                let resp = serde_json::json!({"type":"response","id":id,"success":true,"data":{"pending":[],"sessions":[]}});
+                use tokio::io::AsyncWriteExt;
+                w.write_all(format!("{}\n", ion_protocol::serialize_line(&resp)).as_bytes())
+                    .await
+                    .unwrap();
+                w.flush().await.unwrap();
+            }
+        });
+    }
+
+    #[tokio::test]
+    async fn respond_approval_calls_rpc_and_reloads_pending() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("sock");
+        serve(path.clone(), vec!["approval_respond", "approvals_pending"]).await;
+        let mut app = App::new();
+        app.approvals = vec![crate::approvals::ApprovalCard {
+            id: "apr_1".into(),
+            kind: "ui_ask".into(),
+            session_id: "s".into(),
+            title: None,
+            summary: None,
+            payload: serde_json::json!({}),
+        }];
+        app.approval_cursor = Some(0);
+        app.respond_approval(&path, true).await.unwrap();
+        assert!(app.approvals.is_empty());
+        assert_eq!(app.approval_cursor, None);
+    }
+
+    #[tokio::test]
+    async fn abort_selected_calls_send_to_session_and_refreshes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("sock");
+        serve(
+            path.clone(),
+            vec!["send_to_session", "list_all_sessions", "list_sessions"],
+        )
+        .await;
+        let mut app = App::new();
+        app.session_rows = vec![crate::sessions::TreeRow {
+            session_id: "s".into(),
+            label: "s".into(),
+            indent: 0,
+            kind: crate::sessions::SessionKind::Root,
+            busy: true,
+            durable_active: false,
+            agent: Some("build".into()),
+            ctx_used: 0,
+            ctx_max: 128_000,
+            runtime_ms: 0,
+        }];
+        app.session_cursor = Some(0);
+        app.abort_selected(&path).await.unwrap();
+        assert!(!app.selected_busy);
     }
 }

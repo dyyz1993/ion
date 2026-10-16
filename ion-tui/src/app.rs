@@ -1,3 +1,4 @@
+use crate::approvals::{ApprovalCard, parse_approvals, sort_for_session};
 use crate::connection::Connection;
 use crate::conversation::{message_lines, parse_messages};
 use crate::input::Action;
@@ -23,6 +24,9 @@ pub struct App {
     pub composer: crate::conversation::Composer,
     pub expanded_turns: std::collections::HashSet<usize>,
     pub turn_cursor: Option<usize>,
+    pub approvals: Vec<ApprovalCard>,
+    pub approval_cursor: Option<usize>,
+    pub selected_busy: bool,
     #[allow(dead_code)]
     pub cursor: i64,
     #[allow(dead_code)]
@@ -46,6 +50,9 @@ impl App {
             composer: Default::default(),
             expanded_turns: Default::default(),
             turn_cursor: None,
+            approvals: Vec::new(),
+            approval_cursor: None,
+            selected_busy: false,
             cursor: 0,
             event_run_id: None,
         }
@@ -275,6 +282,132 @@ impl App {
     }
 
     /// Update composer metadata from the selected session card.
+    async fn rpc_with_retry(
+        socket: &std::path::Path,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        async fn rpc(
+            socket: &std::path::Path,
+            method: &str,
+            params: serde_json::Value,
+        ) -> Result<serde_json::Value, String> {
+            let mut conn = Connection::connect(socket).await?;
+            match conn.rpc(method, params.clone(), 10_000).await {
+                Ok(v) => Ok(v),
+                Err(e) if e.contains("writer closed") => {
+                    conn = Connection::connect(socket).await?;
+                    conn.rpc(method, params, 10_000).await
+                }
+                Err(e) => Err(e),
+            }
+        }
+        rpc(socket, method, params.clone()).await
+    }
+
+    pub async fn refresh_approvals(&mut self, socket: &std::path::Path) -> Result<(), String> {
+        let resp = Self::rpc_with_retry(socket, "approvals_pending", serde_json::json!({})).await?;
+        let mut cards = parse_approvals(&resp);
+        sort_for_session(&mut cards, self.conversation_session.as_deref());
+        self.approvals = cards;
+        if self.approvals.is_empty() {
+            self.approval_cursor = None;
+        } else if self
+            .approval_cursor
+            .is_none_or(|i| i >= self.approvals.len())
+        {
+            self.approval_cursor = Some(0);
+        }
+        Ok(())
+    }
+
+    pub fn approval_next(&mut self) {
+        if self.approvals.is_empty() {
+            return;
+        }
+        let next = match self.approval_cursor {
+            None => 0,
+            Some(i) => (i + 1).min(self.approvals.len() - 1),
+        };
+        self.approval_cursor = Some(next);
+    }
+
+    pub fn approval_prev(&mut self) {
+        if self.approvals.is_empty() {
+            return;
+        }
+        let prev = match self.approval_cursor {
+            None => self.approvals.len() - 1,
+            Some(i) => i.saturating_sub(1),
+        };
+        self.approval_cursor = Some(prev);
+    }
+
+    pub fn selected_approval_id(&self) -> Option<String> {
+        self.approval_cursor
+            .and_then(|i| self.approvals.get(i))
+            .map(|a| a.id.clone())
+    }
+
+    pub async fn respond_approval(
+        &mut self,
+        socket: &std::path::Path,
+        approve: bool,
+    ) -> Result<(), String> {
+        let Some(id) = self.selected_approval_id() else {
+            return Err("no approval selected".into());
+        };
+        Self::rpc_with_retry(
+            socket,
+            "approval_respond",
+            serde_json::json!({
+                "id": id,
+                "decision": if approve {"approve"} else {"reject"}
+            }),
+        )
+        .await?;
+        self.refresh_approvals(socket).await?;
+        if let Some(sid) = self.conversation_session.clone() {
+            let resp = Self::rpc_with_retry(
+                socket,
+                "get_session_messages",
+                serde_json::json!({"session": sid, "limit":200, "view":"live"}),
+            )
+            .await?;
+            let msgs = parse_messages(&resp);
+            self.conversation_lines = message_lines(&msgs, &self.expanded);
+        }
+        Ok(())
+    }
+
+    pub async fn abort_selected(&mut self, socket: &std::path::Path) -> Result<(), String> {
+        let Some(session) = self.selected_session_id().map(String::from) else {
+            return Err("select a session first".into());
+        };
+        Self::rpc_with_retry(
+            socket,
+            "send_to_session",
+            serde_json::json!({
+                "session": session,
+                "rpc_method": "abort",
+                "params": {}
+            }),
+        )
+        .await?;
+        self.refresh_sessions(socket).await?;
+        if let Some(sid) = self.conversation_session.clone() {
+            let resp = Self::rpc_with_retry(
+                socket,
+                "get_session_messages",
+                serde_json::json!({"session": sid, "limit":200, "view":"live"}),
+            )
+            .await?;
+            let msgs = parse_messages(&resp);
+            self.conversation_lines = message_lines(&msgs, &self.expanded);
+        }
+        Ok(())
+    }
+
     pub fn sync_composer_from_selected(&mut self) {
         let Some(row) = self
             .session_cursor
@@ -287,6 +420,7 @@ impl App {
         self.composer.ctx_used = row.ctx_used;
         self.composer.ctx_max = row.ctx_max;
         self.composer.runtime_ms = row.runtime_ms;
+        self.selected_busy = row.busy;
         self.composer.child_count = usize::from(row.busy);
         self.composer.peer_count = usize::from(row.durable_active);
         self.conversation_session = Some(row.session_id.clone());
@@ -475,19 +609,29 @@ impl App {
     }
 
     pub fn render_conversation_text(&self) -> Vec<String> {
-        let mut lines = if self.conversation_lines.is_empty() {
+        let mut lines = crate::approvals::render_approvals(&self.approvals, self.approval_cursor);
+        if !self.approvals.is_empty() {
+            lines.push(String::new());
+        }
+        let conversation = if self.conversation_lines.is_empty() {
             vec!["(no messages)".into()]
         } else {
             let turns = crate::conversation::group_turns(&self.conversation_lines);
             crate::conversation::render_turns(&turns, &self.expanded_turns)
         };
+        lines.extend(conversation);
         let attachments = if self.composer.attachments.is_empty() {
             "(none)".to_string()
         } else {
             self.composer.attachments.join(" · ")
         };
         lines.push(format!("📎 {attachments}"));
-        lines.push(format!("input: {}▊", self.composer.draft));
+        let input_label = if self.approvals.is_empty() {
+            format!("input: {}▊", self.composer.draft)
+        } else {
+            "input: 等待审批决策…".to_string()
+        };
+        lines.push(input_label);
         let p = self.composer.ctx_percent();
         lines.push(format!(
             "{} · ctx {} {}% ({}/{}) · {}ms · 子{} · 同{}",
@@ -500,6 +644,9 @@ impl App {
             self.composer.child_count,
             self.composer.peer_count
         ));
+        if self.selected_busy {
+            lines.push("⏹ 停止 (Esc/s)".into());
+        }
         lines
     }
 
