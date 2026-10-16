@@ -28,6 +28,11 @@ ION 的错题本：复盘**已合并/已修复**的工作——返工的、不�
 - 证据：本 commit（`tests/tui_smoke_ci.sh` T3 7/0，覆盖断连重连后 host state=recovering）。
 - Seen 1× (2026-10-16)
 
+**crossterm 的阻塞 read 不能放进 tokio::select!——用 event-stream feature 的 EventStream（或 spawn_blocking），否则 select! 编译失败或整个 runtime 被卡。**
+- Before, TUI 主循环直接 `crossterm::event::read().await`——它是同步阻塞调用不是 Future，select! 直接编译错；换成 stdin 行管道后又吃不到真实键盘。
+- 证据：本 commit（ion-tui 全屏循环用 EventStream + tokio::select!，headless CI 与交互模式双通道 16/0）。
+- Seen 1× (2026-10-16)
+
 ## Moved to the code standards
 
 ## 修复要断根

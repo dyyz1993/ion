@@ -2,6 +2,7 @@ mod app;
 mod connection;
 mod input;
 mod state;
+mod ui;
 
 use std::path::PathBuf;
 
@@ -55,56 +56,83 @@ async fn run(socket: PathBuf, headless: bool) -> Result<(), String> {
         return Ok(());
     }
 
-    use tokio::io::AsyncBufReadExt;
-    let stdin = tokio::io::stdin();
-    let mut lines = tokio::io::BufReader::new(stdin).lines();
-    let mut eof = false;
-    while !eof {
-        for line in app.render() {
-            println!("{line}");
-        }
-        println!("keys: j/k select, p pause, r resume, a auto-resume, q quit");
-        let key = match tokio::time::timeout(std::time::Duration::from_secs(10), lines.next_line())
-            .await
-        {
-            Err(_) => continue,
-            Ok(Err(e)) => return Err(e.to_string()),
-            Ok(Ok(None)) => {
-                eof = true;
-                continue;
-            }
-            Ok(Ok(Some(k))) => k,
-        };
-        let key = key.trim().to_string();
-        eof = key == "q";
-        if matches!(key.as_str(), "j" | "down") {
-            app.select_next();
-            continue;
-        }
-        if matches!(key.as_str(), "k" | "up") {
-            app.select_prev();
-            continue;
-        }
-        let Some(action) = Action::from_key(&key, app.selected_run_id()) else {
-            app.status = format!("unknown key: {key}");
-            continue;
-        };
-        if action == Action::Quit {
-            break;
-        }
-        let _ = app.poll_events(&mut conn).await;
-        if let Err(e) = app.dispatch(&mut conn, action.clone()).await {
-            // Host may close idle pipes between key presses; reconnect once and retry,
-            // tolerating a second broken pipe on the reconnect window.
-            if e.contains("writer closed") {
-                conn = connection::Connection::connect(&socket).await?;
-                if let Err(retry_err) = app.dispatch(&mut conn, action).await
-                    && !retry_err.contains("writer closed")
-                {
-                    return Err(retry_err);
+    // Full-screen ratatui loop with crossterm events.
+    let mut terminal = ratatui::init();
+    let result = tui_loop(&mut terminal, &mut app, &mut conn, &socket).await;
+    ratatui::restore();
+    result
+}
+
+use futures::{FutureExt, StreamExt};
+
+async fn crossterm_event() -> std::io::Result<crossterm::event::Event> {
+    static STREAM: std::sync::LazyLock<tokio::sync::Mutex<crossterm::event::EventStream>> =
+        std::sync::LazyLock::new(|| tokio::sync::Mutex::new(Default::default()));
+    let mut stream = STREAM.lock().await;
+    stream
+        .next()
+        .await
+        .unwrap_or_else(|| Err(std::io::Error::other("event stream ended")))
+}
+
+async fn tui_loop(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut App,
+    conn: &mut connection::Connection,
+    socket: &std::path::Path,
+) -> Result<(), String> {
+    let mut panels = ui::PanelState::default();
+    let mut tick = tokio::time::interval(std::time::Duration::from_millis(1000));
+    loop {
+        let _ = app.poll_events(conn).await;
+        terminal
+            .draw(|f| ui::draw(f, app, &panels))
+            .map_err(|e| format!("draw: {e}"))?;
+        tokio::select! {
+            _ = tick.tick() => {}
+            event = crossterm_event().fuse() => {
+                let event = event.map_err(|e| format!("read: {e}"))?;
+                match event {
+                    crossterm::event::Event::Key(key) if key.kind == crossterm::event::KeyEventKind::Press => {
+                        use crossterm::event::KeyCode;
+                        match key.code {
+                            KeyCode::Char('q') | KeyCode::Esc => break,
+                            KeyCode::Char('j') | KeyCode::Down => app.select_next(),
+                            KeyCode::Char('k') | KeyCode::Up => app.select_prev(),
+                            KeyCode::Tab => panels.toggle_focus(),
+                            KeyCode::Char('e') => {
+                                if let Some(run_id) = app.selected_run_id() {
+                                    let running = app.runs.iter().any(|r| {
+                                        r.run_id == run_id
+                                            && (r.state == "running" || r.state == "recovering")
+                                    });
+                                    panels.toggle(run_id, running);
+                                }
+                            }
+                            KeyCode::Char('p') | KeyCode::Char('r') | KeyCode::Char('a') => {
+                                let key_name = match key.code {
+                                    KeyCode::Char(c) => c.to_string(),
+                                    _ => String::new(),
+                                };
+                                if let Some(action) =
+                                    Action::from_key(&key_name, app.selected_run_id())
+                                    && let Err(e) = app.dispatch(conn, action).await
+                                {
+                                    if e.contains("writer closed") {
+                                        *conn =
+                                            connection::Connection::connect(socket).await?;
+                                        app.refresh(conn).await?;
+                                    } else {
+                                        app.status = e;
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    crossterm::event::Event::Resize(_, _) => {}
+                    _ => {}
                 }
-            } else {
-                return Err(e);
             }
         }
     }
