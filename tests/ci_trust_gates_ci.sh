@@ -155,7 +155,7 @@ CLEAN_PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "^${CI_BIN_DIR:-/nonexistent}$
 INJECT_FAULT=1 \
 PREFLIGHT_CMDS="cargo build --bin ion;cargo test --lib" \
     PATH="$CLEAN_PATH" \
-    env -u CARGO_TARGET_DIR \
+    env -u CARGO_TARGET_DIR SHARD_COUNT=1 \
     bash "$FP/scripts/run_ci_matrix_parallel.sh" > "$SB/run1.out" 2>&1
 RC1=$?
 RUN1=$(capture_root "$SB/run1.out")
@@ -209,7 +209,7 @@ MON_AFTER=$(cksum "$FP/.ion/monitors/SENTINEL.cfg" 2>/dev/null | awk '{print $1}
 (cd "$FP" && git checkout -q -- src/lib.rs)
 PREFLIGHT_CMDS="cargo build --bin ion;cargo test --lib" \
     PATH="$CLEAN_PATH" \
-    env -u CARGO_TARGET_DIR \
+    env -u CARGO_TARGET_DIR SHARD_COUNT=1 \
     bash "$FP/scripts/run_ci_matrix_parallel.sh" > "$SB/run2.out" 2>&1
 RC2=$?
 RUN2=$(capture_root "$SB/run2.out")
