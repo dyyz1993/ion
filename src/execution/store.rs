@@ -264,6 +264,18 @@ impl ExecutionStore {
         })
     }
 
+    pub fn quick_check(&self) -> StoreResult<()> {
+        let ok: String = self
+            .conn
+            .query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+        if ok != "ok" {
+            return Err(ExecutionStoreError::Invariant(format!(
+                "SQLite quick_check failed: {ok}"
+            )));
+        }
+        Ok(())
+    }
+
     pub fn create_run(
         &mut self,
         session_id: &str,
@@ -1401,5 +1413,23 @@ mod tests {
             stale.unwrap_err(),
             ExecutionStoreError::Invariant(_)
         ));
+    }
+
+    #[test]
+    fn truncated_ledger_is_rejected_without_repair() {
+        let (store, dir) = temp_store();
+        let path = dir.path().join("execution.sqlite3");
+        drop(store);
+        let original = std::fs::read(&path).unwrap();
+        // Truncate into the SQLite header so this is a malformed database, not
+        // merely a benign loss of trailing freelist pages.
+        let truncated = if original.len() > 32 {
+            original[..32].to_vec()
+        } else {
+            original
+        };
+        std::fs::write(&path, truncated).unwrap();
+        let opened = ExecutionStore::open(&path);
+        assert!(opened.is_err() || opened.and_then(|mut store| store.quick_check()).is_err());
     }
 }
