@@ -397,6 +397,66 @@ impl ExecutionStore {
         Ok(rows)
     }
 
+    pub fn resumable_runs(&self) -> StoreResult<Vec<RunSnapshot>> {
+        let entries = self.list_runs(None)?;
+        let mut snapshots = Vec::new();
+        for entry in entries {
+            if matches!(entry.state.as_str(), "queued" | "recovering") {
+                snapshots.push(self.snapshot(&entry.run_id)?);
+            }
+        }
+        Ok(snapshots)
+    }
+
+    pub fn set_run_state(
+        &mut self,
+        run_id: &str,
+        state: &str,
+        reason_code: Option<&str>,
+    ) -> StoreResult<()> {
+        self.transaction(|store| {
+            if !matches!(
+                state,
+                "queued"
+                    | "running"
+                    | "recovering"
+                    | "waiting_children"
+                    | "waiting_approval"
+                    | "paused"
+                    | "blocked"
+                    | "succeeded"
+                    | "failed"
+                    | "cancelled"
+            ) {
+                return Err(ExecutionStoreError::Invariant(format!(
+                    "invalid run state {state}"
+                )));
+            }
+            let run = store.load_run(run_id)?;
+            if TERMINAL_RUN_STATES.contains(&run.state.as_str()) {
+                return Err(ExecutionStoreError::AlreadyTerminal {
+                    run_id: run_id.to_string(),
+                    state: run.state,
+                });
+            }
+            let version = run.version + 1;
+            store.conn.execute(
+                "UPDATE runs SET state=?2,reason_code=?3,version=?4,updated_ms=?5 WHERE run_id=?1",
+                params![run_id, state, reason_code, version, now_ms()],
+            )?;
+            store.append_event_tx(
+                run_id,
+                version,
+                "run.state.changed",
+                &serde_json::json!({
+                    "state": state,
+                    "reasonCode": reason_code,
+                }),
+            )?;
+            Ok(())
+        })
+    }
+
     fn load_run(&self, run_id: &str) -> StoreResult<RunRow> {
         self.conn
             .query_row(

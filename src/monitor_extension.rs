@@ -994,6 +994,7 @@ impl Extension for MonitorExtension {
                                         hook_depth: Some(0),
                                         system_prompt_override: None,
                                         wait: None,
+                                        durable_run_id: None,
                                     };
                                     let info_result =
                                         match WorkerRegistry::prepare_worker_spawn(&cfg).await {

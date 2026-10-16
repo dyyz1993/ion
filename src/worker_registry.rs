@@ -1186,6 +1186,13 @@ impl WorkerRegistry {
         let mut child_envs: Vec<(String, String)> = Vec::new();
         // 会话 id 透传：hooks common_fields / 会话路径解析等依赖（此前从未设置——恒空）
         child_envs.push(("ION_SESSION_ID".into(), session_id.clone()));
+        // Must be explicit config: prepare_worker_spawn may have already forked
+        // before a caller could set a process-global env override.
+        if let Some(run_id) = &config.durable_run_id
+            && !run_id.is_empty()
+        {
+            child_envs.push(("ION_DURABLE_RUN_ID".into(), run_id.clone()));
+        }
         // 远程执行端连接级环境变量（remote_workers.<name>.env）——对本地 worker 无意义
         if let Some((_, ref host_cfg)) = remote_host {
             // 远程 worker 强制 fork 模式（独立 <sid>.jsonl）：远端非 fork 写共享
@@ -3857,6 +3864,7 @@ impl WorkerRegistry {
             hook_depth: None,
             system_prompt_override: None,
             wait: None,
+            durable_run_id: None,
         };
         // ⚠️ parking_lot: create_worker 持 &mut self + .await（spawn 等），
         // 不能持锁调用。改用 prepare + register 两阶段。
@@ -6881,6 +6889,9 @@ pub struct WorkerCreateConfig {
     /// monitor spawn 填 Some("monitor")；缺省 None → 注入时不带（worker 侧回落 user）。
     #[serde(default)]
     pub input_origin: Option<String>,
+    /// Durable scheduler 恢复的 session worker 必须在进程启动时绑定原 run。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub durable_run_id: Option<String>,
     /// spawn_worker 的同步/异步模式（bridge 的 wait 字段 serde 直通）。
     /// true=同步（父阻塞收结果，completion 通知多余）；false=异步（父需要
     /// agent_end 完成通知唤醒继续编排——见 stdout 泵 notify_parent 逻辑）。
