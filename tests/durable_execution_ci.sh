@@ -92,6 +92,11 @@ EVENTS=$(rpc --method events.subscribe --params '{"runId":"missing","afterCursor
 RESUME=$(rpc --method run.resume --params '{"runId":"missing","requestId":"r1","expectedStateVersion":0}')
 [ "$(jget "$RESUME" 'd["success"]')" = "False" ] && pass "run.resume validates run" ||
     fail "run.resume validates run: $RESUME"
+DURABLE_APPROVALS=$(rpc --method durable_approvals_pending --params '{}')
+[ "$(jget "$DURABLE_APPROVALS" 'd["data"]["checkpointed"]')" = "True" ] &&
+    pass "durable approvals bridge returns explicit checkpoint status" ||
+    fail "durable approvals bridge: $DURABLE_APPROVALS"
+
 STREAM_MISSING=$(python3 - "$SOCK" <<'PYEOF'
 import json, socket, sys
 s=socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect(sys.argv[1])

@@ -167,6 +167,15 @@ fn durable_execution_writer() -> Result<Arc<ion::execution::store::ExecutionWrit
         .clone()
 }
 
+fn hash_approval_entry(entry: &ion::approval_bus::ApprovalEntry) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(entry.kind.as_str());
+    hasher.update(entry.summary.as_bytes());
+    hasher.update(entry.payload.to_string());
+    format!("{:x}", hasher.finalize())
+}
+
 /// 广播一条 route=ui 的 host 级事件（广播_ui_event 同款 Handle::spawn 模式；
 /// 无 tokio runtime 或未接线时静默跳过，不 panic）。
 fn broadcast_host_ui_event(custom_type: &str, data: serde_json::Value, session: Option<&str>) {
@@ -7823,6 +7832,50 @@ async fn handle_manager_command(
                 "requests": requests,
                 "pending": requests,
             }))
+        }
+        "durable_approvals_pending" => {
+            let session_filter = cmd
+                .get("params")
+                .and_then(|p| p.get("session"))
+                .or_else(|| cmd.get("session"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let entries: Vec<_> = ApprovalBus::global()
+                .pending()
+                .into_iter()
+                .filter(|e| session_filter.is_empty() || e.session_id == session_filter)
+                .collect();
+            durable_execution_writer()
+                .and_then(|writer| {
+                    writer
+                        .call(move |store| {
+                            let mut rows = Vec::new();
+                            for entry in entries {
+                                if let Some(run_id) =
+                                    entry.payload.get("durableRunId").and_then(|v| v.as_str())
+                                {
+                                    if let Some(task_id) =
+                                        entry.payload.get("durableTaskId").and_then(|v| v.as_str())
+                                    {
+                                        rows.push(store.checkpoint_approval(
+                                            run_id,
+                                            &ion::execution::types::ApprovalCheckpoint {
+                                                approval_id: entry.id.clone(),
+                                                task_id: task_id.to_string(),
+                                                action_digest: hash_approval_entry(&entry),
+                                                generation: store.snapshot(run_id)?.generation,
+                                                policy_version: "v1".into(),
+                                            },
+                                        )?);
+                                    }
+                                }
+                            }
+                            Ok(())
+                        })
+                        .map_err(|e| e.to_string())
+                })
+                .map(|_| serde_json::json!({ "checkpointed": true }))
         }
         "approval_respond" => {
             // 统一应答入口（单一路由）：host ui_ask oneshot / worker ask_respond /
