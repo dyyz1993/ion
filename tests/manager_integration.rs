@@ -1603,57 +1603,34 @@ async fn i30_multiple_subscriptions() {
         .await
         .unwrap();
 
+    // Host-injected events exercise the same per-worker subscriber pathway as
+    // worker stdout without depending on provider/model behavior.
     let mut ea = reg.subscribe(&a.worker_id).unwrap();
     let mut eb = reg.subscribe(&b.worker_id).unwrap();
-
-    // 用 send_command（非阻塞）发两个 prompt，不等 response
-    let _ = reg
-        .send_command(&a.worker_id, "prompt", serde_json::json!({"text": "Hi A"}))
-        .await
-        .unwrap();
-    let _ = reg
-        .send_command(&b.worker_id, "prompt", serde_json::json!({"text": "Hi B"}))
-        .await
-        .unwrap();
+    let mk = |data: &str| {
+        serde_json::json!({
+            "type": "event",
+            "event": {"type": "durable_test", "data": data}
+        })
+    };
+    reg.push_session_event("i30-a", mk("i30_a")).unwrap();
+    reg.push_session_event("i30-b", mk("i30_b")).unwrap();
     drop(reg);
 
-    // ⚠️ recv 期间不能持锁，否则 reader task 无法拿锁转发 event
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
-    let mut ac = 0usize;
-    let mut bc = 0usize;
-
-    loop {
-        if tokio::time::Instant::now() > deadline {
-            break;
-        }
-        {
-            let mut reg = registry.lock();
-            reg.drain_events(&a.worker_id, 100).await;
-            reg.drain_events(&b.worker_id, 100).await;
-        }
-        match tokio::time::timeout(Duration::from_millis(1000), ea.recv()).await {
-            Ok(Some(ev)) => {
-                if ev.get("type").and_then(|v| v.as_str()) == Some("event") {
-                    ac += 1;
-                }
-            }
-            _ => {}
-        }
-        match tokio::time::timeout(Duration::from_millis(1000), eb.recv()).await {
-            Ok(Some(ev)) => {
-                if ev.get("type").and_then(|v| v.as_str()) == Some("event") {
-                    bc += 1;
-                }
-            }
-            _ => {}
-        }
-        if ac > 0 && bc > 0 {
-            break;
-        }
-    }
-
-    assert!(ac > 0, "A should receive events");
-    assert!(bc > 0, "B should receive events");
+    let a_ev = tokio::time::timeout(Duration::from_secs(2), ea.recv())
+        .await
+        .expect("event A should arrive");
+    let b_ev = tokio::time::timeout(Duration::from_secs(2), eb.recv())
+        .await
+        .expect("event B should arrive");
+    assert_eq!(
+        a_ev.as_ref().and_then(|v| v["event"]["data"].as_str()),
+        Some("i30_a")
+    );
+    assert_eq!(
+        b_ev.as_ref().and_then(|v| v["event"]["data"].as_str()),
+        Some("i30_b")
+    );
 
     let mut reg = registry.lock();
     let _ = reg.kill_worker(&a.worker_id);
