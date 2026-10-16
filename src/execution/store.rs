@@ -7,8 +7,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use super::types::{
     ApprovalCheckpoint, AttemptLease, ChildRunPlan, EventPage, ExecutionCursor,
-    ReconciliationSummary, ResumeReceipt, RunListEntry, RunSnapshot, TERMINAL_RUN_STATES,
-    TaskSummary, ToolCheckpoint, ToolOutcome, TranscriptProjection,
+    ReconciliationSummary, ResumeActions, ResumeReceipt, RunListEntry, RunSnapshot,
+    TERMINAL_RUN_STATES, TaskSummary, ToolCheckpoint, ToolOutcome, TranscriptProjection,
 };
 
 const SCHEMA_VERSION: i64 = 1;
@@ -360,6 +360,19 @@ impl ExecutionStore {
             run_id: run_id.to_string(),
             seq: run.next_event_seq.saturating_sub(1),
         };
+        let has_uncertain = task_rows.iter().any(|t| t.state == "uncertain");
+        let resume_allowed = matches!(run.state.as_str(), "paused" | "queued" | "recovering")
+            && !has_uncertain
+            && run.auto_resume == 1;
+        let reason = if has_uncertain {
+            Some("uncertain_tool_effect".to_string())
+        } else if !matches!(run.state.as_str(), "paused" | "queued" | "recovering") {
+            Some(format!("run state is {}", run.state))
+        } else if run.auto_resume == 0 {
+            Some("auto_resume is disabled for this run".to_string())
+        } else {
+            None
+        };
         Ok(RunSnapshot {
             run_id: run.run_id,
             session_id: run.session_id,
@@ -374,7 +387,10 @@ impl ExecutionStore {
                 ..cursor
             },
             tasks: task_rows,
-            actions: Default::default(),
+            actions: ResumeActions {
+                resume_allowed,
+                reason,
+            },
         })
     }
 
@@ -457,10 +473,87 @@ impl ExecutionStore {
         })
     }
 
+    /// Pause a non-terminal run with a human-readable reason (SIGKILL simulation,
+    /// user request, host shutdown, etc). Terminal runs cannot be paused.
+    pub fn pause_run(&mut self, run_id: &str, reason: &str) -> StoreResult<()> {
+        self.transaction(|store| {
+            let run = store.load_run(run_id)?;
+            if TERMINAL_RUN_STATES.contains(&run.state.as_str()) {
+                return Err(ExecutionStoreError::AlreadyTerminal {
+                    run_id: run_id.to_string(),
+                    state: run.state,
+                });
+            }
+            let version = run.version + 1;
+            store.conn.execute(
+                "UPDATE runs SET state='paused',reason_code=?2,version=?3,updated_ms=?4,auto_resume=1 WHERE run_id=?1",
+                params![run_id, reason, version, now_ms()],
+            )?;
+            store.append_event_tx(
+                run_id,
+                version,
+                "run.paused",
+                &serde_json::json!({ "reason": reason }),
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Resume a paused run: clear reason and move to `recovering` so the next
+    /// scheduler scan or explicit `accept_resume` can dispatch it.
+    pub fn resume_run(&mut self, run_id: &str) -> StoreResult<()> {
+        self.transaction(|store| {
+            let run = store.load_run(run_id)?;
+            if run.state != "paused" {
+                return Err(ExecutionStoreError::Invariant(format!(
+                    "run {run_id} is not paused (state={}), cannot resume",
+                    run.state
+                )));
+            }
+            let version = run.version + 1;
+            store.conn.execute(
+                "UPDATE runs SET state='recovering',reason_code=NULL,version=?2,updated_ms=?3 WHERE run_id=?1",
+                params![run_id, version, now_ms()],
+            )?;
+            store.append_event_tx(
+                run_id,
+                version,
+                "run.resumed",
+                &serde_json::json!({ "state": "recovering" }),
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Toggle auto_resume for a run so the scheduler knows whether to pick it up.
+    pub fn set_run_auto_resume(&mut self, run_id: &str, enabled: bool) -> StoreResult<()> {
+        self.transaction(|store| {
+            let run = store.load_run(run_id)?;
+            if TERMINAL_RUN_STATES.contains(&run.state.as_str()) {
+                return Err(ExecutionStoreError::AlreadyTerminal {
+                    run_id: run_id.to_string(),
+                    state: run.state,
+                });
+            }
+            let version = run.version + 1;
+            store.conn.execute(
+                "UPDATE runs SET auto_resume=?2,version=?3,updated_ms=?4 WHERE run_id=?1",
+                params![run_id, enabled as i64, version, now_ms()],
+            )?;
+            store.append_event_tx(
+                run_id,
+                version,
+                "run.auto_resume.changed",
+                &serde_json::json!({ "enabled": enabled }),
+            )?;
+            Ok(())
+        })
+    }
+
     fn load_run(&self, run_id: &str) -> StoreResult<RunRow> {
         self.conn
             .query_row(
-                "SELECT run_id,session_id,branch_id,state,reason_code,version,generation,next_event_seq,recovery_plan_id FROM runs WHERE run_id=?1",
+                "SELECT run_id,session_id,branch_id,state,reason_code,version,generation,next_event_seq,recovery_plan_id,auto_resume FROM runs WHERE run_id=?1",
                 params![run_id],
                 RunRow::from_row,
             )
@@ -1255,6 +1348,7 @@ struct RunRow {
     generation: i64,
     next_event_seq: i64,
     recovery_plan_id: Option<String>,
+    auto_resume: i64,
 }
 
 impl RunRow {
@@ -1269,6 +1363,7 @@ impl RunRow {
             generation: row.get(6)?,
             next_event_seq: row.get(7)?,
             recovery_plan_id: row.get(8)?,
+            auto_resume: row.get(9)?,
         })
     }
 }
@@ -1375,6 +1470,108 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("execution.sqlite3");
         (ExecutionStore::open(&path).unwrap(), dir)
+    }
+
+    #[test]
+    fn pause_run_records_reason_and_rejects_when_terminal() {
+        let (mut store, _dir) = temp_store();
+        let snap = store
+            .create_run(
+                "s-pause",
+                "main",
+                serde_json::json!({}),
+                serde_json::json!({}),
+            )
+            .unwrap();
+        store.pause_run(&snap.run_id, "simulated SIGKILL").unwrap();
+        let paused = store.snapshot(&snap.run_id).unwrap();
+        assert_eq!(paused.state, "paused");
+        assert_eq!(paused.reason_code.as_deref(), Some("simulated SIGKILL"));
+        assert!(paused.actions.resume_allowed);
+
+        store
+            .set_run_state(&snap.run_id, "failed", Some("test"))
+            .unwrap();
+        let err = store.pause_run(&snap.run_id, "another pause").unwrap_err();
+        assert!(matches!(err, ExecutionStoreError::AlreadyTerminal { .. }));
+    }
+
+    #[test]
+    fn resume_after_pause_clears_reason_and_returns_to_recovering() {
+        let (mut store, _dir) = temp_store();
+        let snap = store
+            .create_run(
+                "s-resume",
+                "main",
+                serde_json::json!({}),
+                serde_json::json!({}),
+            )
+            .unwrap();
+        store.pause_run(&snap.run_id, "manual pause").unwrap();
+        assert!(store.snapshot(&snap.run_id).unwrap().actions.resume_allowed);
+
+        store.resume_run(&snap.run_id).unwrap();
+        let recovered = store.snapshot(&snap.run_id).unwrap();
+        assert_eq!(recovered.state, "recovering");
+        assert!(recovered.reason_code.is_none());
+    }
+
+    #[test]
+    fn snapshot_actions_reflect_uncertain_blocked_and_active() {
+        let (mut store, _dir) = temp_store();
+        let snap = store
+            .create_run(
+                "s-actions",
+                "main",
+                serde_json::json!({}),
+                serde_json::json!({}),
+            )
+            .unwrap();
+
+        // Fresh queued run with auto_resume=0 → no resume action.
+        let queued = store.snapshot(&snap.run_id).unwrap();
+        assert!(!queued.actions.resume_allowed);
+        assert!(
+            queued
+                .actions
+                .reason
+                .as_deref()
+                .unwrap()
+                .contains("auto_resume")
+        );
+
+        // Enable auto_resume → resumable.
+        store.set_run_auto_resume(&snap.run_id, true).unwrap();
+        let enabled = store.snapshot(&snap.run_id).unwrap();
+        assert!(enabled.actions.resume_allowed);
+
+        // Set blocked with uncertain task → resume not allowed.
+        store
+            .set_run_state(&snap.run_id, "blocked", Some("uncertain_tool_effect"))
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO tasks(task_id,run_id,parent_task_id,logical_key,kind,state,version,checkpoint_version,checkpoint_json,result_json,policy_json) \
+                 VALUES('task-uncertain',?1,NULL,'call:0','tool','uncertain',0,0,'{}',NULL,'\"unsafe\"')",
+                params![snap.run_id],
+            )
+            .unwrap();
+        let blocked = store.snapshot(&snap.run_id).unwrap();
+        assert!(!blocked.actions.resume_allowed);
+        assert_eq!(
+            blocked.actions.reason.as_deref(),
+            Some("uncertain_tool_effect")
+        );
+
+        // Running run → not resumable.
+        store
+            .conn
+            .execute("DELETE FROM tasks WHERE run_id=?1", params![snap.run_id])
+            .unwrap();
+        store.set_run_state(&snap.run_id, "running", None).unwrap();
+        let running = store.snapshot(&snap.run_id).unwrap();
+        assert!(!running.actions.resume_allowed);
     }
 
     #[test]
