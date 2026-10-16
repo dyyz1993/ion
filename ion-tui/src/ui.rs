@@ -226,6 +226,19 @@ fn draw_conversation(f: &mut Frame, app: &App, panels: &PanelState, area: ratatu
     .split(area);
 
     let mut lines: Vec<Line> = Vec::new();
+    for l in crate::approvals::render_approvals(&app.approvals, app.approval_cursor) {
+        let style = if l.starts_with("> ⏸") || l.starts_with("✓") {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Yellow)
+        };
+        lines.push(Line::from(Span::styled(l, style)));
+    }
+    if !app.approvals.is_empty() {
+        lines.push(String::new().into());
+    }
     if app.conversation_lines.is_empty() {
         lines.push(Line::from(Span::styled(
             "(no messages)",
@@ -274,12 +287,19 @@ fn draw_conversation(f: &mut Frame, app: &App, panels: &PanelState, area: ratatu
     );
 
     // Composer: bordered box with a visible cursor block.
-    let draft = format!("{}▊", app.composer.draft);
-    let composer_title = if focused {
+    let draft = if app.approvals.is_empty() {
+        format!("{}▊", app.composer.draft)
+    } else {
+        "等待审批决策…".to_string()
+    };
+    let mut composer_title = if focused {
         " Message ◆ "
     } else {
         " Message "
     };
+    if app.selected_busy {
+        composer_title = " Message (⏹ Esc 停止) ";
+    }
     let composer_style = if focused {
         Style::default().fg(Color::Cyan)
     } else {
