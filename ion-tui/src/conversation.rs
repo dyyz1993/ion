@@ -452,7 +452,7 @@ impl Composer {
         let byte = self.cursor.min(self.draft.len());
         if self.draft.is_empty() {
             self.draft.push(ch);
-            self.cursor = 1;
+            self.cursor = ch.len_utf8();
         } else {
             self.draft.insert(byte, ch);
             self.cursor += ch.len_utf8();
@@ -526,13 +526,19 @@ mod composer_tests {
     #[test]
     fn composer_edit_utf8_and_backspace() {
         let mut c = Composer::default();
-        for ch in ['a', '中', 'b'] {
+        c.insert('中');
+        assert_eq!((c.draft.as_str(), c.cursor), ("中", 3));
+        c.insert('文');
+        assert_eq!((c.draft.as_str(), c.cursor), ("中文", 6));
+        c.insert('a');
+        assert_eq!((c.draft.as_str(), c.cursor), ("中文a", 7));
+        for ch in ['中', '文'] {
             c.insert(ch);
         }
-        assert_eq!(c.draft, "a中b");
+        assert_eq!(c.draft, "中文a中文");
         c.backspace();
-        assert_eq!(c.draft, "a中");
-        assert_eq!(c.cursor, "a中".len());
+        assert_eq!(c.draft, "中文a中");
+        assert_eq!(c.cursor, "中文a中".len());
     }
 
     #[test]
