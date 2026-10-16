@@ -8364,8 +8364,10 @@ fn fast_turns(path: &std::path::Path, params: &serde_json::Value) -> Option<serd
                 "toolCallCount": tool_count,
                 "tokens": {"input": 0, "output": 0},
                 "status": "completed",
-                "summary": serde_json::Value::Null,
-                "durationMs": serde_json::Value::Null,
+                // schema 要求 string/integer 且 required——host 直读是索引层
+                // 概览，无真实值时给合法占位（曾写 Null 被 schema 校验拒）
+                "summary": String::new(),
+                "durationMs": 0u64,
                 "source": "index",
             })
         })
