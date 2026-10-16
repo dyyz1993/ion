@@ -1916,6 +1916,25 @@ impl Agent {
                             .iter()
                             .find(|(call_id, _)| *call_id == tc.id)
                             .map(|(_, task_id)| task_id.clone());
+                        if tc.name == "spawn_worker"
+                            && let Some(task_id) = durable_task_id.as_ref()
+                            && let Some(run_id) = self.durable_run_id.clone()
+                            && let Some(store) = self.durable_store.clone()
+                        {
+                            let spawn_key = format!("spawn:{tc_id}");
+                            let plan = crate::execution::types::ChildRunPlan {
+                                parent_task_id: task_id.clone(),
+                                spawn_key,
+                                session_id: self.session_id.clone().unwrap_or_default(),
+                                input: tc.arguments.clone(),
+                            };
+                            store
+                                .call_async(move |s| {
+                                    s.checkpoint_child_run(&run_id, &plan.parent_task_id, &plan)
+                                })
+                                .await
+                                .map_err(|e| AgentError::DurableExecution(e.to_string()))?;
+                        }
                         let durable_lease = self.start_durable_attempt(&durable_task_id).await?;
 
                         // Execute tool with streaming updates via tokio channel.
