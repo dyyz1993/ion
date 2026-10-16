@@ -7905,14 +7905,45 @@ async fn handle_manager_command(
             } else if id.is_empty() {
                 Err("missing params.id".to_string())
             } else {
-                ion::worker_registry::WorkerRegistry::execute_unified_approval(
+                let durable_entry = ApprovalBus::global()
+                    .pending()
+                    .into_iter()
+                    .find(|entry| entry.id == id);
+                let outcome = ion::worker_registry::WorkerRegistry::execute_unified_approval(
                     registry,
                     &id,
                     decision_str,
                     ion::approval_bus::ApprovalActor::User,
                     reason.as_deref(),
                 )
-                .await
+                .await;
+                // Persist the decision only after the source-side approval route
+                // succeeded; unknown/durable-only approvals remain source-owned.
+                if outcome.is_ok()
+                    && let Some(entry) = durable_entry
+                    && let Some(run_id) = entry
+                        .payload
+                        .get("durableRunId")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                {
+                    let approval_id = id.clone();
+                    let approve = decision_str == "approve";
+                    let durable_result = durable_execution_writer()
+                        .and_then(|writer| {
+                            writer
+                                .call(move |store| {
+                                    store.decide_approval(&run_id, &approval_id, approve)
+                                })
+                                .map_err(|e| e.to_string())
+                        })
+                        .map_err(|e| e.to_string())
+                        .map(|_| ());
+                    if let Err(e) = durable_result {
+                        tracing::warn!("[durable] approval decision persistence failed: {e}");
+                    }
+                }
+                outcome
             }
         }
         // ── M4.5 VerbGate 审批 RPC ──
@@ -7980,6 +8011,38 @@ async fn handle_manager_command(
                 })
                 .and_then(|runs| serde_json::to_value(runs).map_err(|e| e.to_string()))
         }
+        "run.project_transcripts" => durable_execution_writer().and_then(|writer| {
+            let pending = writer
+                .call(|store| store.pending_transcripts())
+                .map_err(|e| e.to_string())?;
+            let mut projected = Vec::new();
+            for entry in pending {
+                let entry_id = entry.entry_id.clone();
+                let jsonl_path = ion::paths::session_jsonl_path_by_id(
+                    &std::env::var("PWD").unwrap_or_default(),
+                    &entry.session_id,
+                );
+                let appended = ion::session_jsonl::append_custom_entry_to_file(
+                    &jsonl_path,
+                    "durable_transcript",
+                    serde_json::json!({
+                        "runId": entry.run_id,
+                        "ledgerEntryId": entry.entry_id,
+                        "payload": entry.payload,
+                    }),
+                );
+                if appended.is_some() {
+                    let projected_id = entry_id.clone();
+                    writer
+                        .call(move |store| store.mark_transcript_projected(&projected_id, true))
+                        .map_err(|e| e.to_string())?;
+                    projected.push(entry_id);
+                } else {
+                    break;
+                }
+            }
+            Ok(serde_json::json!({ "projected": projected }))
+        }),
         "run.resume" => {
             let params = cmd.get("params").cloned().unwrap_or_default();
             let run_id = params

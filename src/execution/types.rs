@@ -110,6 +110,14 @@ pub struct ToolOutcome {
     pub output: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct TranscriptProjection {
+    pub entry_id: String,
+    pub run_id: String,
+    pub session_id: String,
+    pub payload: serde_json::Value,
+}
+
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ReconciliationSummary {
     pub host_epoch: i64,
