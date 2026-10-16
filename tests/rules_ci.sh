@@ -11,7 +11,7 @@
 # Usage: bash tests/rules_ci.sh
 set -euo pipefail
 
-ION_BIN="${ION_BIN:-$(cd "$(dirname "$0")/.." && pwd)/target/debug/ion}"
+ION_BIN="${ION_BIN:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/target/debug/ion}"
 HOST_SOCK="${ION_HOST_SOCKET:-$HOME/.ion/host.sock}"
 PASS=0
 SKIP=0; FAIL=0
@@ -70,10 +70,13 @@ globs: "**/*.py"
 EOF
 
 echo ""
-echo "--- Group A: export HTML（rules 注入验证）---
+echo "--- Group A: export HTML（rules 注入验证）---"
 # 注意：rules 注入需要 RulesEngineExtension，仅在 serve 模式注册。
 # 场景1 (ion -p) 可能没注册 → A 组可能全部 skip。
-RULES_IN_CI=$(echo "$EXPORT_OUT" | grep -c "project_rules\|global_rule\|NO_RUST_IN_SP" 2>/dev/null || echo 0)"
+# EXPORT_OUT 是下方 export 产物路径；使用前先定义（曾 unbound variable
+# exit 101，run 38890296758——echo 行结尾的引号被吃导致这行提前暴露）
+EXPORT_OUT="$TMP/rules_export.html"
+RULES_IN_CI=$(grep -c "project_rules\|global_rule\|NO_RUST_IN_SP" "$EXPORT_OUT" 2>/dev/null || echo 0)
 
 # 在 proj 目录里用 FauxProvider 跑一个 session + export（cwd 对，.ion/rules 能扫到）
 cd "$TMP/proj"
@@ -139,7 +142,7 @@ fi
 echo ""
 echo "--- Group C: 去重验证（路径匹配 rule 不重复注入）---"
 # C1: 直接调 RulesEngineExtension 单元测试（on_system_prompt 去重逻辑）
-PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+PROJECT_DIR="$(dirname "$ION_BIN")/.."
 DEDUP_RESULT=$(cd "$PROJECT_DIR" && cargo test --lib rules_engine::tests::test_on_system_prompt_with_matching_rule 2>&1 | tail -3)
 assert_contains "C1: 去重单元测试通过" "$DEDUP_RESULT" "ok"
 
