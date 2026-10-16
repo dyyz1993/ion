@@ -83,11 +83,13 @@ echo "═══ 3. failures[]（approve_all 响应） ═══"
 [ -n "$SID" ] && {
   # busy 门轮询：前置 set_* 系列后 worker 短暂 Busy，approve_all 会撞
   # "agent is running"（run 38863530014/38871599107 实锤）——等空闲再调
-  for _ in $(seq 1 30); do
+  for _ in $(seq 1 60); do
     R=$(rpc review_approve_all "$SID")
-    echo "$R" | grep -q '"status":"busy"' || break
+    # busy 双形态：bg 臂的 {"status":"busy"} 与错误文案 "agent is running"
+    echo "$R" | grep -q '"status":"busy"\|agent is running' || break
     sleep 1
   done
+  # 忙了 60s 仍在跑：按第三态打印原文定性（不是假红掩盖）
   # 审批管理器按需接线：无审批活动的会话返回 {error:"approval not enabled"}
   # （统一审批总线后的合法态，2026-09-16 修复批 7）——此时跳过而非失败
   if echo "$R" | grep -q "approval not enabled"; then
