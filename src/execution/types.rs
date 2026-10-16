@@ -82,6 +82,15 @@ pub struct RunSnapshot {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RunListEntry {
+    pub run_id: String,
+    pub session_id: String,
+    pub state: String,
+    pub version: i64,
+    pub updated_ms: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ResumeReceipt {
     pub status: String,
     pub operation_id: String,
@@ -106,4 +115,5 @@ pub struct ReconciliationSummary {
     pub host_epoch: i64,
     pub runs_scanned: usize,
     pub changed_attempts: usize,
+    pub auto_resumed: usize,
 }

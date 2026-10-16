@@ -7966,6 +7966,20 @@ async fn handle_manager_command(
                     })
                 })
         }
+        "run.list" => {
+            let params = cmd.get("params").cloned().unwrap_or_default();
+            let session_id = params
+                .get("sessionId")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            durable_execution_writer()
+                .and_then(|writer| {
+                    writer
+                        .call(move |store| store.list_runs(session_id.as_deref()))
+                        .map_err(|e| e.to_string())
+                })
+                .and_then(|runs| serde_json::to_value(runs).map_err(|e| e.to_string()))
+        }
         "run.resume" => {
             let params = cmd.get("params").cloned().unwrap_or_default();
             let run_id = params

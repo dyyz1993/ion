@@ -7,8 +7,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use super::types::{
     ApprovalCheckpoint, AttemptLease, ChildRunPlan, EventPage, ExecutionCursor,
-    ReconciliationSummary, ResumeReceipt, RunSnapshot, TERMINAL_RUN_STATES, TaskSummary,
-    ToolCheckpoint, ToolOutcome,
+    ReconciliationSummary, ResumeReceipt, RunListEntry, RunSnapshot, TERMINAL_RUN_STATES,
+    TaskSummary, ToolCheckpoint, ToolOutcome,
 };
 
 const SCHEMA_VERSION: i64 = 1;
@@ -256,10 +256,26 @@ impl ExecutionStore {
             for run_id in &run_ids {
                 reconciled += store.recover_interrupted_attempts_tx(run_id)?;
             }
+            // Safe pending work is ready to dispatch; uncertain side effects stay blocked.
+            let auto_resumed: usize = store.conn.query_row(
+                "SELECT COUNT(*) FROM runs WHERE auto_resume=1 AND state IN ('queued','recovering') AND \
+                 NOT EXISTS (SELECT 1 FROM tasks t WHERE t.run_id=runs.run_id AND t.state='uncertain')",
+                [],
+                |row| row.get(0),
+            )?;
+            if auto_resumed > 0 {
+                store.conn.execute(
+                    "UPDATE runs SET state='queued',reason_code=NULL,version=version+1,updated_ms=?1 \
+                     WHERE auto_resume=1 AND state IN ('queued','recovering') AND \
+                     NOT EXISTS (SELECT 1 FROM tasks t WHERE t.run_id=runs.run_id AND t.state='uncertain')",
+                    params![now_ms()],
+                )?;
+            }
             Ok(ReconciliationSummary {
                 host_epoch: epoch,
                 runs_scanned: run_ids.len(),
                 changed_attempts: reconciled,
+                auto_resumed,
             })
         })
     }
@@ -360,6 +376,25 @@ impl ExecutionStore {
             tasks: task_rows,
             actions: Default::default(),
         })
+    }
+
+    pub fn list_runs(&self, session_id: Option<&str>) -> StoreResult<Vec<RunListEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT run_id,session_id,state,version,updated_ms FROM runs \
+             WHERE (?1 IS NULL OR session_id=?1) ORDER BY updated_ms DESC LIMIT 200",
+        )?;
+        let rows = stmt
+            .query_map(params![session_id], |row| {
+                Ok(RunListEntry {
+                    run_id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    state: row.get(2)?,
+                    version: row.get(3)?,
+                    updated_ms: row.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     fn load_run(&self, run_id: &str) -> StoreResult<RunRow> {
@@ -812,6 +847,40 @@ impl ExecutionStore {
         self.transaction(|store| store.recover_interrupted_attempts_tx(run_id))
     }
 
+    pub fn auto_resume_pending(&mut self) -> StoreResult<Vec<String>> {
+        self.transaction(|store| {
+            let mut stmt = store.conn.prepare(
+                "SELECT run_id FROM runs WHERE auto_resume=1 AND state IN ('queued','recovering') AND \
+                 NOT EXISTS (SELECT 1 FROM tasks t WHERE t.run_id=runs.run_id AND t.state='uncertain') \
+                 ORDER BY updated_ms ASC LIMIT 100",
+            )?;
+            let run_ids = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(stmt);
+            for run_id in &run_ids {
+                let run = store.load_run(run_id)?;
+                let version = run.version + 1;
+                store.conn.execute(
+                    "UPDATE runs SET state='queued',reason_code=NULL,version=?2,updated_ms=?3 WHERE run_id=?1",
+                    params![run_id, version, now_ms()],
+                )?;
+                store.append_event_tx(
+                    run_id,
+                    version,
+                    "run.auto_resume",
+                    &serde_json::json!({ "runId": run_id }),
+                )?;
+                store.insert_outbox_tx(
+                    run_id,
+                    "schedule",
+                    &serde_json::json!({ "runId": run_id }),
+                )?;
+            }
+            Ok(run_ids)
+        })
+    }
+
     fn recover_interrupted_attempts_tx(&self, run_id: &str) -> StoreResult<usize> {
         {
             let mut stmt = self.conn.prepare(
@@ -857,6 +926,13 @@ impl ExecutionStore {
                 let version = run.version + 1;
                 let state = if blocked {
                     "blocked".to_string()
+                } else if self.conn.query_row(
+                    "SELECT auto_resume FROM runs WHERE run_id=?1",
+                    params![run_id],
+                    |row| row.get::<_, i64>(0),
+                )? == 1
+                {
+                    "queued".to_string()
                 } else {
                     run.state
                 };
@@ -1119,6 +1195,106 @@ mod tests {
             vec![serde_json::json!({ "runId": snap.run_id })]
         );
         assert_eq!(page.cursor.seq, 1);
+    }
+
+    #[test]
+    fn list_runs_filters_by_session_and_orders_recent_first() {
+        let (mut store, _dir) = temp_store();
+        let a = store
+            .create_run(
+                "session-a",
+                "main",
+                serde_json::json!({}),
+                serde_json::json!({}),
+            )
+            .unwrap();
+        let b = store
+            .create_run(
+                "session-b",
+                "main",
+                serde_json::json!({}),
+                serde_json::json!({}),
+            )
+            .unwrap();
+        let all = store.list_runs(None).unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().any(|run| run.run_id == a.run_id));
+        assert!(all.iter().any(|run| run.run_id == b.run_id));
+        let only_a = store.list_runs(Some("session-a")).unwrap();
+        assert_eq!(only_a.len(), 1);
+        assert_eq!(only_a[0].run_id, a.run_id);
+    }
+
+    #[test]
+    fn scheduler_auto_resumes_safe_pending_and_blocks_uncertain() {
+        let (mut store, _dir) = temp_store();
+        let safe = store
+            .create_run("safe", "main", serde_json::json!({}), serde_json::json!({}))
+            .unwrap();
+        let unsafe_run = store
+            .create_run(
+                "unsafe",
+                "main",
+                serde_json::json!({}),
+                serde_json::json!({}),
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE runs SET auto_resume=1,state='recovering' WHERE run_id=?1",
+                params![safe.run_id],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE runs SET auto_resume=1,state='recovering' WHERE run_id=?1",
+                params![unsafe_run.run_id],
+            )
+            .unwrap();
+        let safe_task = ToolCheckpoint {
+            task_id: "safe-task".into(),
+            logical_key: "safe".into(),
+            name: "read".into(),
+            call_id: "safe-call".into(),
+            arguments: serde_json::json!({}),
+            policy: crate::agent::tool::RecoveryPolicy::ReplaySafe,
+        };
+        let unsafe_task = ToolCheckpoint {
+            task_id: "unsafe-task".into(),
+            logical_key: "unsafe".into(),
+            name: "bash".into(),
+            call_id: "unsafe-call".into(),
+            arguments: serde_json::json!({}),
+            policy: crate::agent::tool::RecoveryPolicy::Unsafe,
+        };
+        store
+            .checkpoint_tool_batch(&safe.run_id, &serde_json::json!({}), &[safe_task])
+            .unwrap();
+        store
+            .checkpoint_tool_batch(&unsafe_run.run_id, &serde_json::json!({}), &[unsafe_task])
+            .unwrap();
+        store
+            .start_tool_attempt(&safe.run_id, "safe-task", None)
+            .unwrap();
+        store
+            .start_tool_attempt(&unsafe_run.run_id, "unsafe-task", None)
+            .unwrap();
+        store.recover_interrupted_attempts(&safe.run_id).unwrap();
+        store
+            .recover_interrupted_attempts(&unsafe_run.run_id)
+            .unwrap();
+
+        let resumed = store.auto_resume_pending().unwrap();
+        assert_eq!(resumed, vec![safe.run_id.clone()]);
+        assert_eq!(store.snapshot(&safe.run_id).unwrap().state, "queued");
+        let blocked = store.snapshot(&unsafe_run.run_id).unwrap();
+        assert_eq!(blocked.state, "blocked");
+        assert_eq!(
+            blocked.reason_code.as_deref(),
+            Some("uncertain_tool_effect")
+        );
     }
 
     #[test]
