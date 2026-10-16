@@ -5,6 +5,7 @@ mod conversation;
 mod input;
 mod sessions;
 mod state;
+mod stream;
 mod ui;
 
 use std::path::PathBuf;
@@ -136,6 +137,10 @@ async fn tui_loop(
     conn: &mut connection::Connection,
     socket: &std::path::Path,
 ) -> Result<(), String> {
+    let mut tool_stream = match app.conversation_session.clone() {
+        Some(sid) => stream::ToolEventStream::subscribe(socket, &sid).await.ok(),
+        None => None,
+    };
     let mut panels = ui::PanelState::default();
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(1000));
     loop {
@@ -143,6 +148,13 @@ async fn tui_loop(
         let _ = app.load_detail(conn).await;
         let _ = app.refresh_sessions(socket).await;
         let _ = app.refresh_approvals(socket).await;
+        let desired_stream_sid = app.selected_session_id().map(str::to_string);
+        let current_stream_sid = app.conversation_session.clone();
+        if desired_stream_sid != current_stream_sid
+            && let Some(sid) = desired_stream_sid
+        {
+            tool_stream = stream::ToolEventStream::subscribe(socket, &sid).await.ok();
+        }
         if let Some(sid) = app.selected_session_id().map(String::from)
             && app.conversation_session.as_deref() != Some(sid.as_str())
             && let Err(e) = app.load_conversation(conn, &sid).await
@@ -155,6 +167,16 @@ async fn tui_loop(
             .map_err(|e| format!("draw: {e}"))?;
         tokio::select! {
             _ = tick.tick() => {}
+            event = async {
+                match tool_stream.as_mut() {
+                    Some(stream) => stream.next_tool_event().await,
+                    None => None,
+                }
+            } => {
+                if let Some(event) = event {
+                    app.apply_tool_event(event);
+                }
+            }
             event = crossterm_event().fuse() => {
                 let event = event.map_err(|e| format!("read: {e}"))?;
                 match event {
@@ -621,5 +643,52 @@ mod picker_live_integration_tests {
         let card = app.live_tool.expect("live card");
         assert_eq!(card.name, "bash");
         assert!(card.render()[0].contains("[tool] bash — call-bash:0"));
+    }
+}
+
+#[cfg(test)]
+mod tool_stream_state_tests {
+    use crate::app::App;
+    use crate::stream::ToolStreamEvent;
+
+    #[test]
+    fn stream_events_update_selected_live_card() {
+        let mut app = App::new();
+        app.conversation_session = Some("s".into());
+        app.apply_tool_event(ToolStreamEvent::Started {
+            session_id: "other".into(),
+            tool_call_id: "c".into(),
+            tool_name: "bash".into(),
+            command: "noop".into(),
+        });
+        assert!(app.live_tool.is_none());
+        app.apply_tool_event(ToolStreamEvent::Started {
+            session_id: "s".into(),
+            tool_call_id: "c".into(),
+            tool_name: "bash".into(),
+            command: "tail -f log".into(),
+        });
+        app.apply_tool_event(ToolStreamEvent::Update {
+            session_id: "s".into(),
+            tool_call_id: "c".into(),
+            partial: "first".into(),
+        });
+        app.apply_tool_event(ToolStreamEvent::Update {
+            session_id: "s".into(),
+            tool_call_id: "c".into(),
+            partial: "second".into(),
+        });
+        app.apply_tool_event(ToolStreamEvent::Ended {
+            session_id: "s".into(),
+            tool_call_id: "c".into(),
+            duration_ms: 2500,
+        });
+        let card = app.live_tool.unwrap();
+        assert_eq!(card.name, "bash");
+        assert_eq!(card.command, "tail -f log");
+        assert_eq!(card.elapsed_ms, 2500);
+        assert!(card.output_tail.contains(&"first".to_string()));
+        assert!(card.output_tail.contains(&"second".to_string()));
+        assert!(card.output_tail.contains(&"— completed —".to_string()));
     }
 }

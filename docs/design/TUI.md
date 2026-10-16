@@ -188,3 +188,11 @@ ion tui
 - 运行中任务派生设计 F 骨架卡：spinner + tool/kind + logical key + elapsed + 输出尾部（当前为 running… 与光标），后续接入真实流即替换尾部。
 - Busy 语义保留 `Esc/s` 停止；审批卡仍优先锁定 composer。
 - 验证：`cargo test -p ion-tui` 53/0、`tests/tui_smoke_ci.sh` 34/0、`docs_links_ci.sh` 373/0；截图 `~/Downloads/ion-tui-v0.9-attachment-live.png`。
+
+## 14. v0.10 真实工具输出流（已实现）
+
+- 新增 session 事件流订阅：`subscribe(session)` 保持长连接，解析 `tool_execution_start/update/end`。
+- `tool_execution_start` 建立 live card；`partialResult` 逐行推入 10 行尾部；`end` 写入耗时与 completed 标记。
+- 流事件按 sessionId 过滤，只作用于当前 Conversation；切换会话时重建流。
+- 定时刷新不再覆盖真实流输出；同一 running task 的实时 tail 保持。
+- 验证：`cargo test -p ion-tui` 57/0、`tests/tui_smoke_ci.sh` 34/0、`docs_links_ci.sh` 373/0；截图 `~/Downloads/ion-tui-v0.10-live-tool-stream.png`。
