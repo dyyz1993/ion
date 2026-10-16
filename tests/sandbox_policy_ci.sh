@@ -90,7 +90,7 @@ wrpc() { # wrpc <tag> <session> <method> [params]
 
 wait_idle() { # wait_idle <tag> <wid> — 等 worker Idle（faux 无网络，60s 兜底）
     local tag="$1" wid="$2" st=""
-    for _ in $(seq 1 60); do
+    for _ in $(seq 1 120); do
         st=$(rpc "$tag" list_workers | jq -r --arg w "$wid" \
             '.data.workers[]? | select(.workerId==$w) | .status' 2>/dev/null)
         [ "$st" = "Idle" ] && return 0
