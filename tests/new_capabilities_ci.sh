@@ -84,15 +84,14 @@ echo "═══ 3. failures[]（approve_all 响应） ═══"
   R=$(rpc review_approve_all "$SID")
   # 审批管理器按需接线：无审批活动的会话返回 {error:"approval not enabled"}
   # （统一审批总线后的合法态，2026-09-16 修复批 7）——此时跳过而非失败
-  echo "$R" | grep -q "approval not enabled" \
-    && skip "approval manager 未启用（无审批活动的会话）" \
-    || {
-    echo "$R" | python3 -c "
-import json,sys
-d=json.load(sys.stdin)['data']
-exit(0 if 'failures' in d else 1)" 2>/dev/null \
-      && ok "approve_all 响应含 failures[]" || bad "approve_all 响应缺 failures[]"
-    }
+  if echo "$R" | grep -q "approval not enabled"; then
+    skip "approval manager 未启用（无审批活动的会话）"
+  elif echo "$R" | grep -q "failures"; then
+    ok "approve_all 响应含 failures[]"
+  else
+    # 第三态自曝：响应不含任一特征时打出原文（CI 侧定位用）
+    bad "approve_all 响应缺 failures[]（实际: $(echo "$R" | head -c 200)）"
+  fi
 } || skip "无 session"
 
 echo "═══ 4. memory LIMIT + unarchive ═══"
