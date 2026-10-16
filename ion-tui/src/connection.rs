@@ -38,12 +38,11 @@ impl Connection {
         self.writer
             .write_all(format!("{req}\n").as_bytes())
             .await
-            .map_err(|e| format!("write {method}: {e}"))?;
+            .map_err(|e| classify_write_error(method, e))?;
         self.writer
             .flush()
             .await
-            .map_err(|e| format!("flush: {e}"))?;
-
+            .map_err(|e| classify_write_error(method, e))?;
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
         loop {
             let remain = deadline.saturating_duration_since(std::time::Instant::now());
@@ -69,6 +68,14 @@ impl Connection {
                 return Ok(v);
             }
         }
+    }
+}
+
+fn classify_write_error(method: &str, e: std::io::Error) -> String {
+    if e.kind() == std::io::ErrorKind::BrokenPipe {
+        format!("write {method}: writer closed (broken pipe)")
+    } else {
+        format!("write {method}: {e}")
     }
 }
 

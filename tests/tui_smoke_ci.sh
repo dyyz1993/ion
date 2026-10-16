@@ -111,5 +111,17 @@ rpc --method run.pause --params '{"runId":"run-tui-ci-001","reason":"tui smoke"}
 OUT=$(HOME="$HOME_DIR" ION_HOST_SOCKET="$ROOT/host.sock" ION_TUI_HEADLESS=1 timeout 10 "$TUI_BIN" 2>/dev/null)
 echo "$OUT" | grep -q 'paused' && pass 'paused state visible in headless TUI' || fail "state after pause: $OUT"
 
+echo '[T3] interactive keys pause/resume via stdin script'
+# Select first run (j), pause (p), then resume (r), then quit (q).
+{ printf 'j\n'; sleep 1; printf 'p\n'; sleep 1; printf 'r\n'; sleep 2; printf 'q\n'; sleep 1; } | HOME="$HOME_DIR" ION_HOST_SOCKET="$ROOT/host.sock" timeout 20 "$TUI_BIN" >"$ROOT/t3.out" 2>"$ROOT/t3.err"
+# Reconnect windows can swallow the in-band readback line; host state is the source of truth.
+STATE=$(rpc --method run.get --params '{"runId":"run-tui-ci-001"}')
+[ "$(jget "$STATE" 'd["data"]["state"]')" = 'recovering' ] &&
+    pass 'interactive keys drove pause+resume (host state recovering)' ||
+    fail "host state after interactive keys: $STATE"
+grep -qE 'run-tui-ci-001 .* (paused|recovering)' "$ROOT/t3.out" &&
+    pass 'TUI reflected at least one write state' ||
+    { fail "no write state reflected in TUI output: $(tail -5 "$ROOT/t3.out")"; }
+
 printf 'PASS: %s, FAIL: %s\n' "$PASS" "$FAIL"
 test "$FAIL" -eq 0
