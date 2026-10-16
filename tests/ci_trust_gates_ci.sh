@@ -215,7 +215,11 @@ RC2=$?
 RUN2=$(capture_root "$SB/run2.out")
 [ -n "$RUN2" ] && RUN_ROOTS="$RUN_ROOTS $RUN2"
 
-[ "$RC2" -eq 0 ] && ok "B8 clean rerun exits 0" || bad "B8 clean rerun exit ${RC2}"
+[ "$RC2" -eq 0 ] && ok "B8 clean rerun exits 0" || {
+    bad "B8 clean rerun exit ${RC2}"
+    echo "  ── run2.out 尾（诊断）──"
+    tail -25 "$SB/run2.out" 2>/dev/null | sed 's/^/    /'
+}
 grep -q "validated by preflight" "${RUN2}/out/a_check_ci.log" 2>/dev/null \
     && ok "B9 stamp-cache no-op used and logged" \
     || bad "B9 stamp-cache path not exercised/logged"

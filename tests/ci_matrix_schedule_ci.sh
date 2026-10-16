@@ -104,7 +104,10 @@ RUN1=$(capture_root "$SB/run1.out")
 [ -n "$RUN1" ] && RUN_ROOTS="$RUN_ROOTS $RUN1"
 
 [ "$RC1" -eq 0 ] && ok "A1 runner exit 0 when all pass" \
-                 || bad "A1 runner exit ${RC1} (want 0)"
+                 || { bad "A1 runner exit ${RC1} (want 0)"
+                      echo "  ── run1.out 尾（诊断）──"
+                      tail -25 "$SB/run1.out" 2>/dev/null | sed 's/^/    /'
+                    }
 
 PY_FAILS=$(python3 - "$SB/invoke1.log" <<'PY'
 import sys
