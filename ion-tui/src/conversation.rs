@@ -577,3 +577,139 @@ mod composer_tests {
         assert!(status.contains("同2"));
     }
 }
+
+/// Modal path input for adding attachments.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AttachmentPicker {
+    pub open: bool,
+    pub path: String,
+}
+
+impl AttachmentPicker {
+    pub fn open(&mut self) {
+        self.open = true;
+        self.path.clear();
+    }
+
+    pub fn close(&mut self) {
+        self.open = false;
+        self.path.clear();
+    }
+
+    pub fn insert(&mut self, ch: char) {
+        if self.open {
+            self.path.push(ch);
+        }
+    }
+
+    pub fn backspace(&mut self) {
+        if self.path.is_empty() {
+            return;
+        }
+        let end = self.path.len();
+        let start = self.path[..end]
+            .char_indices()
+            .next_back()
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        self.path.replace_range(start..end, "");
+    }
+
+    pub fn confirm(&mut self) -> Option<String> {
+        let trimmed = self.path.trim().to_string();
+        self.close();
+        (!trimmed.is_empty()).then_some(trimmed)
+    }
+}
+
+/// Streaming tool-call display state (design F skeleton).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveToolCard {
+    pub name: String,
+    pub command: String,
+    pub output_tail: Vec<String>,
+    pub elapsed_ms: u64,
+}
+
+impl LiveToolCard {
+    pub fn spinner(&self) -> &'static str {
+        const FRAMES: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
+        FRAMES[(self.elapsed_ms / 120) as usize % 4]
+    }
+
+    #[allow(dead_code)]
+    pub fn push_output(&mut self, line: impl Into<String>) {
+        self.output_tail.push(line.into());
+        let overflow = self.output_tail.len().saturating_sub(10);
+        if overflow > 0 {
+            self.output_tail.drain(..overflow);
+        }
+    }
+
+    pub fn render(&self) -> Vec<String> {
+        let mut out = vec![format!(
+            "{} [tool] {} — {} ({:.1}s)",
+            self.spinner(),
+            self.name,
+            self.command,
+            self.elapsed_ms as f64 / 1000.0
+        )];
+        out.extend(self.output_tail.iter().map(|l| format!("  {l}")));
+        out.push("  ▌".into());
+        out
+    }
+}
+
+#[cfg(test)]
+mod picker_and_live_tests {
+    use super::*;
+
+    #[test]
+    fn attachment_picker_lifecycle_utf8_and_confirm() {
+        let mut picker = AttachmentPicker::default();
+        picker.open();
+        for ch in ['/', '图', '片'] {
+            picker.insert(ch);
+        }
+        assert_eq!(picker.path, "/图片");
+        picker.backspace();
+        assert_eq!(picker.path, "/图");
+        let confirmed = picker.confirm();
+        assert_eq!(confirmed.as_deref(), Some("/图"));
+        assert!(!picker.open);
+        assert!(picker.path.is_empty());
+        picker.insert('x');
+        assert!(picker.path.is_empty());
+    }
+
+    #[test]
+    fn live_tool_card_tail_and_render() {
+        let mut card = LiveToolCard {
+            name: "bash".into(),
+            command: "tail -f logs".into(),
+            output_tail: Vec::new(),
+            elapsed_ms: 1240,
+        };
+        for i in 0..12 {
+            card.push_output(format!("line-{i}"));
+        }
+        assert_eq!(card.output_tail.len(), 10);
+        assert_eq!(card.output_tail[0], "line-2");
+        assert_eq!(card.output_tail[9], "line-11");
+        let rendered = card.render();
+        assert!(rendered[0].contains("[tool] bash — tail -f logs (1.2s)"));
+        assert!(rendered.iter().any(|l| l.contains("line-11")));
+        assert_eq!(*rendered.last().unwrap(), "  ▌".to_string());
+    }
+
+    #[test]
+    fn spinner_cycles_frames() {
+        let card = LiveToolCard {
+            name: "bash".into(),
+            command: "x".into(),
+            output_tail: Vec::new(),
+            elapsed_ms: 360,
+        };
+        assert_eq!(card.spinner(), "⠸");
+    }
+}

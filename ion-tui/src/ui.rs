@@ -267,6 +267,15 @@ fn draw_conversation(f: &mut Frame, app: &App, panels: &PanelState, area: ratatu
             Style::default().fg(Color::Cyan),
         )));
     }
+    // Live tool card (design F skeleton).
+    if let Some(card) = &app.live_tool {
+        for l in card.render() {
+            lines.push(Line::from(Span::styled(
+                l,
+                Style::default().fg(Color::Cyan),
+            )));
+        }
+    }
     let para = Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(title));
     f.render_widget(para, rows[0]);
 
@@ -285,6 +294,18 @@ fn draw_conversation(f: &mut Frame, app: &App, panels: &PanelState, area: ratatu
         Paragraph::new(attach_text).style(Style::default().fg(Color::DarkGray)),
         rows[1],
     );
+
+    // Attachment path picker.
+    if app.attachment_picker.open {
+        let picker = Paragraph::new(format!("{}▊", app.attachment_picker.path))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Attach path ◆ (Enter 确认 / Esc 取消) "),
+            )
+            .style(Style::default().fg(Color::Magenta));
+        f.render_widget(picker, rows[1]);
+    }
 
     // Composer: bordered box with a visible cursor block.
     let draft = if app.approvals.is_empty() {

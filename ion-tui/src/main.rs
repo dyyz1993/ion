@@ -84,6 +84,7 @@ async fn run(
             return Err(e);
         }
     }
+    app.sync_composer_from_selected();
     if let Err(e) = app.poll_events(&mut conn).await {
         if e.contains("writer closed") {
             conn = connection::Connection::connect(&socket).await?;
@@ -161,7 +162,9 @@ async fn tui_loop(
                         use crossterm::event::KeyCode;
                         match key.code {
                             KeyCode::Char('q') => break,
-                            KeyCode::Esc => {
+                            KeyCode::Esc if !(panels.focus == ui::Focus::Conversation
+                                && app.attachment_picker.open) =>
+                            {
                                 if panels.focus == ui::Focus::Conversation {
                                     if let Err(e) = app.abort_selected(socket).await {
                                         app.status = e;
@@ -199,6 +202,21 @@ async fn tui_loop(
                                 }
                                 _ => {}
                             },
+                            KeyCode::Enter if panels.focus == ui::Focus::Conversation
+                                && app.attachment_picker.open =>
+                            {
+                                app.confirm_attachment_picker();
+                            }
+                            KeyCode::Esc if panels.focus == ui::Focus::Conversation
+                                && app.attachment_picker.open =>
+                            {
+                                app.close_attachment_picker();
+                            }
+                            KeyCode::Backspace if panels.focus == ui::Focus::Conversation
+                                && app.attachment_picker.open =>
+                            {
+                                app.attachment_picker.backspace();
+                            }
                             KeyCode::Enter => match panels.focus {
                                 ui::Focus::Sessions => {
                                     if let Some(sid) =
@@ -233,8 +251,7 @@ async fn tui_loop(
                             }
                             KeyCode::Char('a') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
                                 if panels.focus == ui::Focus::Conversation {
-                                    // TTY file picker is v0.8; paste/current dir path mode.
-                                    app.status = "attachment picker pending (v0.8)".into();
+                                    app.open_attachment_picker();
                                 }
                             }
                             KeyCode::Char('x') if panels.focus == ui::Focus::Conversation => {
@@ -281,7 +298,11 @@ async fn tui_loop(
                                 if !matches!(c, 'p' | 'r' | 'a' | 'q' | 'j' | 'k' | 'e' | 'y' | 'n' | 's') =>
                             {
                                 if panels.focus == ui::Focus::Conversation {
-                                    app.composer.insert(c);
+                                    if app.attachment_picker.open {
+                                        app.attachment_picker.insert(c);
+                                    } else {
+                                        app.composer.insert(c);
+                                    }
                                 }
                             }
                             KeyCode::Char('p') | KeyCode::Char('r') | KeyCode::Char('a') => {
@@ -549,5 +570,56 @@ mod approval_rpc_tests {
         app.session_cursor = Some(0);
         app.abort_selected(&path).await.unwrap();
         assert!(!app.selected_busy);
+    }
+}
+
+#[cfg(test)]
+mod picker_live_integration_tests {
+    use crate::app::App;
+    use crate::state::TaskRow;
+
+    #[test]
+    fn picker_confirm_adds_attachment_and_close_clears() {
+        let mut app = App::new();
+        app.open_attachment_picker();
+        for c in "截图.png".chars() {
+            app.attachment_picker.insert(c);
+        }
+        app.confirm_attachment_picker();
+        assert_eq!(app.composer.attachments, vec!["截图.png"]);
+        app.open_attachment_picker();
+        app.attachment_picker.insert('x');
+        app.close_attachment_picker();
+        assert!(!app.attachment_picker.open);
+        assert_eq!(app.composer.attachments.len(), 1);
+    }
+
+    #[test]
+    fn live_tool_derives_from_running_task_and_busy_card() {
+        let mut app = App::new();
+        app.tasks = vec![TaskRow {
+            task_id: "t".into(),
+            logical_key: "call-bash:0".into(),
+            kind: "bash".into(),
+            state: "running".into(),
+            version: 0,
+        }];
+        app.session_rows = vec![crate::sessions::TreeRow {
+            session_id: "s".into(),
+            label: "s".into(),
+            indent: 0,
+            kind: crate::sessions::SessionKind::Root,
+            busy: true,
+            durable_active: false,
+            agent: None,
+            ctx_used: 0,
+            ctx_max: 128_000,
+            runtime_ms: 1_400,
+        }];
+        app.session_cursor = Some(0);
+        app.sync_composer_from_selected();
+        let card = app.live_tool.expect("live card");
+        assert_eq!(card.name, "bash");
+        assert!(card.render()[0].contains("[tool] bash — call-bash:0"));
     }
 }

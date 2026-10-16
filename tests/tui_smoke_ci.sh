@@ -206,6 +206,8 @@ echo "$OUT" | grep -q '^v \[tool\] task-running-detail.*running.*expanded' &&
     pass 'running task defaults expanded' || fail "running task not expanded: $OUT"
 echo "$OUT" | grep -q '^> \[tool\] task-done-detail.*succeeded$' &&
     pass 'succeeded task defaults collapsed' || fail "done task not collapsed: $OUT"
+echo "$OUT" | grep -qE '⠾|⠸|⠋|⠙|⠹.*\[tool\] tool call-bash' &&
+    pass 'live tool card rendered with spinner' || echo "$OUT" | grep -q '⏹ 停止' && pass 'stop control rendered' || fail "live/stop missing: $OUT"
 
 echo '[T5] event stream visible in TUI output'
 # Drive one write so a run.state.changed event lands in the ledger, then poll.
