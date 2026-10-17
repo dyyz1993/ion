@@ -214,3 +214,11 @@ ion tui
 - `SessionHeader` 反序列化宽容保留扩展字段（如 `spawnMeta`），避免独立会话文件因 header 扩展字段被 typed reader 误判不存在；headless `--session` 读消息时对 host 关闭 idle write half 的连接执行重连重读。
 - 真实审批 E2E 使用 host-shaped 双 socket：UI 事件流推送 `ApprovalRequest`/`ApprovalResolved`，TUI 事件驱动回读 `approvals_pending`；approve 后不乐观删除，以空列表回读为准。
 - 验证：`cargo test -p ion-tui`、`cargo test -p ion message_retrieval`、`cargo test -p ion file_index`、`tests/tui_smoke_ci.sh`（含 35 项断言：完成工具卡历史、审批实时出现/消失、SIGKILL 恢复回归）、`cargo fmt --all --check`、`cargo clippy -p ion-tui --all-targets -- -D warnings`、`docs_links_ci.sh`。
+
+## 17. v0.13 Simple Chat Mode（已实现）
+
+- `ion-tui --chat` 默认进入 chat-first 界面：顶部仅保留 ION / model / context / 快捷键提示，中栏为自然聊天流，底部为单一 composer；不显示 Sessions、Runs、Events、Tasks 调试面板。
+- Simple Chat 复用现有会话、消息、审批与工具流 RPC，不新增后端接口；空会话显示 `开始一段新对话`。
+- 历史工具卡片默认折叠为 `▸ [tool] ...`，当前 live tool 保留实时状态；审批卡置顶显示，`y/n` 复用现有 approve/reject 回读路径，composer 在审批期间锁定为等待决策。
+- `d` 在 Simple Chat 与三栏 Debug Workbench 之间切换；切回调试模式时可继续使用 `1/2/3/4`、`j/k`、`p/r/a/e` 等既有键位。Busy 状态下 Simple Chat 的 composer 标题显示 `Esc stop`。
+- 验证：`cargo test -p ion-tui` 62/0（含 Simple Chat 渲染/模式切换）、`tests/tui_smoke_ci.sh` 39/0（T8 断言隐藏 Sessions/Tasks、显示空状态）、`cargo fmt --all --check`、`cargo clippy -p ion-tui --all-targets -- -D warnings`、`cargo test --workspace --lib --bins --tests`、`docs_links_ci.sh`。
