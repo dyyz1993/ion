@@ -285,6 +285,7 @@ while True:
         elif method=='list_sessions': data={"sessions":[]}
         elif method=='run.list': data=[]
         elif method=='events.page': data={"cursor":{"seq":0},"events":[]}
+        elif method=='get_session_messages': data={"messages":[],"hasMore":False,"totalCount":0,"view":"live"}
         resp={"type":"response","id":req.get('id'),"success":True,"data":data}
         c.sendall((json.dumps(resp)+"\n").encode())
         break
@@ -337,6 +338,19 @@ grep -vq '⏸ 审批请求' "$ROOT/realtime-resolved.txt" &&
     pass 'ApprovalResolved event cleared card in live TUI' ||
     fail "realtime card did not clear: $(cat "$ROOT/realtime-resolved.txt")"
 tmux kill-session -t ion-tui-realtime 2>/dev/null || true
+
+echo '[T8] Simple Chat Mode'
+CHAT_OUT=$(HOME="$HOME_DIR" ION_HOST_SOCKET="$MOCK_SOCK" ION_TUI_HEADLESS=1 timeout 10 "$TUI_BIN" --chat 2>"$ROOT/simple-chat.err")
+echo "$CHAT_OUT" | grep -vq -- '--- sessions ---' &&
+    pass 'simple chat hides sessions workbench' ||
+    fail "simple chat leaked sessions panel: $CHAT_OUT"
+echo "$CHAT_OUT" | grep -vq -- '--- tasks ---' &&
+    pass 'simple chat hides task debug list' ||
+    fail "simple chat leaked task panel: $CHAT_OUT"
+echo "$CHAT_OUT" | grep -q '开始一段新对话' &&
+    pass 'simple chat empty state rendered' ||
+    fail "simple chat empty state missing: $CHAT_OUT / $(cat "$ROOT/simple-chat.err")"
+
 kill "$MOCK_PID" 2>/dev/null || true
 
 printf 'PASS: %s, FAIL: %s\n' "$PASS" "$FAIL"

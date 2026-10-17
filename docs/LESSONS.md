@@ -23,6 +23,11 @@ ION 的错题本：复盘**已合并/已修复**的工作——返工的、不�
 
 ## TUI
 
+**给“日常聊天”和“调试工作台”分模式，不要把调试信息全部摊在默认界面——用户第一眼需要的是对话，不是内部 run/task/event。**
+- Before, v0.12 三栏工作台把 Sessions/Runs/Events/Tasks 同时展示，适合 durable execution 验收但不像日常聊天产品；截图验收时显得拥挤且难读。
+- 证据：本 commit（`ion-tui --chat` + `d` 调试切换；`tests/tui_smoke_ci.sh` T8 Simple Chat 39/0）。
+- Seen 1× (2026-10-17)
+
 **按 JSON header 判断文件归属时，typed 反序列化必须宽容扩展字段，并给测试注入一个扩展字段——"能读旧 header"不等于"能读当前写出的 header"。**
 - Before, 独立会话 header 已包含 `spawnMeta`，但 `SessionHeader` 只认固定字段，`read_session_header` 反序列化失败后 host 直读把真实存在的 `<sid>.jsonl` 误判为不存在；TUI smoke 曾把根因误收敛到 SessionIndex 路径。
 - 证据：本 commit（`tests/tui_smoke_ci.sh` completed tool persisted into conversation history；`SessionHeader` flatten 扩展字段后 host `get_session_messages` 返回 `tool_card`）。

@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Row, Table, Tabs},
+    widgets::{Block, Borders, Paragraph, Row, Table, Tabs, Wrap},
 };
 
 use crate::app::App;
@@ -52,11 +52,19 @@ pub struct PanelState {
     /// Tool/tool-batch groups the user manually expanded (key = kind/id).
     pub expanded: std::collections::HashSet<String>,
     pub focus: Focus,
+    pub simple_chat: bool,
 }
 
 impl PanelState {
     pub fn toggle_focus(&mut self) {
         self.focus = self.focus.next();
+    }
+
+    pub fn toggle_simple_chat(&mut self) {
+        self.simple_chat = !self.simple_chat;
+        if self.simple_chat {
+            self.focus = Focus::Conversation;
+        }
     }
 
     /// Running/uncertain tasks default to expanded; everything else collapsed
@@ -91,6 +99,10 @@ impl PanelState {
 }
 
 pub fn draw(f: &mut Frame, app: &App, panels: &PanelState) {
+    if panels.simple_chat {
+        return draw_simple_chat(f, app, panels);
+    }
+
     let outer = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(8),
@@ -141,6 +153,94 @@ pub fn draw(f: &mut Frame, app: &App, panels: &PanelState) {
         Span::styled("q quit", Style::default().fg(Color::DarkGray)),
     ]);
     f.render_widget(Paragraph::new(help), outer[2]);
+}
+
+fn draw_simple_chat(f: &mut Frame, app: &App, _panels: &PanelState) {
+    let outer = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(4),
+        Constraint::Length(1),
+        Constraint::Length(3),
+        Constraint::Length(1),
+    ])
+    .split(f.area());
+
+    let title = Line::from(vec![
+        Span::styled(
+            "ION",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            app.composer.model.clone(),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            format!("ctx {}%", app.composer.ctx_percent()),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::raw("  "),
+        Span::styled("d debug · q quit", Style::default().fg(Color::DarkGray)),
+    ]);
+    f.render_widget(Paragraph::new(title), outer[0]);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for line in app.render_simple_chat_text() {
+        let style = if line.starts_with("⏸")
+            || line.starts_with("✓")
+            || line.starts_with("✗")
+            || line.contains("允许")
+            || line.contains("拒绝")
+        {
+            Style::default().fg(Color::Yellow)
+        } else if line.starts_with("you ") || line.starts_with("❯ ") || line.starts_with("user") {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else if line.starts_with("▸") || line.starts_with("▾") {
+            Style::default().fg(Color::DarkGray)
+        } else if line.starts_with("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏") || line.contains("running…")
+        {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        lines.push(Line::from(Span::styled(line, style)));
+    }
+    let chat = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::NONE))
+        .wrap(Wrap { trim: false });
+    f.render_widget(chat, outer[1]);
+
+    let attachments = if app.composer.attachments.is_empty() {
+        String::new()
+    } else {
+        format!("📎 {}", app.composer.attachments.join(" · "))
+    };
+    f.render_widget(
+        Paragraph::new(attachments).style(Style::default().fg(Color::DarkGray)),
+        outer[2],
+    );
+
+    let draft = if app.approvals.is_empty() {
+        format!("{}▊", app.composer.draft)
+    } else {
+        "等待审批决策… y 允许 / n 拒绝".to_string()
+    };
+    let composer_title = if app.selected_busy {
+        "Message (Esc stop)"
+    } else {
+        "Message"
+    };
+    f.render_widget(
+        Paragraph::new(draft)
+            .block(Block::default().borders(Borders::ALL).title(composer_title))
+            .style(Style::default().fg(Color::Cyan)),
+        outer[3],
+    );
 }
 
 fn draw_sessions(f: &mut Frame, app: &App, panels: &PanelState, area: ratatui::layout::Rect) {
@@ -482,5 +582,17 @@ mod tests {
         assert_eq!(panels.focus, Focus::Events);
         panels.toggle_focus();
         assert_eq!(panels.focus, Focus::Sessions);
+    }
+
+    #[test]
+    fn simple_chat_mode_toggles_and_forces_conversation_focus() {
+        let mut panels = PanelState::default();
+        assert!(!panels.simple_chat);
+        panels.toggle_simple_chat();
+        assert!(panels.simple_chat);
+        assert_eq!(panels.focus, Focus::Conversation);
+        panels.focus = Focus::Runs;
+        panels.toggle_simple_chat();
+        assert!(!panels.simple_chat);
     }
 }

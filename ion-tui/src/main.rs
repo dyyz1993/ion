@@ -39,7 +39,16 @@ async fn main() {
         .and_then(|i| args.get(i + 1))
         .filter(|v| !v.starts_with("--"))
         .cloned();
-    if let Err(e) = run(socket, headless, initial_attachments, initial_session).await {
+    let simple_chat_default = args.iter().any(|a| a == "--chat" || a == "chat");
+    if let Err(e) = run(
+        socket,
+        headless,
+        initial_attachments,
+        initial_session,
+        simple_chat_default,
+    )
+    .await
+    {
         eprintln!("ion-tui error: {e}");
         std::process::exit(1);
     }
@@ -58,6 +67,7 @@ async fn run(
     headless: bool,
     initial_attachments: Vec<String>,
     initial_session: Option<String>,
+    simple_chat_default: bool,
 ) -> Result<(), String> {
     let mut conn = connection::Connection::connect(&socket).await?;
     let mut app = App::new();
@@ -140,6 +150,12 @@ async fn run(
 
     let _ = app.refresh_approvals(&socket).await;
     if headless {
+        if simple_chat_default {
+            for line in app.render_simple_chat_text() {
+                println!("{line}");
+            }
+            return Ok(());
+        }
         // Text render: sessions tree + runs + events + tasks (conversation body
         // needs a selected session; print placeholder line for CI assertions).
         for line in app.render_sessions_text() {
@@ -157,7 +173,14 @@ async fn run(
 
     // Full-screen ratatui loop with crossterm events.
     let mut terminal = ratatui::init();
-    let result = tui_loop(&mut terminal, &mut app, &mut conn, &socket).await;
+    let result = tui_loop(
+        &mut terminal,
+        &mut app,
+        &mut conn,
+        &socket,
+        simple_chat_default,
+    )
+    .await;
     ratatui::restore();
     result
 }
@@ -179,6 +202,7 @@ async fn tui_loop(
     app: &mut App,
     conn: &mut connection::Connection,
     socket: &std::path::Path,
+    simple_chat_default: bool,
 ) -> Result<(), String> {
     let mut tool_stream = match app.conversation_session.clone() {
         Some(sid) => stream::SessionEventStream::subscribe(socket, &sid)
@@ -186,7 +210,10 @@ async fn tui_loop(
             .ok(),
         None => None,
     };
-    let mut panels = ui::PanelState::default();
+    let mut panels = ui::PanelState {
+        simple_chat: simple_chat_default,
+        ..Default::default()
+    };
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(1000));
     loop {
         let _ = app.poll_events(conn).await;
@@ -234,6 +261,14 @@ async fn tui_loop(
                     crossterm::event::Event::Key(key) if key.kind == crossterm::event::KeyEventKind::Press => {
                         use crossterm::event::KeyCode;
                         match key.code {
+                            KeyCode::Char('d') => panels.toggle_simple_chat(),
+                            KeyCode::Char('e')
+                                if panels.simple_chat
+                                    && !app.completed_tools.is_empty() =>
+                            {
+                                app.completed_tools_expanded =
+                                    !app.completed_tools_expanded;
+                            }
                             KeyCode::Char('q') => break,
                             KeyCode::Esc if !(panels.focus == ui::Focus::Conversation
                                 && app.attachment_picker.open) =>
@@ -347,7 +382,9 @@ async fn tui_loop(
                                     app.status = e;
                                 }
                             }
-                            KeyCode::Char('e') if panels.focus == ui::Focus::Conversation => {
+                            KeyCode::Char('e') if !panels.simple_chat
+                                && panels.focus == ui::Focus::Conversation =>
+                            {
                                 // Prefer the just-completed tool card; otherwise toggle history.
                                 let turn_count =
                                     crate::conversation::group_turns(&app.conversation_lines).len();

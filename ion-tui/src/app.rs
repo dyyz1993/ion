@@ -761,6 +761,52 @@ impl App {
         lines
     }
 
+    pub fn render_simple_chat_text(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        for card in &self.approvals {
+            lines.extend(crate::approvals::render_approvals(
+                std::slice::from_ref(card),
+                self.approval_cursor,
+            ));
+        }
+        if !self.approvals.is_empty() {
+            lines.push(String::new());
+        }
+        if self.conversation_lines.is_empty() {
+            lines.push("开始一段新对话".into());
+        } else {
+            for line in &self.conversation_lines {
+                if line.kind == crate::conversation::MsgKind::User {
+                    lines.push("you".into());
+                } else if line.kind == crate::conversation::MsgKind::Assistant {
+                    lines.push("assistant".into());
+                } else if line.kind == crate::conversation::MsgKind::Tool {
+                    lines.push(if line.expanded {
+                        format!("▾ {}", line.header)
+                    } else {
+                        format!("▸ {}", line.header)
+                    });
+                    if line.expanded {
+                        for body in line.body.lines() {
+                            lines.push(format!("  {body}"));
+                        }
+                    }
+                    continue;
+                } else if !line.body.is_empty() {
+                    lines.push(line.body.clone());
+                    continue;
+                }
+                if !line.body.is_empty() {
+                    lines.push(line.body.clone());
+                }
+            }
+        }
+        if let Some(tool) = &self.live_tool {
+            lines.extend(tool.render());
+        }
+        lines
+    }
+
     pub fn render(&self) -> Vec<String> {
         let mut lines = render_lines(&self.runs);
         lines.push(String::new());
@@ -816,5 +862,49 @@ mod tests {
         let app = App::new();
         assert_eq!(app.render()[0], "(no durable runs)");
         assert_eq!(app.selected_run_id(), None);
+    }
+
+    #[test]
+    fn simple_chat_renders_conversation_and_approval_without_debug_panels() {
+        let mut app = App::new();
+        app.runs = vec![entry("run-debug", "running")];
+        app.conversation_lines = vec![
+            crate::conversation::MsgLine {
+                kind: crate::conversation::MsgKind::User,
+                header: "user".into(),
+                body: "帮我检查部署".into(),
+                expanded: true,
+                error: false,
+            },
+            crate::conversation::MsgLine {
+                kind: crate::conversation::MsgKind::Assistant,
+                header: "assistant".into(),
+                body: "我先执行只读检查。".into(),
+                expanded: true,
+                error: false,
+            },
+            crate::conversation::MsgLine {
+                kind: crate::conversation::MsgKind::Tool,
+                header: "[tool] bash — git status".into(),
+                body: "clean".into(),
+                expanded: false,
+                error: false,
+            },
+        ];
+        app.approvals = vec![crate::approvals::ApprovalCard {
+            id: "apr_1".into(),
+            kind: "ui_ask".into(),
+            session_id: "s".into(),
+            title: None,
+            summary: Some("允许执行部署命令？".into()),
+            payload: serde_json::json!({"command": "./deploy.sh"}),
+        }];
+        let lines = app.render_simple_chat_text();
+        assert!(lines.iter().any(|l| l.contains("审批请求")));
+        assert!(lines.iter().any(|l| l == "you"));
+        assert!(lines.iter().any(|l| l.contains("我先执行只读检查")));
+        assert!(lines.iter().any(|l| l.starts_with("▸ [tool]")));
+        assert!(!lines.iter().any(|l| l.contains("run-debug")));
+        assert!(!lines.iter().any(|l| l.contains("--- tasks ---")));
     }
 }
